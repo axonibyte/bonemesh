@@ -30,6 +30,7 @@ public class BoneMesh {
   private String name = null;
   private String externalIP = null;
   private String internalIP = null;
+  private Thread socketListenerThread = null;
   
   private BoneMesh(String name) throws BoneMeshInitializationException {
     this.name = name;
@@ -50,6 +51,8 @@ public class BoneMesh {
   }
   
   public static BoneMesh newInstance(String name, String targetIP, int targetPort, int hostPort) {
+    System.out.println("Loading BoneMesh server " + name + "...");
+    
     try {
       if(targetIP == null
           && (targetPort < 1 || targetPort > 65535)
@@ -62,6 +65,8 @@ public class BoneMesh {
       
       BoneMesh boneMesh = new BoneMesh(name);
       boneMesh.socketListener = new SocketListener(boneMesh, hostPort);
+      boneMesh.socketListenerThread = new Thread(boneMesh.socketListener);
+      boneMesh.socketListenerThread.start();
       
       if(targetIP != null) {
         if(targetPort < 1 || targetPort > 65535)
@@ -128,7 +133,7 @@ public class BoneMesh {
     for(String node : serverNodes.keySet()) {
       ServerNode serverNode = serverNodes.get(node);
       serverList.put(new JSONObject()
-          .put("node", node)
+          .put("name", node)
           .put("alive", serverNode.isAlive())
           .put("externalHost", serverNode.getExternalHost())
           .put("internalHost", serverNode.getInternalHost())
@@ -153,7 +158,7 @@ public class BoneMesh {
         try {
           JSONObject node = (JSONObject)object;
           String name = node.getString("name");
-          if(serverNodes.containsKey(name)) continue;
+          if(serverNodes.containsKey(name) || this.name.equals(name)) continue;
           ServerNode serverNode = new ServerNode(
               name,
               node.getString("externalHost"),
@@ -162,11 +167,32 @@ public class BoneMesh {
               false);
           serverNode.setAlive(node.getBoolean("alive"));
           serverNodes.put(name, serverNode);
-        } catch(BoneMeshInitializationException | ClassCastException e1) {
+          dispatch(generateInitRequest(), serverNode);
+        } catch(ClassCastException e1) {
           continue;
         }
       }
-    } catch(JSONException e2) { }
+    } catch(JSONException e2) {
+      e2.printStackTrace();
+    }
+    
+    System.out.println("I am " + this.name);
+    System.out.println("Known servers:");
+    Map<String, Boolean> nodeList = getNodeList();
+    for(String node : getNodeList().keySet())
+      System.out.println(node + " (" + (nodeList.get(node) ? "ALIVE" : "DEAD") + ")");
+  }
+  
+  public void unload(String node) {
+    System.out.println("Unloading " + node + "...");
+    serverNodes.remove(node);
+  }
+
+  public void disconnect() {
+    dispatch(new JSONObject()
+        .put("bonemesh", "die")
+        .put("node", name));
+    serverNodes.clear();
   }
   
   public void dispatch(JSONObject payload) {
@@ -189,6 +215,16 @@ public class BoneMesh {
     thread.setDaemon(true);
     thread.start();
     return true;
+  }
+  
+  public ServerNode getNode(String host, int port) {
+    for(ServerNode serverNode : serverNodes.values()) {
+      if(serverNode.getPort() == port
+          && (serverNode.getExternalHost().equalsIgnoreCase(host)
+              || serverNode.getInternalHost().equalsIgnoreCase(host)))
+        return serverNode;
+    }
+    return null;
   }
   
 }

@@ -1,7 +1,5 @@
 package com.calebpower.bonemesh.server;
 
-import com.calebpower.bonemesh.exception.BoneMeshInitializationException;
-
 public class ServerNode {
   
   private boolean alive = false;
@@ -19,7 +17,7 @@ public class ServerNode {
   }
   
   public ServerNode(String name, String externalHost, String internalHost,
-      int port, boolean eavesdrop) throws BoneMeshInitializationException {
+      int port, boolean eavesdrop) {
     this.name = name;
     this.externalHost = externalHost;
     this.internalHost = internalHost;

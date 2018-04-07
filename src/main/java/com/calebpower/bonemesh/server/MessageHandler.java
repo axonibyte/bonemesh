@@ -21,6 +21,7 @@ public class MessageHandler implements Runnable {
   private Socket socket = null;
   
   public MessageHandler(BoneMesh boneMesh, Socket socket) {
+    this.boneMesh = boneMesh;
     this.socket = socket;
   }
 
@@ -48,8 +49,13 @@ public class MessageHandler implements Runnable {
       JSONObject message = new JSONObject(new String(payload));
       JSONObject response = new JSONObject();
       
+      System.out.println("Incoming message:");
+      System.out.println(message.toString(2));
+      
       if(message.has("bonemesh") && message.getString("bonemesh").equals("init")) {
-        boneMesh.loadNodes(response.getJSONArray("nodes"));
+        boneMesh.loadNodes(message.getJSONArray("nodes"));
+      } else if(message.has("bonemesh") && message.getString("bonemesh").equals("die")) {
+        boneMesh.unload(message.getString("node"));
       } else {
         for(String key : boneMesh.getListeners().keySet()) {
           if(response.has(key)) continue;
@@ -59,13 +65,16 @@ public class MessageHandler implements Runnable {
       
       writer.println(response.toString());
       writer.flush();
-      socket.close();
     } catch(JSONException e) {
       System.out.println("Bad JSON request came through.");
       e.printStackTrace();
     } catch(IOException e) {
       System.out.println("Some IOException was thrown in the message handler.");
       e.printStackTrace();
+    } finally {
+      try {
+        socket.close();
+      } catch(IOException e) { }
     }
   }
   

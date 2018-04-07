@@ -21,11 +21,14 @@ public class SocketListener implements Runnable {
   @Override public void run() {
     try {
       server = new ServerSocket(port);
+      System.out.println("Listening to port " + getPort() + ".");
       Socket socket = null;
       
       for(;;) {
         socket = server.accept();
-        System.out.println("Accepted an incoming message.");
+        ServerNode serverNode = boneMesh.getNode(socket.getRemoteSocketAddress().toString(), socket.getPort());
+        System.out.println("Accepted an incoming message from "
+            + (serverNode == null ? "unknown server" : serverNode.getName()) + ".");
         Thread thread = new Thread(new MessageHandler(boneMesh, socket));
         thread.setDaemon(true);
         thread.start();
@@ -38,7 +41,7 @@ public class SocketListener implements Runnable {
   }
   
   public int getPort() {
-    return server.getLocalPort();
+    return server == null ? port : server.getLocalPort();
   }
   
 }

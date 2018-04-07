@@ -21,13 +21,14 @@ public class PayloadDispatcher implements Runnable {
   public PayloadDispatcher(ServerNode node, JSONObject payload) {
     this.node = node;
     this.payload = payload;
+    System.out.println("About to send to " + node.getName() + "@" + node.getInternalHost() + ":" + node.getPort() + "...");
   }
   
   @Override public void run() {
     BufferedInputStream inputStream = null;
     BufferedOutputStream outputStream = null;
     try {
-      System.out.println("SENDING " + payload.toString());
+      System.out.println("SENDING:\n" + payload.toString(2));
       
       Socket socket = null;
       
@@ -38,6 +39,7 @@ public class PayloadDispatcher implements Runnable {
         }
       } catch(IOException e) {
         node.setSubnetPreference(SubnetPreference.UNKNOWN);
+        e.printStackTrace();
       }
       
       try {
@@ -47,6 +49,7 @@ public class PayloadDispatcher implements Runnable {
         }
       } catch(IOException e) {
         node.setSubnetPreference(SubnetPreference.UNKNOWN);
+        e.printStackTrace();
       }
       
       if(node == null || node.getSubnetPreference() == SubnetPreference.UNKNOWN) {
