@@ -28,34 +28,39 @@ public class PayloadDispatcher implements Runnable {
     BufferedInputStream inputStream = null;
     BufferedOutputStream outputStream = null;
     try {
-      System.out.println("SENDING:\n" + payload.toString(2));
+      //System.out.println("SENDING:\n" + payload.toString(2));
       
       Socket socket = null;
       
-      try {
-        if(node.getSubnetPreference() != SubnetPreference.EXTERNAL) {
-          socket = new Socket(node.getInternalHost(), node.getPort());
-          node.setSubnetPreference(SubnetPreference.INTERNAL);
+      for(int failures = 0; failures < 10; failures++) {
+        try {
+          if(node.getSubnetPreference() != SubnetPreference.EXTERNAL) {
+            socket = new Socket(node.getInternalHost(), node.getPort());
+            node.setSubnetPreference(SubnetPreference.INTERNAL);
+          }
+        } catch(IOException e) {
+          node.setSubnetPreference(SubnetPreference.UNKNOWN);
         }
-      } catch(IOException e) {
-        node.setSubnetPreference(SubnetPreference.UNKNOWN);
-        e.printStackTrace();
+        
+        try {
+          if(node.getSubnetPreference() != SubnetPreference.INTERNAL) {
+            socket = new Socket(node.getExternalHost(), node.getPort());
+            node.setSubnetPreference(SubnetPreference.EXTERNAL);
+          }
+        } catch(IOException e) {
+          node.setSubnetPreference(SubnetPreference.UNKNOWN);
+        }
+        
+        if(node == null || node.getSubnetPreference() == SubnetPreference.UNKNOWN) {
+          System.out.println("Could not deliver the payload to " + node.getName() + "!");
+          node.setAlive(false);
+          try {
+            Thread.sleep(1000L);
+          } catch(InterruptedException e) { }
+        } else break;
       }
       
-      try {
-        if(node.getSubnetPreference() != SubnetPreference.INTERNAL) {
-          socket = new Socket(node.getExternalHost(), node.getPort());
-          node.setSubnetPreference(SubnetPreference.EXTERNAL);
-        }
-      } catch(IOException e) {
-        node.setSubnetPreference(SubnetPreference.UNKNOWN);
-        e.printStackTrace();
-      }
-      
-      if(node == null || node.getSubnetPreference() == SubnetPreference.UNKNOWN) {
-        System.out.println("Could not deliver the payload!");
-        return;
-      }
+      if(!node.isAlive()) return;
       
       inputStream = new BufferedInputStream(socket.getInputStream());
       outputStream = new BufferedOutputStream(socket.getOutputStream());
@@ -67,8 +72,11 @@ public class PayloadDispatcher implements Runnable {
       JSONObject response = new JSONObject(reader.readLine());
       socket.close();
       
-      System.out.println("RECEIVING " + response.toString());
-      node.setAlive(true);
+      if(response.has("backbone")
+          && response.getJSONObject("backbone").has("status")
+          && response.getJSONObject("backbone").getString("status").equals("ok"))
+        node.setAlive(true);
+      else node.setAlive(false);
     } catch (JSONException e) {
       System.out.println("Received bad response.");
     } catch(IOException e) {

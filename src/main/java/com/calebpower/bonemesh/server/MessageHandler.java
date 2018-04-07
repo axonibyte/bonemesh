@@ -27,7 +27,9 @@ public class MessageHandler implements Runnable {
 
   @Override public void run() {
     try {
-      socket.setSoTimeout(5000);
+      socket.setSoTimeout(10000);
+      System.out.println("Accepted an incoming message from " + socket.getRemoteSocketAddress().toString() + ".");
+      
       BufferedInputStream inputStream = new BufferedInputStream(socket.getInputStream());
       BufferedOutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
       
@@ -49,24 +51,39 @@ public class MessageHandler implements Runnable {
       JSONObject message = new JSONObject(new String(payload));
       JSONObject response = new JSONObject();
       
-      System.out.println("Incoming message:");
-      System.out.println(message.toString(2));
+      //System.out.println("Incoming message:");
+      //System.out.println(message.toString(2));
       
-      if(message.has("bonemesh") && message.getString("bonemesh").equals("init")) {
-        boneMesh.loadNodes(message.getJSONArray("nodes"));
-      } else if(message.has("bonemesh") && message.getString("bonemesh").equals("die")) {
-        boneMesh.unload(message.getString("node"));
+      JSONObject boneMeshObject = message.getJSONObject("bonemesh");
+      if(boneMeshObject.has("action") && boneMeshObject.getString("action").equals("init")) {
+        boneMesh.loadNodes(boneMeshObject.getJSONArray("nodes"));
+        response.put("backbone", new JSONObject()
+            .put("status", "ok"));
+      } else if(boneMeshObject.has("action") && boneMeshObject.getString("action").equals("die")) {
+        boneMesh.unload(boneMeshObject.getString("node"));
+        response.put("backbone", new JSONObject()
+            .put("status", "ok"));
+      } else if(boneMeshObject.has("action") && boneMeshObject.getString("action").equals("ack")) {
+        System.out.println("Received ACK message.");
+        if(boneMesh.getNode(boneMeshObject.getString("node")) != null)
+          response.put("backbone", new JSONObject()
+              .put("status", "ok"));
       } else {
-        for(String key : boneMesh.getListeners().keySet()) {
-          if(response.has(key)) continue;
-          response.put(key, boneMesh.getListeners().get(key).reactToJSON(message));
+        ServerNode serverNode = boneMesh.getNode(boneMeshObject.getString("node"));
+        response.put("backbone", new JSONObject()
+            .put("status", "ok"));
+        if(serverNode != null) {
+          for(String key : boneMesh.getListeners().keySet()) {
+            if(response.has(key)) continue;
+            response.put(key, boneMesh.getListeners().get(key).reactToJSON(message));
+          }
         }
       }
-      
+
       writer.println(response.toString());
       writer.flush();
     } catch(JSONException e) {
-      System.out.println("Bad JSON request came through.");
+      //System.out.println("Bad JSON request came through.");
       e.printStackTrace();
     } catch(IOException e) {
       System.out.println("Some IOException was thrown in the message handler.");

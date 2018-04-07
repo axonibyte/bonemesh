@@ -2,8 +2,8 @@ package com.calebpower.bonemesh.server;
 
 public class ServerNode {
   
-  private boolean alive = false;
   private boolean eavesdrop = false;
+  private int deathCount = 0;
   private int port = -1;
   private String externalHost = null;
   private String internalHost = null;
@@ -24,14 +24,17 @@ public class ServerNode {
     this.port = port;
     this.eavesdrop = eavesdrop;
     this.subnetPreference = SubnetPreference.UNKNOWN;
+    System.out.println("Createing node at " + (name == null ? "NULL" : name) + " " + externalHost + " " + internalHost + " " + port);
   }
   
   public boolean isAlive() {
-    return alive;
+    return deathCount == 0;
   }
   
   public void setAlive(boolean alive) {
-    this.alive = alive;
+    if(deathCount == 0 != alive)
+      System.out.println("Node " + name + " is now " + (alive ? "alive" : "dead") + ".");
+    deathCount = alive ? 0 : deathCount + 1;
   }
   
   public boolean isEavesdroppingEnabled() {

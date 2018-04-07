@@ -16,6 +16,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import com.calebpower.bonemesh.exception.BoneMeshInitializationException;
+import com.calebpower.bonemesh.server.NodeWatcher;
 import com.calebpower.bonemesh.server.PayloadDispatcher;
 import com.calebpower.bonemesh.server.ServerNode;
 import com.calebpower.bonemesh.server.SocketListener;
@@ -31,6 +32,7 @@ public class BoneMesh {
   private String externalIP = null;
   private String internalIP = null;
   private Thread socketListenerThread = null;
+  private Thread nodeWatcherThread = null;
   
   private BoneMesh(String name) throws BoneMeshInitializationException {
     this.name = name;
@@ -77,6 +79,10 @@ public class BoneMesh {
           boneMesh.dispatch(boneMesh.generateInitRequest(), serverNode);
         }
       }
+      
+      boneMesh.nodeWatcherThread = new Thread(new NodeWatcher(boneMesh));
+      boneMesh.nodeWatcherThread.setDaemon(true);
+      boneMesh.nodeWatcherThread.start();
       
       return boneMesh;
     } catch(BoneMeshInitializationException e) {
@@ -148,8 +154,9 @@ public class BoneMesh {
         .put("port", socketListener.getPort()));
     
     return new JSONObject()
-        .put("bonemesh", "init")
-        .put("nodes", serverList);
+        .put("bonemesh", new JSONObject()
+            .put("action", "init")
+            .put("nodes", serverList));
   }
   
   public void loadNodes(JSONArray nodes) {
@@ -190,35 +197,56 @@ public class BoneMesh {
 
   public void disconnect() {
     dispatch(new JSONObject()
-        .put("bonemesh", "die")
-        .put("node", name));
+        .put("bonemesh", new JSONObject()
+            .put("action", "die")
+            .put("node", name)));
     serverNodes.clear();
+  }
+  
+  public String getName() {
+    return name;
   }
   
   public void dispatch(JSONObject payload) {
     for(ServerNode serverNode : serverNodes.values()) {
-      Thread thread = new Thread(new PayloadDispatcher(serverNode, payload));
+      Thread thread = new Thread(new PayloadDispatcher(serverNode, injectBonemeshObject(payload)));
       thread.setDaemon(true);
       thread.start();
     }
   }
   
   public void dispatch(JSONObject payload, ServerNode serverNode) {
-    Thread thread = new Thread(new PayloadDispatcher(serverNode, payload));
+    Thread thread = new Thread(new PayloadDispatcher(serverNode, injectBonemeshObject(payload)));
     thread.setDaemon(true);
     thread.start();
   }
   
   public boolean dispatch(JSONObject payload, String node) {
     if(!serverNodes.containsKey(node)) return false;
-    Thread thread = new Thread(new PayloadDispatcher(serverNodes.get(node), payload));
+    Thread thread = new Thread(new PayloadDispatcher(serverNodes.get(node), injectBonemeshObject(payload)));
     thread.setDaemon(true);
     thread.start();
     return true;
   }
   
+  private JSONObject injectBonemeshObject(JSONObject json) {
+    if(!json.has("bonemesh")) {
+      json.put("bonemesh", new JSONObject()
+          .put("action", "transmit")
+          .put("node", name));
+    }
+    return json;
+  }
+  
+  public ServerNode getNode(String name) {
+    return serverNodes.get(name);
+  }
+  
   public ServerNode getNode(String host, int port) {
     for(ServerNode serverNode : serverNodes.values()) {
+      System.out.println("Checking " + host + ":" + port + " against "
+          + serverNode.getExternalHost() + ":" + serverNode.getPort() + " and "
+          + serverNode.getInternalHost() + ":" + serverNode.getPort() + ".");
       if(serverNode.getPort() == port
           && (serverNode.getExternalHost().equalsIgnoreCase(host)
               || serverNode.getInternalHost().equalsIgnoreCase(host)))
