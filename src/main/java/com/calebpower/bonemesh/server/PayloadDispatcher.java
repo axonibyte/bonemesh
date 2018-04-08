@@ -21,7 +21,6 @@ public class PayloadDispatcher implements Runnable {
   public PayloadDispatcher(ServerNode node, JSONObject payload) {
     this.node = node;
     this.payload = payload;
-    System.out.println("About to send to " + node.getName() + "@" + node.getInternalHost() + ":" + node.getPort() + "...");
   }
   
   @Override public void run() {
@@ -34,18 +33,33 @@ public class PayloadDispatcher implements Runnable {
       
       for(int failures = 0; failures < 10; failures++) {
         try {
-          if(node.getSubnetPreference() != SubnetPreference.EXTERNAL) {
-            socket = new Socket(node.getInternalHost(), node.getPort());
-            node.setSubnetPreference(SubnetPreference.INTERNAL);
+          if(node.getSubnetPreference() == SubnetPreference.UNKNOWN
+              || node.getSubnetPreference() == SubnetPreference.LOCAL) {
+            socket = new Socket("127.0.0.1", node.getPort());
+            node.setSubnetPreference(SubnetPreference.LOCAL);
+            System.out.println("Sent to " + node.getName() + "@127.0.0.1:" + node.getPort());
           }
         } catch(IOException e) {
           node.setSubnetPreference(SubnetPreference.UNKNOWN);
         }
         
         try {
-          if(node.getSubnetPreference() != SubnetPreference.INTERNAL) {
+          if(node.getSubnetPreference() == SubnetPreference.UNKNOWN
+              || node.getSubnetPreference() == SubnetPreference.INTERNAL) {
+            socket = new Socket(node.getInternalHost(), node.getPort());
+            node.setSubnetPreference(SubnetPreference.INTERNAL);
+            System.out.println("Sent to " + node.getName() + "@" + node.getInternalHost() + ":" + node.getPort());
+          }
+        } catch(IOException e) {
+          node.setSubnetPreference(SubnetPreference.UNKNOWN);
+        }
+        
+        try {
+          if(node.getSubnetPreference() == SubnetPreference.UNKNOWN
+              || node.getSubnetPreference() == SubnetPreference.EXTERNAL) {
             socket = new Socket(node.getExternalHost(), node.getPort());
             node.setSubnetPreference(SubnetPreference.EXTERNAL);
+            System.out.println("Sent to " + node.getName() + "@" + node.getExternalHost() + ":" + node.getPort());
           }
         } catch(IOException e) {
           node.setSubnetPreference(SubnetPreference.UNKNOWN);

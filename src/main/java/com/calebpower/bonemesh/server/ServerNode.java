@@ -12,6 +12,7 @@ public class ServerNode {
   
   public static enum SubnetPreference {
     UNKNOWN,
+    LOCAL,
     INTERNAL,
     EXTERNAL
   }

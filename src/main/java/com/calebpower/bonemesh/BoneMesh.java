@@ -244,10 +244,12 @@ public class BoneMesh {
   public ServerNode getNode(String host, int port) {
     for(ServerNode serverNode : serverNodes.values()) {
       System.out.println("Checking " + host + ":" + port + " against "
-          + serverNode.getExternalHost() + ":" + serverNode.getPort() + " and "
+          + "127.0.0.1:" + serverNode.getPort() + ", "
+          + serverNode.getExternalHost() + ":" + serverNode.getPort() + ", and "
           + serverNode.getInternalHost() + ":" + serverNode.getPort() + ".");
       if(serverNode.getPort() == port
-          && (serverNode.getExternalHost().equalsIgnoreCase(host)
+          && (host.equalsIgnoreCase("127.0.0.1")
+              || serverNode.getExternalHost().equalsIgnoreCase(host)
               || serverNode.getInternalHost().equalsIgnoreCase(host)))
         return serverNode;
     }
