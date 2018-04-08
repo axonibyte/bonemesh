@@ -16,12 +16,11 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import com.calebpower.bonemesh.exception.BoneMeshInitializationException;
+import com.calebpower.bonemesh.listener.JSONListener;
 import com.calebpower.bonemesh.server.NodeWatcher;
 import com.calebpower.bonemesh.server.PayloadDispatcher;
 import com.calebpower.bonemesh.server.ServerNode;
 import com.calebpower.bonemesh.server.SocketListener;
-
-import listener.JSONListener;
 
 public class BoneMesh {
   

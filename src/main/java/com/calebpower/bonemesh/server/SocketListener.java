@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.net.BindException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.LinkedList;
+import java.util.List;
 
 import com.calebpower.bonemesh.BoneMesh;
 
@@ -11,11 +13,13 @@ public class SocketListener implements Runnable {
   
   private BoneMesh boneMesh = null;
   private int port = 0;
+  private List<Socket> socketPool = null;
   private ServerSocket server = null;
   
   public SocketListener(BoneMesh boneMesh, int port) {
     this.boneMesh = boneMesh;
     this.port = port;
+    socketPool = new LinkedList<>();
   }
   
   @Override public void run() {
@@ -25,11 +29,20 @@ public class SocketListener implements Runnable {
       System.out.println("Listening to port " + getPort() + ".");
       Socket socket = null;
       
-      for(;;) {
-        socket = server.accept();
-        Thread thread = new Thread(new MessageHandler(boneMesh, socket));
+      for(int i = 0; i < 10; i++) {
+        System.out.println("Launching instance " + i + " of message handler...");
+        Thread thread = new Thread(new MessageHandler(this));
         thread.setDaemon(true);
         thread.start();
+      }
+      
+      for(;;) {
+        socket = server.accept();
+        synchronized(socketPool) {
+          socketPool.add(socket);
+          socketPool.notifyAll();
+        }
+        socket = null;
       }
     } catch(BindException e) { //rip
       System.out.println("Unable to bind to port " + port + ".");
@@ -40,6 +53,14 @@ public class SocketListener implements Runnable {
   
   public int getPort() {
     return port;
+  }
+  
+  public BoneMesh getBoneMesh() {
+    return boneMesh;
+  }
+  
+  public List<Socket> getSocketPool() {
+    return socketPool;
   }
   
 }
