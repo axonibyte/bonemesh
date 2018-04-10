@@ -17,6 +17,7 @@ public class ServerNodeTest {
         "EXTERNAL_HOST",
         "INTERNAL_HOST",
         2319,
+        false,
         false);
   }
   
@@ -31,6 +32,10 @@ public class ServerNodeTest {
   
   @Test public void testIsEavesdroppingEnabled() {
     assertEquals(false, serverNode.isEavesdroppingEnabled());
+  }
+  
+  @Test public void testIsMaster() {
+    assertEquals(false, serverNode.isMaster());
   }
   
   @Test public void testGetName() {

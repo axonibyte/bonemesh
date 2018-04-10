@@ -87,8 +87,9 @@ public class PayloadDispatcher implements Runnable {
       socket.close();
       
       if(response.has("backbone")
-          && response.getJSONObject("backbone").has("status")
-          && response.getJSONObject("backbone").getString("status").equals("ok"))
+          && response.has("payload")
+          && response.getJSONObject("payload").has("status")
+          && response.getJSONObject("payload").getString("status").equals("ok"))
         node.setAlive(true);
       else node.setAlive(false);
     } catch (JSONException e) {

@@ -26,17 +26,17 @@ public class BoneMesh {
   
   private Map<String, JSONListener> jsonListeners = null;
   private Map<String, ServerNode> serverNodes = null;
+  private ServerNode thisServer = null;
   private SocketListener socketListener = null;
-  private String name = null;
-  private String externalIP = null;
-  private String internalIP = null;
   private Thread socketListenerThread = null;
   private Thread nodeWatcherThread = null;
   
   private BoneMesh(String name) throws BoneMeshInitializationException {
-    this.name = name;
     this.jsonListeners = new ConcurrentHashMap<>();
     this.serverNodes = new ConcurrentHashMap<>();
+    
+    String externalIP = null;
+    String internalIP = null;
     
     try {
       final URL externalIPService = new URL("http://checkip.amazonaws.com");
@@ -49,6 +49,8 @@ public class BoneMesh {
       InetAddress thisIp = InetAddress.getLocalHost();
       internalIP = thisIp.getHostAddress().toString();
     } catch (Exception e) { }
+    
+    thisServer = new ServerNode(name, externalIP, internalIP, 0, false, false);
   }
   
   public static BoneMesh newInstance(String name, String targetIP, int targetPort, int hostPort) {
@@ -65,16 +67,18 @@ public class BoneMesh {
             BoneMeshInitializationException.ExceptionType.BAD_HOST_PORT);
       
       BoneMesh boneMesh = new BoneMesh(name);
+      if(hostPort > 0) boneMesh.thisServer.setMaster(true);
       boneMesh.socketListener = new SocketListener(boneMesh, hostPort);
       boneMesh.socketListenerThread = new Thread(boneMesh.socketListener);
       boneMesh.socketListenerThread.start();
+      boneMesh.thisServer.setPort(boneMesh.socketListener.getPort());
       
       if(targetIP != null) {
         if(targetPort < 1 || targetPort > 65535)
           throw new BoneMeshInitializationException(
               BoneMeshInitializationException.ExceptionType.BAD_TARGET_PORT);
         else {
-          ServerNode serverNode = new ServerNode(null, targetIP, targetIP, targetPort, false);
+          ServerNode serverNode = new ServerNode(null, targetIP, targetIP, targetPort, false, false);
           boneMesh.dispatch(boneMesh.generateInitRequest(), serverNode);
         }
       }
@@ -142,15 +146,17 @@ public class BoneMesh {
           .put("alive", serverNode.isAlive())
           .put("externalHost", serverNode.getExternalHost())
           .put("internalHost", serverNode.getInternalHost())
-          .put("port", serverNode.getPort()));
+          .put("port", serverNode.getPort())
+          .put("master", serverNode.isMaster()));
     }
     
     serverList.put(new JSONObject()
-        .put("name", name)
+        .put("name", thisServer.getName())
         .put("alive", true)
-        .put("externalHost", externalIP)
-        .put("internalHost", internalIP)
-        .put("port", socketListener.getPort()));
+        .put("externalHost", thisServer.getExternalHost())
+        .put("internalHost", thisServer.getInternalHost())
+        .put("port", thisServer.getPort())
+        .put("master", thisServer.isMaster()));
     
     return new JSONObject()
         .put("bonemesh", new JSONObject()
@@ -164,13 +170,14 @@ public class BoneMesh {
         try {
           JSONObject node = (JSONObject)object;
           String name = node.getString("name");
-          if(serverNodes.containsKey(name) || this.name.equals(name)) continue;
+          if(serverNodes.containsKey(name) || thisServer.getName().equals(name)) continue;
           ServerNode serverNode = new ServerNode(
               name,
               node.getString("externalHost"),
               node.getString("internalHost"),
               node.getInt("port"),
-              false);
+              false,
+              node.getBoolean("master"));
           serverNode.setAlive(node.getBoolean("alive"));
           serverNodes.put(name, serverNode);
           dispatch(generateInitRequest(), serverNode);
@@ -182,7 +189,7 @@ public class BoneMesh {
       e2.printStackTrace();
     }
     
-    System.out.println("I am " + this.name);
+    System.out.println("I am " + thisServer.getName());
     System.out.println("Known servers:");
     Map<String, Boolean> nodeList = getNodeList();
     for(String node : getNodeList().keySet())
@@ -198,12 +205,8 @@ public class BoneMesh {
     dispatch(new JSONObject()
         .put("bonemesh", new JSONObject()
             .put("action", "die")
-            .put("node", name)));
+            .put("node", thisServer.getName())));
     serverNodes.clear();
-  }
-  
-  public String getName() {
-    return name;
   }
   
   public void dispatch(JSONObject payload) {
@@ -232,7 +235,7 @@ public class BoneMesh {
     if(!json.has("bonemesh")) {
       json.put("bonemesh", new JSONObject()
           .put("action", "transmit")
-          .put("node", name));
+          .put("node", thisServer.getName()));
     }
     return json;
   }
@@ -254,6 +257,10 @@ public class BoneMesh {
         return serverNode;
     }
     return null;
+  }
+  
+  public ServerNode getThisServer() {
+    return thisServer;
   }
   
 }

@@ -3,6 +3,7 @@ package com.calebpower.bonemesh.server;
 public class ServerNode {
   
   private boolean eavesdrop = false;
+  private boolean master = false;
   private int deathCount = 0;
   private int port = -1;
   private String externalHost = null;
@@ -18,12 +19,13 @@ public class ServerNode {
   }
   
   public ServerNode(String name, String externalHost, String internalHost,
-      int port, boolean eavesdrop) {
+      int port, boolean eavesdrop, boolean master) {
     this.name = name;
     this.externalHost = externalHost;
     this.internalHost = internalHost;
     this.port = port;
     this.eavesdrop = eavesdrop;
+    this.master = master;
     this.subnetPreference = SubnetPreference.UNKNOWN;
     System.out.println("Createing node at " + (name == null ? "NULL" : name) + " " + externalHost + " " + internalHost + " " + port);
   }
@@ -42,6 +44,15 @@ public class ServerNode {
     return eavesdrop;
   }
   
+  public boolean isMaster() {
+    return master;
+  }
+  
+  public ServerNode setMaster(boolean master) {
+    this.master = master;
+    return this;
+  }
+  
   public String getName() {
     return name;
   }
@@ -58,11 +69,17 @@ public class ServerNode {
     return port;
   }
   
+  public ServerNode setPort(int port) {
+    this.port = port;
+    return this;
+  }
+  
   public SubnetPreference getSubnetPreference() {
     return subnetPreference;
   }
   
-  public void setSubnetPreference(SubnetPreference subnetPreference) {
+  public ServerNode setSubnetPreference(SubnetPreference subnetPreference) {
     this.subnetPreference = subnetPreference;
+    return this;
   }
 }

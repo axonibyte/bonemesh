@@ -2,9 +2,10 @@ package com.calebpower.bonemesh.server;
 
 import java.util.Map;
 
-import org.json.JSONObject;
-
 import com.calebpower.bonemesh.BoneMesh;
+import com.calebpower.bonemesh.message.WelfareCheck;
+import com.calebpower.bonemesh.message.DeathNote;
+import com.calebpower.bonemesh.message.InitRequest;
 
 public class NodeWatcher implements Runnable {
   
@@ -21,10 +22,7 @@ public class NodeWatcher implements Runnable {
       } catch(InterruptedException e) { }
       
       System.out.println("Dispatching ack message...");
-      boneMesh.dispatch(new JSONObject()
-          .put("bonemesh", new JSONObject()
-              .put("action", "ack")
-              .put("node", boneMesh.getName())));
+      boneMesh.dispatch(new WelfareCheck(boneMesh.getThisServer()));
 
       try {
         Thread.sleep(5000L);
@@ -38,16 +36,14 @@ public class NodeWatcher implements Runnable {
         for(String serverNode : nodeList.keySet()) {
           if(!nodeList.get(serverNode)) {
             System.out.println("Refreshing node " + serverNode + "...");
-            boneMesh.dispatch(new JSONObject()
-                .put("bonemesh", "die")
-                .put("node", boneMesh.getName()), serverNode);
-          
+            boneMesh.dispatch(new DeathNote(boneMesh.getThisServer()), serverNode);
+            
             try {
               Thread.sleep(2000L);
             } catch(InterruptedException e) { }
             
             System.out.println("Bringing node " + serverNode + " back online...");
-            boneMesh.dispatch(boneMesh.generateInitRequest(), serverNode);
+            boneMesh.dispatch(new InitRequest(boneMesh.getThisServer()), serverNode);
           }
         }
         
