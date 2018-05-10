@@ -26,11 +26,11 @@ public class SocketListener implements Runnable {
     try {
       server = new ServerSocket(port, 50);
       this.port = server.getLocalPort();
-      System.out.println("Listening to port " + getPort() + ".");
+      boneMesh.log("Listening to port " + getPort() + ".");
       Socket socket = null;
       
       for(int i = 0; i < 10; i++) {
-        System.out.println("Launching instance " + i + " of message handler...");
+        boneMesh.log("Launching instance " + i + " of message handler...");
         Thread thread = new Thread(new MessageHandler(this));
         thread.setDaemon(true);
         thread.start();
@@ -45,9 +45,9 @@ public class SocketListener implements Runnable {
         socket = null;
       }
     } catch(BindException e) { //rip
-      System.out.println("Unable to bind to port " + port + ".");
+      boneMesh.log("Unable to bind to port " + port + ".");
     } catch(IOException e) { //rip x2
-      System.out.println("Unable to instantiate a server socket on port " + port + ".");
+      boneMesh.log("Unable to instantiate a server socket on port " + port + ".");
     }
   }
   

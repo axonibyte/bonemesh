@@ -1,7 +1,10 @@
 package com.calebpower.bonemesh.server;
 
+import com.calebpower.bonemesh.BoneMesh;
+
 public class ServerNode {
   
+  private BoneMesh boneMesh = null;
   private boolean eavesdrop = false;
   private boolean master = false;
   private int deathCount = 0;
@@ -18,8 +21,9 @@ public class ServerNode {
     EXTERNAL
   }
   
-  public ServerNode(String name, String externalHost, String internalHost,
-      int port, boolean eavesdrop, boolean master) {
+  public ServerNode(BoneMesh boneMesh, String name, String externalHost,
+      String internalHost, int port, boolean eavesdrop, boolean master) {
+    this.boneMesh = boneMesh;
     this.name = name;
     this.externalHost = externalHost;
     this.internalHost = internalHost;
@@ -27,7 +31,7 @@ public class ServerNode {
     this.eavesdrop = eavesdrop;
     this.master = master;
     this.subnetPreference = SubnetPreference.UNKNOWN;
-    System.out.println("Creating node at " + (name == null ? "NULL" : name) + " " + externalHost + " " + internalHost + " " + port);
+    boneMesh.log("Creating node at " + (name == null ? "NULL" : name) + " " + externalHost + " " + internalHost + " " + port);
   }
   
   public boolean isAlive() {
@@ -36,7 +40,7 @@ public class ServerNode {
   
   public void setAlive(boolean alive) {
     if(deathCount == 0 != alive)
-      System.out.println("Node " + name + " is now " + (alive ? "alive" : "dead") + ".");
+      boneMesh.log("Node " + name + " is now " + (alive ? "alive" : "dead") + ".");
     deathCount = alive ? 0 : deathCount + 1;
   }
   

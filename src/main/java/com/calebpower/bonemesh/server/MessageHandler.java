@@ -45,7 +45,7 @@ public class MessageHandler implements Runnable {
       
       try {
         socket.setSoTimeout(10000);
-        System.out.println("Accepted an incoming message from " + socket.getRemoteSocketAddress().toString() + ".");
+        boneMesh.log("Accepted an incoming message from " + socket.getRemoteSocketAddress().toString() + ".");
         
         DataInputStream inputStream = new DataInputStream(socket.getInputStream());
         DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
@@ -65,8 +65,6 @@ public class MessageHandler implements Runnable {
         byte[] payload = new byte[buffer.size()];
         for(int i = 0; i < buffer.size(); i++)
           payload[i] = buffer.get(i);
-        
-        System.out.println("RECEIVED:\n" + new String(payload));
         
         JSONObject message = new JSONObject(new String(payload));
         JSONObject response = null;
@@ -119,15 +117,12 @@ public class MessageHandler implements Runnable {
           */
 
           writer.println(response.toString());
-          System.out.println("SENT RESPONSE: " + response.toString());
           writer.flush();
         }
       } catch(JSONException e) {
-        //System.out.println("Bad JSON request came through.");
-        e.printStackTrace();
+        boneMesh.log("Bad JSON request came through. " + e.getMessage());
       } catch(IOException e) {
-        System.out.println("Some IOException was thrown in the message handler.");
-        e.printStackTrace();
+        boneMesh.log("Some IOException was thrown in the message handler. " + e.getMessage());
       } finally {
         try {
           socket.close();

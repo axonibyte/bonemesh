@@ -21,7 +21,7 @@ public class NodeWatcher implements Runnable {
         Thread.sleep(10000L);
       } catch(InterruptedException e) { }
       
-      System.out.println("Dispatching ack message...");
+      boneMesh.log("Dispatching ack message...");
       boneMesh.dispatch(new WelfareCheck(boneMesh.getThisServer()));
 
       try {
@@ -35,14 +35,14 @@ public class NodeWatcher implements Runnable {
         
         for(String serverNode : nodeList.keySet()) {
           if(!nodeList.get(serverNode)) {
-            System.out.println("Refreshing node " + serverNode + "...");
+            boneMesh.log("Refreshing node " + serverNode + "...");
             boneMesh.dispatch(new DeathNote(boneMesh.getThisServer()), serverNode);
             
             try {
               Thread.sleep(2000L);
             } catch(InterruptedException e) { }
             
-            System.out.println("Bringing node " + serverNode + " back online...");
+            boneMesh.log("Bringing node " + serverNode + " back online...");
             boneMesh.dispatch(new InitRequest(boneMesh.getThisServer()), serverNode);
           }
         }

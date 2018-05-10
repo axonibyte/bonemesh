@@ -11,14 +11,17 @@ import java.net.Socket;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import com.calebpower.bonemesh.BoneMesh;
 import com.calebpower.bonemesh.server.ServerNode.SubnetPreference;
 
 public class PayloadDispatcher implements Runnable {
   
+  private BoneMesh boneMesh = null;
   private JSONObject payload = null;
   private ServerNode node = null;
   
-  public PayloadDispatcher(ServerNode node, JSONObject payload) {
+  public PayloadDispatcher(BoneMesh boneMesh, ServerNode node, JSONObject payload) {
+    this.boneMesh = boneMesh;
     this.node = node;
     this.payload = payload;
   }
@@ -29,19 +32,15 @@ public class PayloadDispatcher implements Runnable {
     Socket socket = null;
     
     try {
-      System.out.println("SENDING:\n" + payload.toString(2));
-      
       for(int failures = 0; failures < 10; failures++) {
         try {
           if(node.getSubnetPreference() == SubnetPreference.UNKNOWN
               || node.getSubnetPreference() == SubnetPreference.LOCAL) {
             socket = new Socket("127.0.0.1", node.getPort());
             node.setSubnetPreference(SubnetPreference.LOCAL);
-            System.out.println("Sent to " + node.getName() + "@127.0.0.1:" + node.getPort());
+            boneMesh.log("Sending data to " + node.getName() + "@127.0.0.1:" + node.getPort());
           }
         } catch(IOException e) {
-          e.printStackTrace();
-          System.out.println(node.getName() + " is NOT local.");
           node.setSubnetPreference(SubnetPreference.UNKNOWN);
         }
         
@@ -50,11 +49,9 @@ public class PayloadDispatcher implements Runnable {
               || node.getSubnetPreference() == SubnetPreference.INTERNAL) {
             socket = new Socket(node.getInternalHost(), node.getPort());
             node.setSubnetPreference(SubnetPreference.INTERNAL);
-            System.out.println("Sent to " + node.getName() + "@" + node.getInternalHost() + ":" + node.getPort());
+            boneMesh.log("Sending data to " + node.getName() + "@" + node.getInternalHost() + ":" + node.getPort());
           }
         } catch(IOException e) {
-          e.printStackTrace();
-          System.out.println(node.getName() + " is NOT internal.");
           node.setSubnetPreference(SubnetPreference.UNKNOWN);
         }
         
@@ -63,16 +60,14 @@ public class PayloadDispatcher implements Runnable {
               || node.getSubnetPreference() == SubnetPreference.EXTERNAL) {
             socket = new Socket(node.getExternalHost(), node.getPort());
             node.setSubnetPreference(SubnetPreference.EXTERNAL);
-            System.out.println("Sent to " + node.getName() + "@" + node.getExternalHost() + ":" + node.getPort());
+            boneMesh.log("Sent to " + node.getName() + "@" + node.getExternalHost() + ":" + node.getPort());
           }
         } catch(IOException e) {
-          e.printStackTrace();
-          System.out.println(node.getName() + " is NOT external.");
           node.setSubnetPreference(SubnetPreference.UNKNOWN);
         }
         
         if(node == null || node.getSubnetPreference() == SubnetPreference.UNKNOWN) {
-          System.out.println("Could not deliver the payload to " + node.getName() + "!");
+          boneMesh.log("Could not deliver the payload to " + node.getName() + "!");
           node.setAlive(false);
           try {
             Thread.sleep(1000L);
@@ -83,8 +78,6 @@ public class PayloadDispatcher implements Runnable {
         }
       }
       
-      //if(!node.isAlive()) return;
-      
       inputStream = new BufferedInputStream(socket.getInputStream());
       outputStream = new BufferedOutputStream(socket.getOutputStream());
       PrintWriter writer = new PrintWriter(outputStream);
@@ -94,23 +87,18 @@ public class PayloadDispatcher implements Runnable {
       BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
       JSONObject response = new JSONObject(reader.readLine());
       
-      System.out.println("RECEIVED RESPONSE: " + response.toString());
-      
       if(response.has("bonemesh")
           && response.has("payload")
           && response.getJSONObject("payload").has("status")
-          && response.getJSONObject("payload").getString("status").equals("ok")) {
-        System.out.println("setting ack node to alive");
+          && response.getJSONObject("payload").getString("status").equals("ok"))
         node.setAlive(true);
-      } else {
-        System.out.println("setting ack node to dead");
+      else
         node.setAlive(false);
-      }
     } catch (JSONException e) {
-      System.out.println("Received bad response.");
+      boneMesh.log("Received bad response.");
     } catch(IOException e) {
       node.setAlive(false);
-      System.out.println("Could not connect to server.");
+      boneMesh.log("Could not connect to server.");
     } finally {
       try {
         socket.close();
