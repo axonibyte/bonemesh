@@ -22,12 +22,12 @@ public class ServerNodeTest {
   }
   
   @Test public void testIsAlive() {
-    assertEquals(false, serverNode.isAlive());
+    assertEquals(true, serverNode.isAlive());
   }
   
   @Test public void testSetAlive() {
-    serverNode.setAlive(true);
-    assertEquals(true, serverNode.isAlive());
+    serverNode.setAlive(false);
+    assertEquals(false, serverNode.isAlive());
   }
   
   @Test public void testIsEavesdroppingEnabled() {

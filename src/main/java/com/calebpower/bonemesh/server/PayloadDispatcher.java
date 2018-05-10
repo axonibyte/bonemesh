@@ -26,10 +26,10 @@ public class PayloadDispatcher implements Runnable {
   @Override public void run() {
     BufferedInputStream inputStream = null;
     BufferedOutputStream outputStream = null;
+    Socket socket = null;
+    
     try {
-      //System.out.println("SENDING:\n" + payload.toString(2));
-      
-      Socket socket = null;
+      System.out.println("SENDING:\n" + payload.toString(2));
       
       for(int failures = 0; failures < 10; failures++) {
         try {
@@ -74,7 +74,7 @@ public class PayloadDispatcher implements Runnable {
         } else break;
       }
       
-      if(!node.isAlive()) return;
+      //if(!node.isAlive()) return;
       
       inputStream = new BufferedInputStream(socket.getInputStream());
       outputStream = new BufferedOutputStream(socket.getOutputStream());
@@ -84,7 +84,8 @@ public class PayloadDispatcher implements Runnable {
       
       BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
       JSONObject response = new JSONObject(reader.readLine());
-      socket.close();
+      
+      System.out.println("RECEIVED RESPONSE: " + response.toString());
       
       if(response.has("backbone")
           && response.has("payload")
@@ -97,6 +98,10 @@ public class PayloadDispatcher implements Runnable {
     } catch(IOException e) {
       node.setAlive(false);
       System.out.println("Could not connect to server.");
+    } finally {
+      try {
+        socket.close();
+      } catch(IOException e) { }
     }
   }
 

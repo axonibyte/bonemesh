@@ -16,6 +16,7 @@ public class NodeWatcher implements Runnable {
   }
   
   @Override public void run() {
+    /*
     for(;;) {
       try {
         Thread.sleep(10000L);
@@ -52,6 +53,7 @@ public class NodeWatcher implements Runnable {
         } catch(InterruptedException e) { }
       } while(nodeList.containsValue(false));
     }
+    */
   }
   
   

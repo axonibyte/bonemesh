@@ -9,7 +9,7 @@ public class ServerNode {
   private String externalHost = null;
   private String internalHost = null;
   private String name = null;
-  private SubnetPreference subnetPreference = null;
+  private SubnetPreference subnetPreference = SubnetPreference.UNKNOWN;
   
   public static enum SubnetPreference {
     UNKNOWN,
@@ -27,7 +27,7 @@ public class ServerNode {
     this.eavesdrop = eavesdrop;
     this.master = master;
     this.subnetPreference = SubnetPreference.UNKNOWN;
-    System.out.println("Createing node at " + (name == null ? "NULL" : name) + " " + externalHost + " " + internalHost + " " + port);
+    System.out.println("Creating node at " + (name == null ? "NULL" : name) + " " + externalHost + " " + internalHost + " " + port);
   }
   
   public boolean isAlive() {

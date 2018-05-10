@@ -15,6 +15,7 @@ import org.json.JSONObject;
 
 import com.calebpower.bonemesh.BoneMesh;
 import com.calebpower.bonemesh.message.AckMessage;
+import com.calebpower.bonemesh.message.DiscoveryMessage;
 import com.calebpower.bonemesh.message.Message.Action;
 
 public class MessageHandler implements Runnable {
@@ -64,6 +65,9 @@ public class MessageHandler implements Runnable {
         byte[] payload = new byte[buffer.size()];
         for(int i = 0; i < buffer.size(); i++)
           payload[i] = buffer.get(i);
+        
+        System.out.println("RECEIVED:\n" + new String(payload));
+        
         JSONObject message = new JSONObject(new String(payload));
         JSONObject response = null;
         JSONObject boneMeshObject = null;
@@ -80,15 +84,18 @@ public class MessageHandler implements Runnable {
         if(action == null) {
           response = new AckMessage(boneMesh.getThisServer(), false);
         } else {
-          
+          response = new AckMessage(boneMesh.getThisServer(), true);
           switch(action) {
             case DEATH:
               boneMesh.unload(boneMeshObject.getString("from"));
               break;
             case DISCOVER: //here take unknown servers and send init requests to each
               //the old one did boneMesh.loadNodes(...)
+              boneMesh.loadNodes(message.getJSONObject("payload").getJSONArray("nodes"));
               break;
             case INIT: //here just straight up load the server, override if necessary
+              boneMesh.loadNode(boneMeshObject.getString("from"), message.getJSONObject("payload"));
+              boneMesh.dispatch(new DiscoveryMessage(boneMesh.getThisServer(), boneMesh.getKnownNodes()));
               break;
             case TRANSMIT:
               //TODO do things here
@@ -112,8 +119,8 @@ public class MessageHandler implements Runnable {
           */
 
           writer.println(response.toString());
+          System.out.println("SENT RESPONSE: " + response.toString());
           writer.flush();
-        
         }
       } catch(JSONException e) {
         //System.out.println("Bad JSON request came through.");

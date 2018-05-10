@@ -52,7 +52,10 @@ public class SocketListener implements Runnable {
   }
   
   public int getPort() {
-    return port;
+    while(server == null) try {
+      Thread.sleep(500L);
+    } catch(InterruptedException e) { }
+    return server.getLocalPort();
   }
   
   public BoneMesh getBoneMesh() {

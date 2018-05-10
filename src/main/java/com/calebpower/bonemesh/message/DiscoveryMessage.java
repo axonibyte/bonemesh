@@ -14,6 +14,8 @@ public class DiscoveryMessage extends Message {
     JSONArray nodeArray = new JSONArray();
     addServerNode(nodeArray, sendingNode);
     addServerNode(nodeArray, knownNodes.toArray());
+    put("payload", new JSONObject()
+        .put("nodes", nodeArray));
   }
   
   private static void addServerNode(JSONArray json, Object... nodes) {
