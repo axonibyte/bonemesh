@@ -40,6 +40,8 @@ public class PayloadDispatcher implements Runnable {
             System.out.println("Sent to " + node.getName() + "@127.0.0.1:" + node.getPort());
           }
         } catch(IOException e) {
+          e.printStackTrace();
+          System.out.println(node.getName() + " is NOT local.");
           node.setSubnetPreference(SubnetPreference.UNKNOWN);
         }
         
@@ -51,6 +53,8 @@ public class PayloadDispatcher implements Runnable {
             System.out.println("Sent to " + node.getName() + "@" + node.getInternalHost() + ":" + node.getPort());
           }
         } catch(IOException e) {
+          e.printStackTrace();
+          System.out.println(node.getName() + " is NOT internal.");
           node.setSubnetPreference(SubnetPreference.UNKNOWN);
         }
         
@@ -62,6 +66,8 @@ public class PayloadDispatcher implements Runnable {
             System.out.println("Sent to " + node.getName() + "@" + node.getExternalHost() + ":" + node.getPort());
           }
         } catch(IOException e) {
+          e.printStackTrace();
+          System.out.println(node.getName() + " is NOT external.");
           node.setSubnetPreference(SubnetPreference.UNKNOWN);
         }
         
@@ -71,7 +77,10 @@ public class PayloadDispatcher implements Runnable {
           try {
             Thread.sleep(1000L);
           } catch(InterruptedException e) { }
-        } else break;
+        } else {
+          node.setAlive(true);
+          break;
+        }
       }
       
       //if(!node.isAlive()) return;
@@ -87,12 +96,16 @@ public class PayloadDispatcher implements Runnable {
       
       System.out.println("RECEIVED RESPONSE: " + response.toString());
       
-      if(response.has("backbone")
+      if(response.has("bonemesh")
           && response.has("payload")
           && response.getJSONObject("payload").has("status")
-          && response.getJSONObject("payload").getString("status").equals("ok"))
+          && response.getJSONObject("payload").getString("status").equals("ok")) {
+        System.out.println("setting ack node to alive");
         node.setAlive(true);
-      else node.setAlive(false);
+      } else {
+        System.out.println("setting ack node to dead");
+        node.setAlive(false);
+      }
     } catch (JSONException e) {
       System.out.println("Received bad response.");
     } catch(IOException e) {
