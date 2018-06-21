@@ -32,7 +32,8 @@ public class PayloadDispatcher implements Runnable {
     Socket socket = null;
     
     try {
-      for(int failures = 0; failures < 10; failures++) {
+      for(int failures = 0; ; failures++) {
+        
         try {
           if(node.getSubnetPreference() == SubnetPreference.UNKNOWN
               || node.getSubnetPreference() == SubnetPreference.LOCAL) {
@@ -68,6 +69,7 @@ public class PayloadDispatcher implements Runnable {
         
         if(node == null || node.getSubnetPreference() == SubnetPreference.UNKNOWN) {
           boneMesh.log("Could not deliver the payload to " + node.getName() + "!");
+          if(!boneMesh.isLoaded(node)) return;
           node.setAlive(false);
           try {
             Thread.sleep(1000L);
@@ -101,7 +103,7 @@ public class PayloadDispatcher implements Runnable {
       boneMesh.log("Could not connect to server.");
     } finally {
       try {
-        socket.close();
+        if(socket != null) socket.close();
       } catch(IOException e) { }
     }
   }

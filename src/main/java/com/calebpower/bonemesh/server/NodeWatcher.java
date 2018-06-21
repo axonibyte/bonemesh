@@ -1,13 +1,16 @@
 package com.calebpower.bonemesh.server;
 
+import java.util.HashMap;
 import java.util.Map;
 
 import com.calebpower.bonemesh.BoneMesh;
-import com.calebpower.bonemesh.message.WelfareCheck;
 import com.calebpower.bonemesh.message.DeathNote;
 import com.calebpower.bonemesh.message.InitRequest;
+import com.calebpower.bonemesh.message.WelfareCheck;
 
 public class NodeWatcher implements Runnable {
+  
+  private static final int MAX_RETRIES = 3;
   
   private BoneMesh boneMesh = null;
   
@@ -29,13 +32,25 @@ public class NodeWatcher implements Runnable {
       } catch(InterruptedException e) { }
       
       Map<String, Boolean> nodeList = null;
+      Map<String, Integer> deadList = new HashMap<>();
       
       do {
         nodeList = boneMesh.getNodeList();
         
         for(String serverNode : nodeList.keySet()) {
           if(!nodeList.get(serverNode)) {
-            boneMesh.log("Refreshing node " + serverNode + "...");
+            
+            if(deadList.containsKey(serverNode)) {
+              if(deadList.get(serverNode) > MAX_RETRIES) {
+                boneMesh.log("Maximum number of retries for server " + serverNode + " has been reached.");
+                boneMesh.unload(serverNode);
+                deadList.remove(serverNode);
+                continue;
+              }
+              deadList.replace(serverNode, deadList.get(serverNode) + 1);
+            } else deadList.put(serverNode, 1);
+            
+            boneMesh.log("Refreshing node " + serverNode + " (try #" + deadList.get(serverNode) + ")...");
             boneMesh.dispatch(new DeathNote(boneMesh.getThisServer()), serverNode);
             
             try {
@@ -44,6 +59,7 @@ public class NodeWatcher implements Runnable {
             
             boneMesh.log("Bringing node " + serverNode + " back online...");
             boneMesh.dispatch(new InitRequest(boneMesh.getThisServer()), serverNode);
+            
           }
         }
         

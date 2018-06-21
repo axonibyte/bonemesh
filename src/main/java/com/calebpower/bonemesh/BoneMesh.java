@@ -242,6 +242,10 @@ public class BoneMesh {
       log(node + " (" + (nodeList.get(node) ? "ALIVE" : "DEAD") + ")");
   }
   
+  public boolean isLoaded(ServerNode node) {
+    return serverNodes.containsValue(node);
+  }
+  
   public void unload(String node) {
     log("Unloading " + node + "...");
     serverNodes.remove(node);
