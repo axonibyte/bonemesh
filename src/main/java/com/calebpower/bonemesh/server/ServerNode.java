@@ -22,15 +22,16 @@ public class ServerNode {
   }
   
   public ServerNode(BoneMesh boneMesh, String name, String externalHost,
-      String internalHost, int port, boolean eavesdrop, boolean master) {
+      String internalHost, int port, boolean eavesdrop) {
     this.boneMesh = boneMesh;
     this.name = name;
     this.externalHost = externalHost;
     this.internalHost = internalHost;
     this.port = port;
     this.eavesdrop = eavesdrop;
-    this.master = master;
     this.subnetPreference = SubnetPreference.UNKNOWN;
+    this.master = boneMesh.isMaster(externalHost,  internalHost, port);
+    
     boneMesh.log("Creating node at " + (name == null ? "NULL" : name) + " " + externalHost + " " + internalHost + " " + port);
   }
   
@@ -86,4 +87,5 @@ public class ServerNode {
     this.subnetPreference = subnetPreference;
     return this;
   }
+  
 }

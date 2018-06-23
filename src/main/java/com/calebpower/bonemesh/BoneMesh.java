@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -22,6 +23,7 @@ import com.calebpower.bonemesh.exception.BoneMeshInitializationException;
 import com.calebpower.bonemesh.listener.BoneMeshDataListener;
 import com.calebpower.bonemesh.listener.BoneMeshInfoListener;
 import com.calebpower.bonemesh.message.DeathNote;
+import com.calebpower.bonemesh.message.DiscoveryMessage;
 import com.calebpower.bonemesh.message.InitRequest;
 import com.calebpower.bonemesh.server.NodeWatcher;
 import com.calebpower.bonemesh.server.PayloadDispatcher;
@@ -37,27 +39,52 @@ public class BoneMesh {
   private SocketListener socketListener = null;
   private Thread socketListenerThread = null;
   private Thread nodeWatcherThread = null;
+  private String[] masterIPs = null;
+  private int[] masterPorts = null;
   
-  private BoneMesh(String name) throws BoneMeshInitializationException {
+  private BoneMesh(String name, String[] masterIPs, int[] masterPorts) throws BoneMeshInitializationException {
     this.dataListeners = new ConcurrentHashMap<>();
     this.infoListeners = new HashSet<>();
     this.serverNodes = new ConcurrentHashMap<>();
+    this.masterIPs = masterIPs;
+    this.masterPorts = masterPorts;
     log("Loading BoneMeshServer " + name + "...");
   }
   
-  public static BoneMesh newInstance(String name, String targetIP, int targetPort, int hostPort) {
+  public static BoneMesh newInstance(String name, String[] targetIPs, int[] targetPorts, int hostPort) {
     
     try {
-      if(targetIP == null
-          && (targetPort < 1 || targetPort > 65535)
-          && (hostPort < 1 || hostPort > 65535))
-        throw new BoneMeshInitializationException(
-            BoneMeshInitializationException.ExceptionType.BAD_INIT_ARGS);
-      else if(hostPort < 0)
-        throw new BoneMeshInitializationException(
-            BoneMeshInitializationException.ExceptionType.BAD_HOST_PORT);
       
-      BoneMesh boneMesh = new BoneMesh(name);
+      {
+      
+        boolean badArgs = false;
+        
+        if((hostPort < 1 || hostPort > 65535)
+            && (targetIPs == null
+                || targetPorts == null
+                || targetIPs.length == 0
+                || targetPorts.length == 0
+                || targetIPs.length != targetPorts.length)) {
+          for(int targetPort : targetPorts)
+            if(targetPort < 1 || targetPort > 65535) {
+              badArgs = true;
+              break;
+            }
+          if(badArgs)
+            throw new BoneMeshInitializationException(
+                BoneMeshInitializationException.ExceptionType.BAD_INIT_ARGS);
+        }
+        
+        if(!badArgs && hostPort < 0) {
+          throw new BoneMeshInitializationException(
+              BoneMeshInitializationException.ExceptionType.BAD_HOST_PORT);          
+        }
+      
+      }
+        
+      BoneMesh boneMesh = new BoneMesh(name, targetIPs, targetPorts);
+      
+      System.out.println("Size = " + targetIPs.length + " " + targetPorts.length + " " + boneMesh.masterIPs.length + " " + boneMesh.masterPorts.length);
       
       String externalIP = null;
       String internalIP = null;
@@ -74,7 +101,7 @@ public class BoneMesh {
         internalIP = thisIp.getHostAddress().toString();
       } catch (Exception e) { }
       
-      boneMesh.thisServer = new ServerNode(boneMesh, name, externalIP, internalIP, 0, false, false);
+      boneMesh.thisServer = new ServerNode(boneMesh, name, externalIP, internalIP, 0, false);
       
       if(hostPort > 0) boneMesh.thisServer.setMaster(true);
       boneMesh.socketListener = new SocketListener(boneMesh, hostPort);
@@ -82,13 +109,25 @@ public class BoneMesh {
       boneMesh.socketListenerThread.start();
       boneMesh.thisServer.setPort(boneMesh.socketListener.getPort());
       
-      if(targetIP != null) {
-        if(targetPort < 1 || targetPort > 65535)
-          throw new BoneMeshInitializationException(
-              BoneMeshInitializationException.ExceptionType.BAD_TARGET_PORT);
-        else {
-          ServerNode serverNode = new ServerNode(boneMesh, null, targetIP, targetIP, targetPort, false, false);
-          boneMesh.dispatch(new InitRequest(boneMesh.thisServer), serverNode);
+      if(targetIPs != null) {
+        List<ServerNode> serverNodes = new LinkedList<>();
+        for(int i = 0; i < targetIPs.length; i++) {
+          if(targetPorts[i] < 1 || targetPorts[i] > 65535)
+            throw new BoneMeshInitializationException(
+                BoneMeshInitializationException.ExceptionType.BAD_TARGET_PORT);
+          else serverNodes.add(
+              new ServerNode(
+                  boneMesh,
+                  null,
+                  targetIPs[i],
+                  targetIPs[i],
+                  targetPorts[i],
+                  false));
+        }
+        for(int i = 0; i < serverNodes.size(); i++) {
+          ServerNode serverNode = new ServerNode(boneMesh, null, targetIPs[i], targetIPs[i], targetPorts[i], false);
+          boneMesh.dispatch(new InitRequest(boneMesh.thisServer), serverNodes.get(i));
+          boneMesh.dispatch(new DiscoveryMessage(boneMesh.getThisServer(), serverNodes), serverNodes.get(i));
         }
       }
       
@@ -104,12 +143,24 @@ public class BoneMesh {
     return null;
   }
   
+  public static BoneMesh newInstance(String name, String targetIP, int targetPort, int hostPort) {
+    String[] targetIPs = new String[] { targetIP };
+    int[] targetPorts = new int[] { targetPort };
+    return newInstance(name, targetIPs, targetPorts, hostPort);
+  }
+  
+  public static BoneMesh newInstance(String name, String[] targetIPs, int[] targetPorts) {
+    return newInstance(name, targetIPs, targetPorts, 0);
+  }
+  
   public static BoneMesh newInstance(String name, String targetIP, int targetPort) {
-    return newInstance(name, targetIP, targetPort, 0);
+    String[] targetIPs = new String[] { targetIP };
+    int[] targetPorts = new int[] { targetPort } ;
+    return newInstance(name, targetIPs, targetPorts);
   }
   
   public static BoneMesh newInstance(String name, int hostPort) {
-    return newInstance(name, null, -1, hostPort);
+    return newInstance(name, new String[] { }, new int[] { }, hostPort);
   }
 
   public void registerDataListener(BoneMeshDataListener listener, String name) {
@@ -204,7 +255,6 @@ public class BoneMesh {
         node.getString("externalHost"),
         node.getString("internalHost"),
         node.getInt("port"),
-        false,
         false);
     serverNodes.put(name,  serverNode);
   }
@@ -214,19 +264,22 @@ public class BoneMesh {
       for(Object object : nodes) {
         try {
           JSONObject node = (JSONObject)object;
-          String name = node.getString("name");
-          if(name == null || serverNodes.containsKey(name) || thisServer.getName().equals(name)) continue;
+          String name = node.has("name") ? node.getString("name") : null;
+
           ServerNode serverNode = new ServerNode(
               this,
               name,
               node.getString("externalHost"),
               node.getString("internalHost"),
               node.getInt("port"),
-              false,
-              node.getBoolean("master"));
-          //serverNode.setAlive(node.getBoolean("alive"));
-          serverNodes.put(name, serverNode);
-          dispatch(new InitRequest(thisServer), serverNode);
+              false);
+          
+          if(name == null || (name != null
+              && !serverNodes.containsKey(name)
+              && !thisServer.getName().equals(name))) {
+            if(name != null) serverNodes.put(name, serverNode);
+            dispatch(new InitRequest(thisServer), serverNode);
+          }
         } catch(ClassCastException e1) {
           continue;
         }
@@ -244,6 +297,20 @@ public class BoneMesh {
   
   public boolean isLoaded(ServerNode node) {
     return serverNodes.containsValue(node);
+  }
+  
+  public boolean isMaster(String externalIP, String internalIp, int port) {
+    System.out.println("Checking if master.");
+    for(int i = 0; i < masterIPs.length; i++) {
+      System.out.println("comparing " + externalIP + " and " + internalIp + " to " + masterIPs[i] + " and "
+          + port + " to " + masterPorts[i] + ".");
+      if(masterPorts[i] == port
+          && (masterIPs[i].equals("127.0.0.1")
+              || masterIPs[i].equals(externalIP)
+              || masterIPs[i].equals(internalIp)))
+        return true;
+    }
+    return false;
   }
   
   public void unload(String node) {

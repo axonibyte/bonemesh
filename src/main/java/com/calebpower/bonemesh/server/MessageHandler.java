@@ -98,6 +98,9 @@ public class MessageHandler implements Runnable {
             case TRANSMIT:
               //TODO do things here
               break;
+            case WELFARE:
+              boneMesh.log("Received welfare check from "
+                  + (boneMeshObject.has("from") ? boneMeshObject.getString("from") : "an unknown server") + ".");
             default:
               break;
           }

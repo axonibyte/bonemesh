@@ -41,11 +41,14 @@ public class NodeWatcher implements Runnable {
           if(!nodeList.get(serverNode)) {
             
             if(deadList.containsKey(serverNode)) {
-              if(deadList.get(serverNode) > MAX_RETRIES) {
+              
+              if(deadList.get(serverNode) >= MAX_RETRIES && !boneMesh.getNode(serverNode).isMaster()) {
+                                
                 boneMesh.log("Maximum number of retries for server " + serverNode + " has been reached.");
                 boneMesh.unload(serverNode);
                 deadList.remove(serverNode);
                 continue;
+                
               }
               deadList.replace(serverNode, deadList.get(serverNode) + 1);
             } else deadList.put(serverNode, 1);
