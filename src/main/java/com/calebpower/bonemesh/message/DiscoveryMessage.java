@@ -7,8 +7,19 @@ import org.json.JSONObject;
 
 import com.calebpower.bonemesh.server.ServerNode;
 
+/**
+ * A discovery message to share a list of known nodes.
+ * 
+ * @author Caleb L. Power
+ */
 public class DiscoveryMessage extends Message {
   
+  /**
+   * Overloaded constructor for the discovery message.
+   * 
+   * @param sendingNode the node of origination
+   * @param knownNodes a collection containing all known nodes
+   */
   public DiscoveryMessage(ServerNode sendingNode, Collection<ServerNode> knownNodes) {
     super(sendingNode.getName(), Action.DISCOVER, null);
     JSONArray nodeArray = new JSONArray();

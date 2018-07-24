@@ -2,14 +2,47 @@ package com.calebpower.bonemesh.message;
 
 import org.json.JSONObject;
 
+/**
+ * A generic message to be sent to a target node.
+ * 
+ * @author Caleb L. Power
+ */
 public class Message extends JSONObject {
   
+  /**
+   * A particular action associated with the message.
+   * 
+   * @author Caleb L. Power
+   */
   public static enum Action {
+    /**
+     * Acknowledgement message.
+     */
     ACK,
+    
+    /**
+     * Initialization request.
+     */
     INIT,
+    
+    /**
+     * Death note.
+     */
     DEATH,
+    
+    /**
+     * Discovery message.
+     */
     DISCOVER,
+    
+    /**
+     * Transmission request.
+     */
     TRANSMIT,
+    
+    /**
+     * Welfare check.
+     */
     WELFARE;
   }
   

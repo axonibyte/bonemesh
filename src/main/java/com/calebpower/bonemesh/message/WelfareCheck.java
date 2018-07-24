@@ -4,6 +4,12 @@ import org.json.JSONObject;
 
 import com.calebpower.bonemesh.server.ServerNode;
 
+/**
+ * A server welfare check.
+ * TODO in the future replace realtime checks with on-demand checks
+ * 
+ * @author Caleb Power
+ */
 public class WelfareCheck extends Message {
   
   public WelfareCheck(ServerNode sendingNode) {

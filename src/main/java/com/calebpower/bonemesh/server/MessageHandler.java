@@ -19,10 +19,20 @@ import com.calebpower.bonemesh.message.DiscoveryMessage;
 import com.calebpower.bonemesh.message.InitRequest;
 import com.calebpower.bonemesh.message.Message.Action;
 
+/**
+ * Handles incoming messages.
+ * 
+ * @author Caleb L. Power
+ */
 public class MessageHandler implements Runnable {
   
   private SocketListener socketListener = null;
   
+  /**
+   * Overloaded constructor to initialize the message handler.
+   * 
+   * @param socketListener the socket listener
+   */
   public MessageHandler(SocketListener socketListener) {
     this.socketListener = socketListener;
   }
@@ -97,7 +107,7 @@ public class MessageHandler implements Runnable {
               boneMesh.dispatch(new DiscoveryMessage(boneMesh.getThisServer(), boneMesh.getKnownNodes()));
               break;
             case TRANSMIT:
-              //TODO do things here
+              //TODO do things here (generic message handling)
               break;
             case WELFARE:
               boneMesh.log("Received welfare check from "
@@ -114,20 +124,6 @@ public class MessageHandler implements Runnable {
             default:
               break;
           }
-          
-          /*
-          } else {
-            ServerNode serverNode = boneMesh.getNode(boneMeshObject.getString("node"));
-            response.put("backbone", new JSONObject()
-                .put("status", "ok"));
-            if(serverNode != null) {
-              for(String key : boneMesh.getListeners().keySet()) {
-                if(response.has(key)) continue;
-                response.put(key, boneMesh.getListeners().get(key).reactToJSON(message));
-              }
-            }
-          }
-          */
 
           writer.println(response.toString());
           writer.flush();

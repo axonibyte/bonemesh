@@ -8,12 +8,22 @@ import com.calebpower.bonemesh.message.DeathNote;
 import com.calebpower.bonemesh.message.InitRequest;
 import com.calebpower.bonemesh.message.WelfareCheck;
 
+/**
+ * Watches nodes to ensure that they are recovered in the event of a loss of connection.
+ * 
+ * @author Caleb L. Power
+ */
 public class NodeWatcher implements Runnable {
   
   private static final int MAX_RETRIES = 3;
   
   private BoneMesh boneMesh = null;
   
+  /**
+   * Overloaded constructor to link the node watcher with the BoneMesh network.
+   * 
+   * @param boneMesh BoneMesh instance
+   */
   public NodeWatcher(BoneMesh boneMesh) {
     this.boneMesh = boneMesh;
   }

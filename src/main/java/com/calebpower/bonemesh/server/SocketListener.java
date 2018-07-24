@@ -9,6 +9,12 @@ import java.util.List;
 
 import com.calebpower.bonemesh.BoneMesh;
 
+/**
+ * Listens to incoming connections and dispatches aid connections to the
+ * appropriate handler(s).
+ * 
+ * @author Caleb L. Power
+ */
 public class SocketListener implements Runnable {
   
   private BoneMesh boneMesh = null;
@@ -16,6 +22,12 @@ public class SocketListener implements Runnable {
   private List<Socket> socketPool = null;
   private ServerSocket server = null;
   
+  /**
+   * Overloaded constructor to set the BoneMesh instance and listening port.
+   * 
+   * @param boneMesh the BoneMesh instance
+   * @param port the listening port number
+   */
   public SocketListener(BoneMesh boneMesh, int port) {
     this.boneMesh = boneMesh;
     this.port = port;
@@ -51,6 +63,11 @@ public class SocketListener implements Runnable {
     }
   }
   
+  /**
+   * Retrieves the listening port number
+   * 
+   * @return int representation of the listening port
+   */
   public int getPort() {
     while(server == null) try {
       Thread.sleep(500L);
@@ -58,10 +75,20 @@ public class SocketListener implements Runnable {
     return server.getLocalPort();
   }
   
+  /**
+   * Retrieves the current BoneMesh instance.
+   * 
+   * @return BoneMesh the BoneMesh instance
+   */
   public BoneMesh getBoneMesh() {
     return boneMesh;
   }
   
+  /**
+   * Retrieves the socket pool.
+   * 
+   * @return List containing pending sockets
+   */
   public List<Socket> getSocketPool() {
     return socketPool;
   }

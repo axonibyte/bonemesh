@@ -30,6 +30,11 @@ import com.calebpower.bonemesh.server.PayloadDispatcher;
 import com.calebpower.bonemesh.server.ServerNode;
 import com.calebpower.bonemesh.server.SocketListener;
 
+/**
+ * Virtual Mesh Network for Java.
+ * 
+ * @author Caleb L. Power
+ */
 public class BoneMesh {
   
   private Map<String, BoneMeshDataListener> dataListeners = null;
@@ -51,6 +56,15 @@ public class BoneMesh {
     log("Loading BoneMeshServer " + name + "...");
   }
   
+  /**
+   * Creates a new BoneMesh instance.
+   * 
+   * @param name the name of the server
+   * @param targetIPs the IP addresses to attempt to connect to
+   * @param targetPorts the ports to attempt to connect to
+   * @param hostPort the listening port of this server
+   * @return BoneMesh a new BoneMesh instance
+   */
   public static BoneMesh newInstance(String name, String[] targetIPs, int[] targetPorts, int hostPort) {
     
     try {
@@ -143,26 +157,64 @@ public class BoneMesh {
     return null;
   }
   
+  /**
+   * Creates a new BoneMesh instance.
+   * 
+   * @param name the name of this BoneMesh instance
+   * @param targetIP a single IP address to connect to
+   * @param targetPort a target port to connect to
+   * @param hostPort the listening port for this server
+   * @return BoneMesh a new BoneMesh instance
+   */
   public static BoneMesh newInstance(String name, String targetIP, int targetPort, int hostPort) {
     String[] targetIPs = new String[] { targetIP };
     int[] targetPorts = new int[] { targetPort };
     return newInstance(name, targetIPs, targetPorts, hostPort);
   }
   
+  /**
+   * Creates a new BoneMesh instance.
+   * 
+   * @param name the name of this BoneMesh instance
+   * @param targetIPs a sequential list of IP addresses to connect to
+   * @param targetPorts a sequential list of port numbers to connect to
+   * @return BoneMesh a new BoneMesh instance
+   */
   public static BoneMesh newInstance(String name, String[] targetIPs, int[] targetPorts) {
     return newInstance(name, targetIPs, targetPorts, 0);
   }
   
+  /**
+   * Creates a new BoneMesh instance.
+   * 
+   * @param name the name of this BoneMesh instance
+   * @param targetIP an IP address to connect to
+   * @param targetPort a port to connect to
+   * @return BoneMesh a new BoneMesh instance
+   */
   public static BoneMesh newInstance(String name, String targetIP, int targetPort) {
     String[] targetIPs = new String[] { targetIP };
     int[] targetPorts = new int[] { targetPort } ;
     return newInstance(name, targetIPs, targetPorts);
   }
   
+  /**
+   * Creates a new BoneMesh instance
+   * 
+   * @param name the name of this BoneMesh server
+   * @param hostPort the listening port for this BoneMesh server
+   * @return BoneMesh a new BoneMesh instance
+   */
   public static BoneMesh newInstance(String name, int hostPort) {
     return newInstance(name, new String[] { }, new int[] { }, hostPort);
   }
-
+  
+  /**
+   * Registers a data listener for incoming messages.
+   * 
+   * @param listener the data listener
+   * @param name the name of the plugin that is utilizing the data listener
+   */
   public void registerDataListener(BoneMeshDataListener listener, String name) {
     if(dataListeners.containsValue(listener))
       deregisterDataListener(listener);
@@ -171,11 +223,21 @@ public class BoneMesh {
     dataListeners.put(name, listener);
   }
   
+  /**
+   * Deregisters a particular data listener.
+   * 
+   * @param name the name of the listener to deregister
+   */
   public void deregisterDataListener(String name) {
     if(dataListeners.containsKey(name))
       dataListeners.remove(name);
   }
   
+  /**
+   * Deregisters a particular data listener.
+   * 
+   * @param listener the listener that should be deregistered
+   */
   public void deregisterDataListener(BoneMeshDataListener listener) {
     List<String> keys = new ArrayList<>();
     for(String listenerKey : dataListeners.keySet())
@@ -186,29 +248,59 @@ public class BoneMesh {
       dataListeners.remove(key);
   }
   
+  /**
+   * Registers an information listener for logging.
+   * 
+   * @param listener the listener that should be registered
+   */
   public void registerInfoListener(BoneMeshInfoListener listener) {
     if(infoListeners.contains(listener))
       deregisterInfoListener(listener);
     infoListeners.add(listener);
   }
   
+  /**
+   * Deregisters an information listener that was used for logging.
+   * 
+   * @param listener the listener that should be deregistered
+   */
   public void deregisterInfoListener(BoneMeshInfoListener listener) {
     infoListeners.remove(listener);
   }
   
+  /**
+   * Logs a message to the various information listeners.
+   * 
+   * @param message the message to be logged
+   */
   public void log(String message) {
     for(BoneMeshInfoListener listener : infoListeners)
       listener.logBoneMeshInfo(message);
   }
   
-  public Map<String, BoneMeshDataListener> getListeners() {
+  /**
+   * Retrieves a map of data listeners.
+   * 
+   * @return Map containing all known data listeners.
+   */
+  public Map<String, BoneMeshDataListener> getDataListeners() {
     return dataListeners;
   }
   
+  /**
+   * Retrieves a collection of all known server nodes.
+   * 
+   * @return Collection containing all known server nodes
+   */
   public Collection<ServerNode> getKnownNodes() {
     return serverNodes.values();
   }
   
+  /**
+   * Retrieves a map of nodes, organized by name.
+   * 
+   * @return Map containing all known server nodes and their names
+   */
   public Map<String, Boolean> getNodeList() {
     Map<String, Boolean> nodeList = new HashMap<>();
     for(String key : serverNodes.keySet())
@@ -216,35 +308,12 @@ public class BoneMesh {
     return nodeList;
   }
   
-  /*
-  public JSONObject generateInitRequest() {
-    JSONArray serverList = new JSONArray();
-    for(String node : serverNodes.keySet()) {
-      ServerNode serverNode = serverNodes.get(node);
-      serverList.put(new JSONObject()
-          .put("name", node)
-          .put("alive", serverNode.isAlive())
-          .put("externalHost", serverNode.getExternalHost())
-          .put("internalHost", serverNode.getInternalHost())
-          .put("port", serverNode.getPort())
-          .put("master", serverNode.isMaster()));
-    }
-    
-    serverList.put(new JSONObject()
-        .put("name", thisServer.getName())
-        .put("alive", true)
-        .put("externalHost", thisServer.getExternalHost())
-        .put("internalHost", thisServer.getInternalHost())
-        .put("port", thisServer.getPort())
-        .put("master", thisServer.isMaster()));
-    
-    return new JSONObject()
-        .put("bonemesh", new JSONObject()
-            .put("action", "init")
-            .put("nodes", serverList));
-  }
-  */
-  
+  /**
+   * Loads a node.
+   * 
+   * @param name the name of the node
+   * @param node JSON object containing node metadata
+   */
   public void loadNode(String name, JSONObject node) {
     if(name == null || thisServer.getName().equals(name)) return;
     if(serverNodes.containsKey(name))
@@ -259,6 +328,11 @@ public class BoneMesh {
     serverNodes.put(name,  serverNode);
   }
   
+  /**
+   * Load several nodes at once.
+   * 
+   * @param nodes JSON array containing node metadata
+   */
   public void loadNodes(JSONArray nodes) {
     try {
       for(Object object : nodes) {
@@ -295,10 +369,27 @@ public class BoneMesh {
       log(node + " (" + (nodeList.get(node) ? "ALIVE" : "DEAD") + ")");
   }
   
+  /**
+   * Checks to see if a server node is loaded.
+   * 
+   * @param node the server node that is to be verified
+   * @return <code>true</code> if the node is loaded or
+   *         <code>false</code> if the node is not loaded
+   */
   public boolean isLoaded(ServerNode node) {
     return serverNodes.containsValue(node);
   }
   
+  /**
+   * Checks to see if a particular IP/port combination is a master node.
+   * Also checks the local host.
+   * 
+   * @param externalIP the external IP to check
+   * @param internalIp the internal IP to check
+   * @param port the port number to check
+   * @return <code>true</code> if the server is a master node or
+   *         <code>false</code> if the server is not a master node
+   */
   public boolean isMaster(String externalIP, String internalIp, int port) {
     System.out.println("Checking if master.");
     for(int i = 0; i < masterIPs.length; i++) {
@@ -313,22 +404,29 @@ public class BoneMesh {
     return false;
   }
   
+  /**
+   * Unloads a node.
+   * 
+   * @param node the name of the node to be unloaded
+   */
   public void unload(String node) {
     log("Unloading " + node + "...");
     serverNodes.remove(node);
   }
 
+  /**
+   * Disconnects this server from the network. 
+   */
   public void disconnect() {
-    /*
-    dispatch(new JSONObject()
-        .put("bonemesh", new JSONObject()
-            .put("action", "die")
-            .put("node", thisServer.getName())));
-            */
     dispatch(new DeathNote(thisServer));
     serverNodes.clear();
   }
   
+  /**
+   * Dispatches some payload to all known servers.
+   * 
+   * @param payload the payload to be dispatched
+   */
   public void dispatch(JSONObject payload) {
     for(ServerNode serverNode : serverNodes.values()) {
       Thread thread = new Thread(new PayloadDispatcher(this, serverNode, injectBonemeshObject(payload)));
@@ -337,12 +435,26 @@ public class BoneMesh {
     }
   }
   
+  /**
+   * Dispatches some payload to a particular server.
+   * 
+   * @param payload the payload to be dispatched
+   * @param serverNode the target server node
+   */
   public void dispatch(JSONObject payload, ServerNode serverNode) {
     Thread thread = new Thread(new PayloadDispatcher(this, serverNode, injectBonemeshObject(payload)));
     thread.setDaemon(true);
     thread.start();
   }
   
+  /**
+   * Dispatches some payload to a particular server.
+   * 
+   * @param payload the payload to be dispatched
+   * @param node the name of the target server node
+   * @return <code>true</code> if the server is known or
+   *         <code>false</code> if the server is unknown
+   */
   public boolean dispatch(JSONObject payload, String node) {
     if(!serverNodes.containsKey(node)) return false;
     Thread thread = new Thread(new PayloadDispatcher(this, serverNodes.get(node), injectBonemeshObject(payload)));
@@ -351,7 +463,7 @@ public class BoneMesh {
     return true;
   }
   
-  private JSONObject injectBonemeshObject(JSONObject json) {
+  private JSONObject injectBonemeshObject(JSONObject json) { //XXX this might not be necessary
     if(!json.has("bonemesh")) {
       json.put("bonemesh", new JSONObject()
           .put("action", "transmit")
@@ -360,10 +472,23 @@ public class BoneMesh {
     return json;
   }
   
+  /**
+   * Retrieves a server node by name.
+   * 
+   * @param name the name of the server to be retrieved
+   * @return ServerNode if it exists or <code>null</code> if it does not exist
+   */
   public ServerNode getNode(String name) {
     return serverNodes.get(name);
   }
   
+  /**
+   * Retrieves a server node by host and ip) {
+   * 
+   * @param host the node's IP address
+   * @param port the node's listening port
+   * @return ServerNode the node if it exists or <code>null</code> if it doesn't
+   */
   public ServerNode getNode(String host, int port) {
     for(ServerNode serverNode : serverNodes.values())
       if(serverNode.getPort() == port
@@ -374,6 +499,11 @@ public class BoneMesh {
     return null;
   }
   
+  /**
+   * Retrieves this BoneMesh server.
+   * 
+   * @return ServerNode this server node
+   */
   public ServerNode getThisServer() {
     return thisServer;
   }
