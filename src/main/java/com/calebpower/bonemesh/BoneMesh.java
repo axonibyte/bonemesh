@@ -246,7 +246,7 @@ public class BoneMesh {
   */
   
   public void loadNode(String name, JSONObject node) {
-    if(name == null) return;
+    if(name == null || thisServer.getName().equals(name)) return;
     if(serverNodes.containsKey(name))
       serverNodes.remove(name);
     ServerNode serverNode = new ServerNode(

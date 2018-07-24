@@ -16,6 +16,7 @@ import org.json.JSONObject;
 import com.calebpower.bonemesh.BoneMesh;
 import com.calebpower.bonemesh.message.AckMessage;
 import com.calebpower.bonemesh.message.DiscoveryMessage;
+import com.calebpower.bonemesh.message.InitRequest;
 import com.calebpower.bonemesh.message.Message.Action;
 
 public class MessageHandler implements Runnable {
@@ -101,6 +102,15 @@ public class MessageHandler implements Runnable {
             case WELFARE:
               boneMesh.log("Received welfare check from "
                   + (boneMeshObject.has("from") ? boneMeshObject.getString("from") : "an unknown server") + ".");
+              if(boneMeshObject.has("from") && boneMesh.getNode(boneMeshObject.getString("from")) == null) {
+                boneMesh.dispatch(new InitRequest(boneMesh.getThisServer()),
+                    new ServerNode(boneMesh,
+                        boneMeshObject.getString("from"),
+                        message.getJSONObject("payload").getString("externalHost"),
+                        message.getJSONObject("payload").getString("internalHost"),
+                        message.getJSONObject("payload").getInt("port"),
+                        false));
+              }
             default:
               break;
           }
