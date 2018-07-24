@@ -35,7 +35,7 @@ public class NodeWatcher implements Runnable {
       } catch(InterruptedException e) { }
       
       boneMesh.log("Dispatching ack message...");
-      boneMesh.dispatch(new WelfareCheck(boneMesh.getThisServer()));
+      boneMesh.dispatchToAll(new WelfareCheck(boneMesh.getThisServer()));
 
       try {
         Thread.sleep(5000L);

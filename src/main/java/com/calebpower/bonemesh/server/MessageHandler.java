@@ -14,6 +14,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import com.calebpower.bonemesh.BoneMesh;
+import com.calebpower.bonemesh.listener.BoneMeshDataListener;
 import com.calebpower.bonemesh.message.AckMessage;
 import com.calebpower.bonemesh.message.DiscoveryMessage;
 import com.calebpower.bonemesh.message.InitRequest;
@@ -80,6 +81,7 @@ public class MessageHandler implements Runnable {
         JSONObject message = new JSONObject(new String(payload));
         JSONObject response = null;
         JSONObject boneMeshObject = null;
+        JSONObject payloadObject = null;
         Action action = null;
         
         if(message.has("bonemesh")
@@ -88,6 +90,9 @@ public class MessageHandler implements Runnable {
                 .has("action")) {
           boneMeshObject = message.getJSONObject("bonemesh");
           action = Action.valueOf(boneMeshObject.getString("action"));
+          
+          if(message.has("payload"))
+            payloadObject = message.getJSONObject("payload");
         }
         
         if(action == null) {
@@ -95,34 +100,38 @@ public class MessageHandler implements Runnable {
         } else {
           response = new AckMessage(boneMesh.getThisServer(), true);
           switch(action) {
-            case DEATH:
-              boneMesh.unload(boneMeshObject.getString("from"));
-              break;
-            case DISCOVER: //here take unknown servers and send init requests to each
-              //the old one did boneMesh.loadNodes(...)
-              boneMesh.loadNodes(message.getJSONObject("payload").getJSONArray("nodes"));
-              break;
-            case INIT: //here just straight up load the server, override if necessary
-              boneMesh.loadNode(boneMeshObject.getString("from"), message.getJSONObject("payload"));
-              boneMesh.dispatch(new DiscoveryMessage(boneMesh.getThisServer(), boneMesh.getKnownNodes()));
-              break;
-            case TRANSMIT:
-              //TODO do things here (generic message handling)
-              break;
-            case WELFARE:
-              boneMesh.log("Received welfare check from "
-                  + (boneMeshObject.has("from") ? boneMeshObject.getString("from") : "an unknown server") + ".");
-              if(boneMeshObject.has("from") && boneMesh.getNode(boneMeshObject.getString("from")) == null) {
-                boneMesh.dispatch(new InitRequest(boneMesh.getThisServer()),
-                    new ServerNode(boneMesh,
-                        boneMeshObject.getString("from"),
-                        message.getJSONObject("payload").getString("externalHost"),
-                        message.getJSONObject("payload").getString("internalHost"),
-                        message.getJSONObject("payload").getInt("port"),
-                        false));
-              }
-            default:
-              break;
+          case ACK:
+            boneMesh.log("Received acknowledgement from " + boneMeshObject.getString("from") +
+                " (status = " + payloadObject.getString("status") + ")");
+          case DEATH:
+            boneMesh.unload(boneMeshObject.getString("from"));
+            break;
+          case DISCOVER: //here take unknown servers and send init requests to each
+            boneMesh.loadNodes(payloadObject.getJSONArray("nodes"));
+            break;
+          case INIT: //here just straight up load the server, override if necessary
+            boneMesh.loadNode(boneMeshObject.getString("from"), payloadObject);
+            boneMesh.dispatchToAll(new DiscoveryMessage(boneMesh.getThisServer(), boneMesh.getKnownNodes()));
+            break;
+          case TRANSMIT:
+            boneMesh.log("Transmission received from " + boneMeshObject.getString("from") + ".");
+            String listenerID = payloadObject.has("listenerID") ? payloadObject.getString("listenerID") : null;
+            for(BoneMeshDataListener dataListener : boneMesh.getDataListeners())
+              if(dataListener.eavesdrop() || listenerID == null || dataListener.getID().equals(listenerID))
+                dataListener.reactToJSON(message);
+            break;
+          case WELFARE:
+            boneMesh.log("Received welfare check from "
+                + (boneMeshObject.has("from") ? boneMeshObject.getString("from") : "an unknown server") + ".");
+            if(boneMeshObject.has("from") && boneMesh.getNode(boneMeshObject.getString("from")) == null) {
+              boneMesh.dispatch(new InitRequest(boneMesh.getThisServer()),
+                  new ServerNode(boneMesh,
+                      boneMeshObject.getString("from"),
+                      payloadObject.getString("externalHost"),
+                      payloadObject.getString("internalHost"),
+                      payloadObject.getInt("port"),
+                      false));
+            }
           }
 
           writer.println(response.toString());

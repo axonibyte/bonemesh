@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArraySet;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -25,6 +26,7 @@ import com.calebpower.bonemesh.listener.BoneMeshInfoListener;
 import com.calebpower.bonemesh.message.DeathNote;
 import com.calebpower.bonemesh.message.DiscoveryMessage;
 import com.calebpower.bonemesh.message.InitRequest;
+import com.calebpower.bonemesh.message.TransmitRequest;
 import com.calebpower.bonemesh.server.NodeWatcher;
 import com.calebpower.bonemesh.server.PayloadDispatcher;
 import com.calebpower.bonemesh.server.ServerNode;
@@ -37,9 +39,9 @@ import com.calebpower.bonemesh.server.SocketListener;
  */
 public class BoneMesh {
   
-  private Map<String, BoneMeshDataListener> dataListeners = null;
   private Map<String, ServerNode> serverNodes = null;
   private ServerNode thisServer = null;
+  private Set<BoneMeshDataListener> dataListeners = null;
   private Set<BoneMeshInfoListener> infoListeners = null;
   private SocketListener socketListener = null;
   private Thread socketListenerThread = null;
@@ -48,8 +50,8 @@ public class BoneMesh {
   private int[] masterPorts = null;
   
   private BoneMesh(String name, String[] masterIPs, int[] masterPorts) throws BoneMeshInitializationException {
-    this.dataListeners = new ConcurrentHashMap<>();
-    this.infoListeners = new HashSet<>();
+    this.dataListeners = new CopyOnWriteArraySet<>();
+    this.infoListeners = new CopyOnWriteArraySet<>();
     this.serverNodes = new ConcurrentHashMap<>();
     this.masterIPs = masterIPs;
     this.masterPorts = masterPorts;
@@ -213,24 +215,11 @@ public class BoneMesh {
    * Registers a data listener for incoming messages.
    * 
    * @param listener the data listener
-   * @param name the name of the plugin that is utilizing the data listener
    */
-  public void registerDataListener(BoneMeshDataListener listener, String name) {
-    if(dataListeners.containsValue(listener))
+  public void registerDataListener(BoneMeshDataListener listener) {
+    if(dataListeners.contains(listener))
       deregisterDataListener(listener);
-    if(dataListeners.containsKey(name))
-      deregisterDataListener(name);
-    dataListeners.put(name, listener);
-  }
-  
-  /**
-   * Deregisters a particular data listener.
-   * 
-   * @param name the name of the listener to deregister
-   */
-  public void deregisterDataListener(String name) {
-    if(dataListeners.containsKey(name))
-      dataListeners.remove(name);
+    dataListeners.add(listener);
   }
   
   /**
@@ -239,13 +228,8 @@ public class BoneMesh {
    * @param listener the listener that should be deregistered
    */
   public void deregisterDataListener(BoneMeshDataListener listener) {
-    List<String> keys = new ArrayList<>();
-    for(String listenerKey : dataListeners.keySet())
-      if(dataListeners.get(listenerKey).equals(listener))
-        keys.add(listenerKey);
-    
-    for(String key : keys)
-      dataListeners.remove(key);
+    if(dataListeners.contains(listener))
+      dataListeners.remove(listener);
   }
   
   /**
@@ -281,9 +265,9 @@ public class BoneMesh {
   /**
    * Retrieves a map of data listeners.
    * 
-   * @return Map containing all known data listeners.
+   * @return Set containing all known data listeners.
    */
-  public Map<String, BoneMeshDataListener> getDataListeners() {
+  public Set<BoneMeshDataListener> getDataListeners() {
     return dataListeners;
   }
   
@@ -418,7 +402,7 @@ public class BoneMesh {
    * Disconnects this server from the network. 
    */
   public void disconnect() {
-    dispatch(new DeathNote(thisServer));
+    dispatchToAll(new DeathNote(thisServer));
     serverNodes.clear();
   }
   
@@ -426,13 +410,52 @@ public class BoneMesh {
    * Dispatches some payload to all known servers.
    * 
    * @param payload the payload to be dispatched
+   * @param listenerID a data listener's ID
    */
-  public void dispatch(JSONObject payload) {
-    for(ServerNode serverNode : serverNodes.values()) {
-      Thread thread = new Thread(new PayloadDispatcher(this, serverNode, injectBonemeshObject(payload)));
-      thread.setDaemon(true);
-      thread.start();
-    }
+  public void dispatchToAll(JSONObject payload, String listenerID) {
+    for(ServerNode serverNode : serverNodes.values())
+      dispatch(payload, serverNode, listenerID);
+  }
+  
+  /**
+   * Dispatches some payload to a particular server.
+   * 
+   * @param payload the payload to be dispatched
+   * @param serverNode the target server node
+   * @param listenerID a data listener's ID
+   */
+  public void dispatch(JSONObject payload, ServerNode serverNode, String listenerID) {
+    if(!payload.has("bonemesh"))
+      payload = new TransmitRequest(thisServer, payload, listenerID);
+    
+    Thread thread = new Thread(new PayloadDispatcher(this, serverNode, payload));
+    thread.setDaemon(true);
+    thread.start();
+  }
+  
+  /**
+   * Dispatches some payload to a particular server.
+   * 
+   * @param payload the payload to be dispatched
+   * @param node the name of the target server node
+   * @param listenerID a data listener's ID
+   * @return <code>true</code> if the server is known or
+   *         <code>false</code> if the server is unknown
+   */
+  public boolean dispatch(JSONObject payload, String node, String listenerID) {
+    if(!serverNodes.containsKey(node)) return false;
+    dispatch(payload, serverNodes.get(node), listenerID);
+    return true;
+  }
+  
+  /**
+   * Dispatches some payload to all known servers.
+   * 
+   * @param payload the payload to be dispatched
+   */
+  public void dispatchToAll(JSONObject payload) {
+    for(ServerNode serverNode : serverNodes.values())
+      dispatch(payload, serverNode, null);
   }
   
   /**
@@ -442,7 +465,10 @@ public class BoneMesh {
    * @param serverNode the target server node
    */
   public void dispatch(JSONObject payload, ServerNode serverNode) {
-    Thread thread = new Thread(new PayloadDispatcher(this, serverNode, injectBonemeshObject(payload)));
+    if(!payload.has("bonemesh"))
+      payload = new TransmitRequest(thisServer, payload, null);
+    
+    Thread thread = new Thread(new PayloadDispatcher(this, serverNode, payload));
     thread.setDaemon(true);
     thread.start();
   }
@@ -456,20 +482,7 @@ public class BoneMesh {
    *         <code>false</code> if the server is unknown
    */
   public boolean dispatch(JSONObject payload, String node) {
-    if(!serverNodes.containsKey(node)) return false;
-    Thread thread = new Thread(new PayloadDispatcher(this, serverNodes.get(node), injectBonemeshObject(payload)));
-    thread.setDaemon(true);
-    thread.start();
-    return true;
-  }
-  
-  private JSONObject injectBonemeshObject(JSONObject json) { //XXX this might not be necessary
-    if(!json.has("bonemesh")) {
-      json.put("bonemesh", new JSONObject()
-          .put("action", "transmit")
-          .put("node", thisServer.getName()));
-    }
-    return json;
+    return dispatch(payload, node, null);
   }
   
   /**
