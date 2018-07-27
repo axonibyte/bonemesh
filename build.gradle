@@ -1,5 +1,3 @@
-
-
 plugins {
   id "com.github.johnrengelman.shadow" version "2.0.1"
 }
@@ -17,6 +15,10 @@ repositories {
     url "http://artifactory.calebpower.com/artifactory/meep-deps"
   }
 }
+
+group = theGroup
+version = theVersion
+sourceCompatibility = theSourceCompatibility
 
 dependencies {
   //this dependency is exported to consumers, that is to say found on their compile classpath.
@@ -41,9 +43,9 @@ eclipse {
 
 shadowJar {
   shadowJar {
-    baseName = 'BoneMesh'
+    baseName = theName
     classifier = null
-    version = null
+    version = theVersion
   }
 }
 
