@@ -100,8 +100,6 @@ public class BoneMesh {
         
       BoneMesh boneMesh = new BoneMesh(name, targetIPs, targetPorts);
       
-      System.out.println("Size = " + targetIPs.length + " " + targetPorts.length + " " + boneMesh.masterIPs.length + " " + boneMesh.masterPorts.length);
-      
       String externalIP = null;
       String internalIP = null;
       
@@ -375,10 +373,7 @@ public class BoneMesh {
    *         <code>false</code> if the server is not a master node
    */
   public boolean isMaster(String externalIP, String internalIp, int port) {
-    System.out.println("Checking if master.");
     for(int i = 0; i < masterIPs.length; i++) {
-      System.out.println("comparing " + externalIP + " and " + internalIp + " to " + masterIPs[i] + " and "
-          + port + " to " + masterPorts[i] + ".");
       if(masterPorts[i] == port
           && (masterIPs[i].equals("127.0.0.1")
               || masterIPs[i].equals(externalIP)
