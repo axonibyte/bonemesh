@@ -11,7 +11,7 @@ import java.net.Socket;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import com.calebpower.bonemesh.BoneMesh;
+import com.calebpower.bonemesh.BoneMeshOld;
 import com.calebpower.bonemesh.server.ServerNode.SubnetPreference;
 
 /**
@@ -21,18 +21,18 @@ import com.calebpower.bonemesh.server.ServerNode.SubnetPreference;
  */
 public class PayloadDispatcher implements Runnable {
   
-  private BoneMesh boneMesh = null;
+  private BoneMeshOld boneMesh = null;
   private JSONObject payload = null;
   private ServerNode node = null;
   
   /**
    * Overloaded constructor to initialize the payload dispatcher.
    * 
-   * @param boneMesh BoneMesh instance
+   * @param boneMesh BoneMeshOld instance
    * @param node the target node
    * @param payload the payload to deliver
    */
-  public PayloadDispatcher(BoneMesh boneMesh, ServerNode node, JSONObject payload) {
+  public PayloadDispatcher(BoneMeshOld boneMesh, ServerNode node, JSONObject payload) {
     this.boneMesh = boneMesh;
     this.node = node;
     this.payload = payload;

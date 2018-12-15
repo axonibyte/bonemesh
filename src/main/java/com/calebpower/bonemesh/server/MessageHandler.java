@@ -13,7 +13,7 @@ import java.util.List;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import com.calebpower.bonemesh.BoneMesh;
+import com.calebpower.bonemesh.BoneMeshOld;
 import com.calebpower.bonemesh.listener.BoneMeshDataListener;
 import com.calebpower.bonemesh.message.AckMessage;
 import com.calebpower.bonemesh.message.DiscoveryMessage;
@@ -39,7 +39,7 @@ public class MessageHandler implements Runnable {
   }
 
   @Override public void run() {
-    BoneMesh boneMesh = socketListener.getBoneMesh();
+    BoneMeshOld boneMesh = socketListener.getBoneMesh();
     Socket socket = null;
     
     for(;;) {

@@ -1,15 +1,15 @@
 package com.calebpower.bonemesh.server;
 
-import com.calebpower.bonemesh.BoneMesh;
+import com.calebpower.bonemesh.BoneMeshOld;
 
 /**
- * Representation of a BoneMesh server node on the network.
+ * Representation of a BoneMeshOld server node on the network.
  * 
  * @author Caleb L. Power
  */
 public class ServerNode {
   
-  private BoneMesh boneMesh = null;
+  private BoneMeshOld boneMesh = null;
   private boolean eavesdrop = false;
   private boolean master = false;
   private int deathCount = 0;
@@ -47,9 +47,9 @@ public class ServerNode {
   }
   
   /**
-   * Overloaded constructor to instantiate a BoneMesh server node.
+   * Overloaded constructor to instantiate a BoneMeshOld server node.
    * 
-   * @param boneMesh BoneMesh instance
+   * @param boneMesh BoneMeshOld instance
    * @param name the name of the server node
    * @param externalHost the node's external host (internet)
    * @param internalHost the node's internal host (intranet)
@@ -57,7 +57,7 @@ public class ServerNode {
    * @param eavesdrop <code>true</code> to eavesdrop,
    *                  <code>false</code> to not eavesdrop //XXX deprecated
    */
-  public ServerNode(BoneMesh boneMesh, String name, String externalHost,
+  public ServerNode(BoneMeshOld boneMesh, String name, String externalHost,
       String internalHost, int port, boolean eavesdrop) {
     this.boneMesh = boneMesh;
     this.name = name;

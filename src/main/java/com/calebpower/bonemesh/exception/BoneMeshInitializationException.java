@@ -2,7 +2,7 @@ package com.calebpower.bonemesh.exception;
 
 /**
  * Exception to be thrown if there is an error during the initialization of the
- * BoneMesh network.
+ * BoneMeshOld network.
  * 
  * @author Caleb L. Power
  */

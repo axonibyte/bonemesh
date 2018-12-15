@@ -3,14 +3,14 @@ package com.calebpower.bonemesh.listener;
 import org.json.JSONObject;
 
 /**
- * A BoneMesh data listener.
+ * A BoneMeshOld data listener.
  * 
  * @author Caleb L. Power
  */
 public interface BoneMeshDataListener {
   
   /**
-   * React to a BoneMesh JSON message sent over the network.
+   * React to a BoneMeshOld JSON message sent over the network.
    * 
    * @param message the message to react to
    */

@@ -3,7 +3,7 @@ package com.calebpower.bonemesh.server;
 import java.util.HashMap;
 import java.util.Map;
 
-import com.calebpower.bonemesh.BoneMesh;
+import com.calebpower.bonemesh.BoneMeshOld;
 import com.calebpower.bonemesh.message.DeathNote;
 import com.calebpower.bonemesh.message.InitRequest;
 import com.calebpower.bonemesh.message.WelfareCheck;
@@ -17,14 +17,14 @@ public class NodeWatcher implements Runnable {
   
   private static final int MAX_RETRIES = 3;
   
-  private BoneMesh boneMesh = null;
+  private BoneMeshOld boneMesh = null;
   
   /**
-   * Overloaded constructor to link the node watcher with the BoneMesh network.
+   * Overloaded constructor to link the node watcher with the BoneMeshOld network.
    * 
-   * @param boneMesh BoneMesh instance
+   * @param boneMesh BoneMeshOld instance
    */
-  public NodeWatcher(BoneMesh boneMesh) {
+  public NodeWatcher(BoneMeshOld boneMesh) {
     this.boneMesh = boneMesh;
   }
   

@@ -7,7 +7,7 @@ import java.net.Socket;
 import java.util.LinkedList;
 import java.util.List;
 
-import com.calebpower.bonemesh.BoneMesh;
+import com.calebpower.bonemesh.BoneMeshOld;
 
 /**
  * Listens to incoming connections and dispatches aid connections to the
@@ -17,18 +17,18 @@ import com.calebpower.bonemesh.BoneMesh;
  */
 public class SocketListener implements Runnable {
   
-  private BoneMesh boneMesh = null;
+  private BoneMeshOld boneMesh = null;
   private int port = 0;
   private List<Socket> socketPool = null;
   private ServerSocket server = null;
   
   /**
-   * Overloaded constructor to set the BoneMesh instance and listening port.
+   * Overloaded constructor to set the BoneMeshOld instance and listening port.
    * 
-   * @param boneMesh the BoneMesh instance
+   * @param boneMesh the BoneMeshOld instance
    * @param port the listening port number
    */
-  public SocketListener(BoneMesh boneMesh, int port) {
+  public SocketListener(BoneMeshOld boneMesh, int port) {
     this.boneMesh = boneMesh;
     this.port = port;
     socketPool = new LinkedList<>();
@@ -76,11 +76,11 @@ public class SocketListener implements Runnable {
   }
   
   /**
-   * Retrieves the current BoneMesh instance.
+   * Retrieves the current BoneMeshOld instance.
    * 
-   * @return BoneMesh the BoneMesh instance
+   * @return BoneMeshOld the BoneMeshOld instance
    */
-  public BoneMesh getBoneMesh() {
+  public BoneMeshOld getBoneMesh() {
     return boneMesh;
   }
   
