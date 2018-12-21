@@ -29,7 +29,7 @@ public class Node implements Runnable {
   private PrintWriter output = null;
   private String informalName = null;
   private String ip = null;
-  private Thread myThread = null;
+  private Thread thread = null;
   private UUID uuid = null;
   
   public Node() {
@@ -241,12 +241,15 @@ public class Node implements Runnable {
     return this;
   }
   
-  public void linkThread(Thread thread) {
-    myThread = thread;
+  public Node start() {
+    thread = new Thread(this);
+    thread.setDaemon(true);
+    thread.start();
+    return this;
   }
   
   public void kill() {
-    if(myThread != null) myThread.interrupt();
+    if(thread != null) thread.interrupt();
   }
   
 }

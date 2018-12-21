@@ -7,9 +7,16 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.DefaultParser;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
+
 import com.calebpower.bonemesh.node.Node;
 import com.calebpower.bonemesh.node.NodeMap;
 import com.calebpower.bonemesh.socket.SocketClient;
+import com.calebpower.bonemesh.socket.SocketServer;
 
 /**
  * Virtual Mesh Network for Java.
@@ -21,6 +28,7 @@ public class BoneMesh {
   ExecutorService executor = null;
   private List<Node> nodeList = null; // directly connected nodes
   private NodeMap nodeMap = null; // all known nodes and their known edges
+  private SocketServer server = null;
   private String identifier = null;
   private UUID uuid = null;
   
@@ -31,10 +39,58 @@ public class BoneMesh {
   public BoneMesh(String identifier) {
     this.nodeList = new CopyOnWriteArrayList<>();
     uuid = UUID.randomUUID();
-    if(this.identifier == null)
+    if(identifier == null)
       this.identifier = uuid.toString();
     else this.identifier = identifier;
+    System.out.println("Set identifier as " + this.identifier);
     this.executor = Executors.newSingleThreadExecutor();
+  }
+  
+  public static void main(String[] args) throws ParseException { // this is for testing
+    Options options = new Options();
+    options.addOption("l", "listening_port", true, "Server listening port.");
+    options.addOption("t", "target_nodes", true, "Target nodes.");
+    options.addOption("n", "informal_name", true, "Informal name.");
+    CommandLineParser parser = new DefaultParser();
+    CommandLine cmd = parser.parse(options, args);
+    
+    BoneMesh boneMesh = cmd.hasOption("informal_name")
+        ? new BoneMesh(cmd.getOptionValue("informal_name"))
+            : new BoneMesh();
+    
+    if(cmd.hasOption("listening_port")) {
+      try {
+        int port = Integer.parseInt(cmd.getOptionValue("listening_port"));
+        System.out.println("Spinning up server on port " + port);
+        boneMesh.spinUp(port);
+      } catch(NumberFormatException e){
+        System.out.println("Invalid listening port.");
+        System.exit(1);
+      }
+    }
+    
+    if(cmd.hasOption("target_nodes")) {
+      String[] nodes = cmd.getOptionValue("target_nodes").split(",");
+      for(String node : nodes) {
+        try {
+          String[] host = node.split(":");
+          int port = Integer.parseInt(host[1]);
+          System.out.println("Connecting to " + host[0] + ":" + port);
+          boneMesh.connect(host[0], port);
+        } catch(Exception e) {
+          System.out.println("Exception thrown when parsing for '" + node + "'");
+          System.exit(1);
+        }
+      }
+    }
+    
+    try {
+      for(;;)
+        Thread.sleep(500L);
+    } catch(InterruptedException e) {
+      System.out.println("Exiting.");
+    }
+      
   }
   
   public BoneMesh connect(String ip, int port) {
@@ -46,6 +102,12 @@ public class BoneMesh {
     } catch(Exception e) {
       e.printStackTrace();
     }
+    
+    return this;
+  }
+  
+  public BoneMesh spinUp(int port) {
+    server = new SocketServer(nodeList, port).start();
     return this;
   }
   
@@ -73,12 +135,13 @@ public class BoneMesh {
       }
       if(found == null) { // if we didn't find a node, add it
         nodeList.add(node);
-        Thread thread = new Thread(node);
-        thread.setDaemon(true);
-        thread.start();
+        node.start();
       } else { // make sure to ensure that old (live) connections are favored
-        if(!node.equals(found)) { // the UUIDs are the same, only update informalName
-          
+        if(!node.equals(found)) { // the UUIDs are different, so the old connection needs to be discarded
+          found.kill();
+          nodeList.remove(found);
+          nodeList.add(node);
+          node.start();
         }
       }
       

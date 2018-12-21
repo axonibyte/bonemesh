@@ -29,10 +29,13 @@ public class SocketClient implements Callable<Node> {
   public SocketClient(String ip, int port) {
     this.ip = ip;
     this.port = port;
+    System.out.println("Calling out to server momentarily.");
   }
   
   @Override public Node call() {
     Node node = null;
+    
+    System.out.println("Attempting to connect to some server...");
     
     try(Socket socket = new Socket(ip, port)) {
       socket.setSoTimeout(0);
@@ -42,7 +45,7 @@ public class SocketClient implements Callable<Node> {
         connectionStatus.notifyAll();
       }
       */
-      node = new Node().setSocket(socket); //add socket here
+      node = new Node().setSocket(socket).start(); //add socket here
       // Logger.info("Peer-to-peer client pointed to " + ip + ":" + port);
       // handler.setOutput(out);
       // int input;

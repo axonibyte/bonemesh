@@ -30,6 +30,9 @@ dependencies {
   //this dependency is used internally, and not exposed to consumers on their own compile classpath.
   implementation 'com.google.guava:guava:23.0'
   
+  // https://mvnrepository.com/artifact/commons-cli/commons-cli
+  compile group: 'commons-cli', name: 'commons-cli', version: '1.4'
+  
   //Use JUnit test framework
   //testImplementation 'junit:junit:4.12'
 }
@@ -38,6 +41,12 @@ eclipse {
   classpath {
     downloadJavadoc = true //download javadocs
     downloadSources = true //download sources
+  }
+}
+
+jar {
+  manifest {
+    attributes 'Main-Class': 'com.calebpower.bonemesh.BoneMesh'
   }
 }
 

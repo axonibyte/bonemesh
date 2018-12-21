@@ -17,6 +17,7 @@ public class SocketServer implements Runnable {
   
   private int port = 0;
   private List<Node> nodeList = null;
+  private Thread thread = null;
   
   /**
    * Overloaded constructor for the server.
@@ -29,10 +30,12 @@ public class SocketServer implements Runnable {
   @Override public void run() {
     for(;;) { // keep the server alive
       // Logger.info("Spinning up peer-to-peer server.");
+      System.out.println("Spinning up socket server...");
       
       try(ServerSocket serverSocket = new ServerSocket(port)) {
         Socket clientSocket = null;
         while((clientSocket = serverSocket.accept()) != null) {
+          System.out.println("Accepted connection from some client.");
           clientSocket.setSoTimeout(0);
           BoneMesh.syncNode(nodeList, new Node().setSocket(clientSocket));
           /*
@@ -53,6 +56,13 @@ public class SocketServer implements Runnable {
         */
       }
     }
+  }
+  
+  public SocketServer start() {
+    thread = new Thread(this);
+    thread.setDaemon(true);
+    thread.start();
+    return this;
   }
   
   /**
@@ -77,6 +87,7 @@ public class SocketServer implements Runnable {
         } catch(IOException e) { }
       }
     */
+    if(thread != null) thread.interrupt();
   }
   
   /**
