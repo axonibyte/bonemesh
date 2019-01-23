@@ -1,15 +1,10 @@
 package com.calebpower.bonemesh.socket;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
 import java.net.Socket;
 import java.net.UnknownHostException;
-import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.logging.Logger;
 
+import com.calebpower.bonemesh.BoneMesh;
 import com.calebpower.bonemesh.node.Node;
 
 /**
@@ -17,8 +12,9 @@ import com.calebpower.bonemesh.node.Node;
  * 
  * @author Caleb L. Power
  */
-public class SocketClient implements Callable<Node> {
+public class SocketClient implements Runnable {
 
+  private BoneMesh boneMesh = null;
   private int port = 0;
   private String ip = null;
   private Socket socket = null;
@@ -26,13 +22,14 @@ public class SocketClient implements Callable<Node> {
   /**
    * Overloaded constructor for the client.
    */
-  public SocketClient(String ip, int port) {
+  private SocketClient(BoneMesh boneMesh, String ip, int port) {
+    this.boneMesh = boneMesh;
     this.ip = ip;
     this.port = port;
     System.out.println("Calling out to server momentarily.");
   }
   
-  @Override public Node call() {
+  @Override public void run() {
     Node node = null;
     
     System.out.println("Attempting to connect to some server...");
@@ -45,7 +42,10 @@ public class SocketClient implements Callable<Node> {
         connectionStatus.notifyAll();
       }
       */
-      node = new Node().setSocket(socket).start(); //add socket here
+      // node = new Node().setSocket(socket).start(); //add socket here
+      
+      IncomingDataHandler.build(boneMesh, socket);
+      
       // Logger.info("Peer-to-peer client pointed to " + ip + ":" + port);
       // handler.setOutput(out);
       // int input;
@@ -67,8 +67,6 @@ public class SocketClient implements Callable<Node> {
         Logger.error("Peer-to-peer client couldn't get I/O for the connection to " + ip);
       */
     }
-    
-    return node;
   }
   
   /**
@@ -78,6 +76,14 @@ public class SocketClient implements Callable<Node> {
    */
   public String getTarget() {
     return ip + ":" + port;
+  }
+  
+  public static SocketClient build(BoneMesh boneMesh, String ip, int port) {
+    SocketClient socketClient = new SocketClient(boneMesh, ip, port);
+    Thread thread = new Thread(socketClient);
+    thread.setDaemon(true);
+    thread.start();
+    return socketClient;
   }
   
 }

@@ -14,16 +14,16 @@ import com.calebpower.bonemesh.node.Node;
  * @author Caleb L. Power
  */
 public class SocketServer implements Runnable {
-  
+
+  private BoneMesh boneMesh = null;
   private int port = 0;
-  private List<Node> nodeList = null;
   private Thread thread = null;
   
   /**
    * Overloaded constructor for the server.
    */
-  public SocketServer(List<Node> nodeList, int port) {
-    this.nodeList = nodeList;
+  public SocketServer(BoneMesh boneMesh, int port) {
+    this.boneMesh = boneMesh;
     this.port = port;
   }
   
@@ -37,7 +37,8 @@ public class SocketServer implements Runnable {
         while((clientSocket = serverSocket.accept()) != null) {
           System.out.println("Accepted connection from some client.");
           clientSocket.setSoTimeout(0);
-          BoneMesh.syncNode(nodeList, new Node().setSocket(clientSocket));
+          IncomingDataHandler.build(boneMesh, clientSocket);
+          // BoneMesh.syncNode(nodeList, new Node().setSocket(clientSocket));
           /*
           this.serverSocket = serverSocket;
           this.clientSocket = clientSocket;

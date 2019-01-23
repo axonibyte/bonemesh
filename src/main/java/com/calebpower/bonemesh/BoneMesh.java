@@ -94,24 +94,28 @@ public class BoneMesh {
   }
   
   public BoneMesh connect(String ip, int port) {
-    Future<Node> nodePromise = executor.submit(new SocketClient(ip, port));
-    try {
-      Node node = nodePromise.get();
-      if(node != null)
-        syncNode(nodeList, node);
-    } catch(Exception e) {
-      e.printStackTrace();
-    }
+    SocketClient.build(this, ip, port);
+    
+    /*
+      Future<Node> nodePromise = executor.submit(new SocketClient(ip, port));
+      try {
+        Node node = nodePromise.get();
+        if(node != null)
+          syncNode(nodeList, node);
+      } catch(Exception e) {
+        e.printStackTrace();
+      }
+    */
     
     return this;
   }
   
   public BoneMesh spinUp(int port) {
-    server = new SocketServer(nodeList, port).start();
+    server = new SocketServer(this, port).start();
     return this;
   }
   
-  public static void syncNode(List<Node> nodeList, Node node) {
+  public void syncNode(Node node) {
     /*
      * TODO:
      * 1. Iterate through current list of nodes. Search for UUID match.
@@ -135,13 +139,13 @@ public class BoneMesh {
       }
       if(found == null) { // if we didn't find a node, add it
         nodeList.add(node);
-        node.start();
+        //node.start();
       } else { // make sure to ensure that old (live) connections are favored
         if(!node.equals(found)) { // the UUIDs are different, so the old connection needs to be discarded
-          found.kill();
+          //found.kill();
           nodeList.remove(found);
           nodeList.add(node);
-          node.start();
+          //node.start();
         }
       }
       

@@ -6,6 +6,7 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import com.calebpower.bonemesh.BoneMesh;
 import com.calebpower.bonemesh.exception.BadTxException;
 import com.calebpower.bonemesh.node.Edge;
 import com.calebpower.bonemesh.node.Node;
@@ -13,12 +14,10 @@ import com.calebpower.bonemesh.node.NodeMap;
 
 public class MapTx extends GenericTx {
   
-  private static String MESSAGE_TYPE = "map";
-  
   private NodeMap nodeMap = null;
   
   public MapTx(UUID thisNode, UUID targetNode, NodeMap nodeMap) {
-    super(thisNode, targetNode, MESSAGE_TYPE);
+    super(thisNode, targetNode, TxType.MAP_TX);
     this.nodeMap = new NodeMap().sync(nodeMap);
     JSONArray map = new JSONArray();
     for(Node node : this.nodeMap.getNodes()) {
@@ -39,7 +38,7 @@ public class MapTx extends GenericTx {
   
   public MapTx(JSONObject json) throws BadTxException {
     super(json);
-    validateMessageType(MESSAGE_TYPE);
+    validateMessageType(TxType.MAP_TX);
     nodeMap = new NodeMap();
     
     try {
@@ -76,6 +75,10 @@ public class MapTx extends GenericTx {
       }
       return nodeMap;
     }
+  }
+  
+  @Override public void execute(BoneMesh boneMesh) {
+    // TODO execute map transaction
   }
 
 }
