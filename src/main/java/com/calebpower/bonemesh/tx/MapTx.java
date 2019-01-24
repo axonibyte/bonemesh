@@ -11,6 +11,7 @@ import com.calebpower.bonemesh.exception.BadTxException;
 import com.calebpower.bonemesh.node.Edge;
 import com.calebpower.bonemesh.node.Node;
 import com.calebpower.bonemesh.node.NodeMap;
+import com.calebpower.bonemesh.socket.IncomingDataHandler;
 
 public class MapTx extends GenericTx {
   
@@ -77,7 +78,8 @@ public class MapTx extends GenericTx {
     }
   }
   
-  @Override public void execute(BoneMesh boneMesh) {
+  @Override public void followUp(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
+    linkNode(boneMesh, incomingDataHandler);
     // TODO execute map transaction
   }
 

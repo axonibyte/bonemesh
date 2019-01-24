@@ -115,14 +115,33 @@ public class BoneMesh {
     return this;
   }
   
-  public void syncNode(Node node) {
+  public boolean syncNode(Node node) {
+    Node found = null;
+    for(Node n : nodeList)
+      if(node.equals(n)) {
+        found = n;
+        break;
+      }
+    
+    if(found == null && node.getIP() != null)
+      for(Node n : nodeList)
+        if(node.getIP() == n.getIP() && node.getPort() == n.getPort()) {
+          found = n;
+          break;
+        }
+    
+    if(found == null) {
+      nodeList.add(node);
+    } else if(!node.equals(found)) {
+      nodeList.remove(found);
+      nodeList.add(found);
+    } else {
+      return false;
+    }
+    
+    return true;
+    
     /*
-     * TODO:
-     * 1. Iterate through current list of nodes. Search for UUID match.
-     * 2. If found, check if there's an existing connection. If so, keep it, kill the new node.
-     * 3. If found and there's not an existing connection, sync the IP address (if it has one) and connection.
-     * 4. If node is not found, add it to the list.
-     */
     synchronized(nodeList) {
       Node found = null;
       for(Node n : nodeList)
@@ -150,6 +169,7 @@ public class BoneMesh {
       }
       
     }
+    */
   }
   
 }

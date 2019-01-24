@@ -71,37 +71,41 @@ public class IncomingDataHandler implements Runnable {
               // TODO do something with jsonObject here, including calling BoneMesh.syncNode
               // basically, interpret the JSON object at this point in time.
               
-              if(!jsonObject.has("status")) {
-                GenericTx transaction = null;
-                try {
-                  TxType txType = TxType.fromString(jsonObject.getJSONObject("meta").getString("messageType"));
-                  if(txType == null) txType = TxType.GENERIC_TX;
-                  switch(txType) {
-                  case ACK_TX:
-                    transaction = new AckTx(jsonObject);
-                    break;
-                  case MAP_TX:
-                    transaction = new MapTx(jsonObject);
-                    break;
-                  case PING_TX:
-                    transaction = new PingTx(jsonObject);
-                    break;
-                  case GENERIC_TX:
-                  default:
-                    transaction = new GenericTx(jsonObject);
-                    break;
-                  }
-                  
-                  transaction.execute(boneMesh);
+              GenericTx transaction = null;
+              
+              try {
+                TxType txType = TxType.fromString(jsonObject.getJSONObject("meta").getString("messageType"));
+                if(txType == null) txType = TxType.GENERIC_TX;
+                switch(txType) {
+                case ACK_TX:
+                  transaction = new AckTx(jsonObject);
+                  break;
+                case MAP_TX:
+                  transaction = new MapTx(jsonObject);
+                  break;
+                case PING_TX:
+                  transaction = new PingTx(jsonObject);
+                  break;
+                case GENERIC_TX:
+                default:
+                  transaction = new GenericTx(jsonObject);
+                  break;
+                }
+                
+                System.out.println("Received " + txType + " transaction.");
+                
+                if(!transaction.isOfType(TxType.ACK_TX)) {
+                  transaction.followUp(boneMesh, this);
                   
                   send(new JSONObject()
                       .put("status", "ok")
                       .put("data", jsonObject));
-                } catch(Exception e) {
-                  send(new JSONObject()
-                      .put("status", "error")
-                      .put("message", "Malformed transaction."));
                 }
+                
+              } catch(Exception e) {
+                send(new JSONObject()
+                    .put("status", "error")
+                    .put("message", "Malformed transaction."));
               }
                 
             } catch(JSONException e) {

@@ -2,10 +2,13 @@ package com.calebpower.bonemesh.node;
 
 import java.util.UUID;
 
+import com.calebpower.bonemesh.socket.IncomingDataHandler;
+
 public class Node {
   
   private int curlyCount = 0;
   private int port = 0;
+  private IncomingDataHandler incomingDataHandler = null;
   private String informalName = null;
   private String ip = null;
   private Thread thread = null;
@@ -34,7 +37,7 @@ public class Node {
   }
   
   public boolean equals(Node node) {
-    return uuid.compareTo(node.uuid) == 0;
+    return node != null && uuid.compareTo(node.uuid) == 0;
   }
   
   public String getIP() {
@@ -52,6 +55,11 @@ public class Node {
   
   public Node setPort(int port) {
     this.port = port;
+    return this;
+  }
+  
+  public Node setIncomingDataHandler(IncomingDataHandler incomingDataHandler) {
+    this.incomingDataHandler = incomingDataHandler;
     return this;
   }
   

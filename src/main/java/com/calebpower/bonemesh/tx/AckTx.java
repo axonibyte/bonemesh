@@ -6,10 +6,9 @@ import org.json.JSONObject;
 
 import com.calebpower.bonemesh.BoneMesh;
 import com.calebpower.bonemesh.exception.BadTxException;
+import com.calebpower.bonemesh.socket.IncomingDataHandler;
 
 public class AckTx extends GenericTx {
-  
-  private static String MESSAGE_TYPE = "ack";
   
   public AckTx(UUID thisNode, UUID targetNode) {
     super(thisNode, targetNode, TxType.ACK_TX,
@@ -20,9 +19,12 @@ public class AckTx extends GenericTx {
   public AckTx(JSONObject json) throws BadTxException {
     super(json);
     validateMessageType(TxType.ACK_TX);
+    if(json.has("status"))
+      throw new BadTxException("Malformed ACK transaction.");
   }
   
-  @Override public void execute(BoneMesh boneMesh) {
+  @Override public void followUp(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
+    linkNode(boneMesh, incomingDataHandler);
     // TODO execute ack transaction
   }
   

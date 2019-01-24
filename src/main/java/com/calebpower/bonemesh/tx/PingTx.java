@@ -6,6 +6,7 @@ import org.json.JSONObject;
 
 import com.calebpower.bonemesh.BoneMesh;
 import com.calebpower.bonemesh.exception.BadTxException;
+import com.calebpower.bonemesh.socket.IncomingDataHandler;
 
 public class PingTx extends GenericTx {
   
@@ -18,7 +19,8 @@ public class PingTx extends GenericTx {
     validateMessageType(TxType.PING_TX);
   }
   
-  @Override public void execute(BoneMesh boneMesh) {
+  @Override public void followUp(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
+    linkNode(boneMesh, incomingDataHandler);
     // TODO execute ping transaction
   }
   
