@@ -3,9 +3,11 @@ package com.calebpower.bonemesh.socket;
 import java.io.IOException;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.util.concurrent.Callable;
 
 import com.calebpower.bonemesh.BoneMesh;
 import com.calebpower.bonemesh.node.Node;
+import com.calebpower.bonemesh.tx.PingTx;
 
 /**
  * Connects to an external machine to establish a P2P connection.
@@ -30,8 +32,6 @@ public class SocketClient implements Runnable {
   }
   
   @Override public void run() {
-    Node node = null;
-    
     System.out.println("Attempting to connect to some server...");
     
     try(Socket socket = new Socket(ip, port)) {
@@ -44,13 +44,15 @@ public class SocketClient implements Runnable {
       */
       // node = new Node().setSocket(socket).start(); //add socket here
       
-      IncomingDataHandler.build(boneMesh, socket);
+      IncomingDataHandler incomingDataHandler = IncomingDataHandler.build(boneMesh, socket);
+      incomingDataHandler.send(new PingTx(boneMesh.getUUID(), null, boneMesh.getIdentifier()));
       
       // Logger.info("Peer-to-peer client pointed to " + ip + ":" + port);
       // handler.setOutput(out);
       // int input;
       // while((input = in.read()) != -1) handler.queue((char)input);
     } catch(UnknownHostException e) {
+      e.printStackTrace();
       /*
         synchronized(connectionStatus) {
           connectionStatus.setStatus(ConnectionStatus.Status.EXCEPTION_THROWN);
@@ -59,6 +61,7 @@ public class SocketClient implements Runnable {
         Logger.error("Peer-to-peer client couldn't get any information about " + ip);
       */
     } catch(IOException e) {
+      e.printStackTrace();
       /*
         synchronized(connectionStatus) {
           connectionStatus.setStatus(ConnectionStatus.Status.EXCEPTION_THROWN);

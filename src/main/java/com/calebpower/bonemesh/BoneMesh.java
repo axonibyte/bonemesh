@@ -180,6 +180,10 @@ public class BoneMesh {
     return uuid;
   }
   
+  public String getIdentifier() {
+    return identifier;
+  }
+  
   public NodeMap getNodeMap() {
     return nodeMap;
   }
