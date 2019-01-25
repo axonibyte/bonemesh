@@ -16,6 +16,13 @@ public class AckTx extends GenericTx {
           .put("status", "ok"));
   }
   
+  public AckTx(UUID thisNode, UUID targetNode, String errorMessage) {
+    super(thisNode, targetNode, TxType.ACK_TX,
+        new JSONObject()
+          .put("status", "error")
+          .put("message", errorMessage));
+  }
+  
   public AckTx(JSONObject json) throws BadTxException {
     super(json);
     validateMessageType(TxType.ACK_TX);
@@ -25,7 +32,9 @@ public class AckTx extends GenericTx {
   
   @Override public void followUp(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
     linkNode(boneMesh, incomingDataHandler);
-    // TODO execute ack transaction
+    // TODO execute ack transaction (or don't, since this is an ack)
+    boneMesh.getNodeMap().getNode(getOriginNode()).touch();
+    route(boneMesh, incomingDataHandler);
   }
   
 }

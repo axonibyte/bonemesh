@@ -80,7 +80,9 @@ public class MapTx extends GenericTx {
   
   @Override public void followUp(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
     linkNode(boneMesh, incomingDataHandler);
-    // TODO execute map transaction
+    if(!route(boneMesh, incomingDataHandler)) {
+      boneMesh.getNodeMap().sync(nodeMap);
+    }
   }
 
 }

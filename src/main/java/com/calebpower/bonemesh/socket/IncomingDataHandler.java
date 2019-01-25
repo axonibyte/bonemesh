@@ -6,6 +6,7 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Socket;
 import java.util.List;
+import java.util.UUID;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -97,22 +98,19 @@ public class IncomingDataHandler implements Runnable {
                 if(!transaction.isOfType(TxType.ACK_TX)) {
                   transaction.followUp(boneMesh, this);
                   
-                  send(new JSONObject()
-                      .put("status", "ok")
-                      .put("data", jsonObject));
+                  send(new AckTx(boneMesh.getUUID(), UUID.fromString(
+                      transaction
+                        .getJSONObject("meta")
+                        .getString("originNode"))));
                 }
                 
               } catch(Exception e) {
-                send(new JSONObject()
-                    .put("status", "error")
-                    .put("message", "Malformed transaction."));
+                send(new AckTx(boneMesh.getUUID(), null, "Malformed transaction."));
               }
                 
             } catch(JSONException e) {
               // Logger.error("Some JSONException was thrown in the peer-to-peer connection handler. " + e.getMessage());
-              send(new JSONObject()
-                  .put("status", "error")
-                  .put("message", "syntax error: " + e.getMessage()));
+              send(new AckTx(boneMesh.getUUID(), null, e.getMessage()));
             }
             
             dataBuffer.clear();
@@ -120,9 +118,7 @@ public class IncomingDataHandler implements Runnable {
           } else { //Some syntax error.
             // Logger.error("Some JSONException was thrown in the peer-to-peer connection handler (mismatched curly braces).");
             System.out.println("Got some syntax error.");
-            send(new JSONObject()
-                .put("status", "error")
-                .put("message", "syntax error: mismatched curly braces"));
+            send(new AckTx(boneMesh.getUUID(), null, "Syntax error: mismatched curly braces."));
             continue;
           }
         }

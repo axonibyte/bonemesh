@@ -46,7 +46,7 @@ public class GenericTx extends JSONObject {
   public GenericTx(UUID originNode, UUID targetNode, UUID messageID, TxType messageType, JSONObject data) {
     put("meta", new JSONObject()
         .put("originNode", originNode.toString())
-        .put("targetNode", targetNode.toString())
+        .put("targetNode", targetNode == null ? JSONObject.NULL : targetNode.toString())
         .put("messageID", messageID.toString())
         .put("messageType", messageType == null ? TxType.GENERIC_TX : messageType));
     if(data != null) put("data", data);
@@ -75,7 +75,7 @@ public class GenericTx extends JSONObject {
   
   protected void validateMessageType(TxType messageType) throws BadTxException {
     try {
-      if(!getJSONObject("meta").getString("messageType").equalsIgnoreCase(messageType.toString()))
+      if(getMessageType() != messageType)
         throw new BadTxException("The processed message was not of type " + messageType);
     } catch(JSONException e) {
       throw new BadTxException(this, e.getMessage());
@@ -93,13 +93,85 @@ public class GenericTx extends JSONObject {
   protected void linkNode(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
     Node node = new Node()
         .setUUID(getString("originNode"));
-    if(boneMesh.syncNode(node))
+    node = boneMesh.syncNode(node);
+    if(node.getIncomingDataHandler() == null)
       node.setIncomingDataHandler(incomingDataHandler);
+    // TODO investigate whether data handlers need to be closed down or whatever
+  }
+  
+  protected boolean route(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
+    UUID uuid = null;
+    try {
+      uuid = getTargetNode();
+    } catch(IllegalArgumentException e) { }
+    
+    if(uuid == null
+        || getOriginNode().compareTo(boneMesh.getUUID()) != 0) {
+      Node node = uuid == null ? null : boneMesh.getBestRoute(uuid);
+      if(node == null) {
+        System.out.println("Node nod available in map! Refunding transaction.");
+        incomingDataHandler.send(this);
+      } else {
+        System.out.println("Found path via " + node.getInformalName());
+        node.getIncomingDataHandler().send(this);
+      }
+      
+      return true;
+    }
+    
+    return false;
   }
   
   public void followUp(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
     linkNode(boneMesh, incomingDataHandler);
-    // TODO execute generic transaction
+    if(UUID.fromString(getString("targetNode")).compareTo(boneMesh.getUUID()) == 0) {
+      boneMesh.consumePayload(this);
+    } else {
+      Node node = boneMesh.getBestRoute(boneMesh.getUUID());
+      if(node == null) {
+        System.out.println("Node not available in map!! Refunding transaction.");
+        incomingDataHandler.send(this);
+      } else {
+        System.out.println("Found path via " + node.getInformalName());
+        node.getIncomingDataHandler().send(this);
+      }
+    }
+  }
+  
+  public UUID getOriginNode() {
+    try {
+      return UUID.fromString(getJSONObject("meta").getString("originNode"));
+    } catch(JSONException | IllegalArgumentException e) {
+      e.printStackTrace();
+    }
+    return null;
+  }
+  
+  public UUID getTargetNode() {
+    try {
+      return UUID.fromString(getJSONObject("meta").getString("targetNode"));
+    } catch(JSONException | IllegalArgumentException e) {
+      e.printStackTrace();
+    }
+    return null;
+  }
+  
+  public UUID getMessageID() {
+    try {
+      return UUID.fromString(getJSONObject("meta").getString("targetNode"));
+    } catch(JSONException | IllegalArgumentException e) {
+      e.printStackTrace();
+    }
+    return null;
+  }
+  
+  public TxType getMessageType() {
+    try {
+      return TxType.fromString(getJSONObject("meta").getString("messageType"));
+    } catch(JSONException e) {
+      e.printStackTrace();
+    }
+    return null;
   }
   
 }

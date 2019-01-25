@@ -5,14 +5,16 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
+import org.json.JSONObject;
 
+import com.calebpower.bonemesh.listener.BoneMeshDataListener;
+import com.calebpower.bonemesh.node.Edge;
 import com.calebpower.bonemesh.node.Node;
 import com.calebpower.bonemesh.node.NodeMap;
 import com.calebpower.bonemesh.socket.SocketClient;
@@ -25,7 +27,8 @@ import com.calebpower.bonemesh.socket.SocketServer;
  */
 public class BoneMesh {
   
-  ExecutorService executor = null;
+  private List<BoneMeshDataListener> dataListeners = null;
+  private ExecutorService executor = null;
   private List<Node> nodeList = null; // directly connected nodes
   private NodeMap nodeMap = null; // all known nodes and their known edges
   private SocketServer server = null;
@@ -43,6 +46,7 @@ public class BoneMesh {
       this.identifier = uuid.toString();
     else this.identifier = identifier;
     System.out.println("Set identifier as " + this.identifier);
+    this.dataListeners = new CopyOnWriteArrayList<>();
     this.executor = Executors.newSingleThreadExecutor();
   }
   
@@ -115,7 +119,7 @@ public class BoneMesh {
     return this;
   }
   
-  public boolean syncNode(Node node) {
+  public Node syncNode(Node node) {
     Node found = null;
     for(Node n : nodeList)
       if(node.equals(n)) {
@@ -134,12 +138,12 @@ public class BoneMesh {
       nodeList.add(node);
     } else if(!node.equals(found)) {
       nodeList.remove(found);
-      nodeList.add(found);
+      nodeList.add(node);
     } else {
-      return false;
+      return found;
     }
     
-    return true;
+    return node;
     
     /*
     synchronized(nodeList) {
@@ -170,6 +174,59 @@ public class BoneMesh {
       
     }
     */
+  }
+  
+  public UUID getUUID() {
+    return uuid;
+  }
+  
+  public NodeMap getNodeMap() {
+    return nodeMap;
+  }
+  
+  public void consumePayload(JSONObject json) {
+    for(BoneMeshDataListener dataListener : dataListeners)
+      dataListener.digest(json);
+  }
+  
+  public Node getBestRoute(UUID uuid) {
+    
+    // first, see if target node is within one degree
+    for(Node node : nodeList)
+      if(node.equals(uuid)) return node;
+    
+    // next, see if target node is within two degrees
+    Node closest = null;
+    long weight = -1L;
+    
+    for(Node node : nodeList) {
+      for(Edge edge : nodeMap.getEdges(node)) {
+        if(edge.getNode().equals(uuid)
+            && (closest == null || edge.getWeight() < weight)) {
+          closest = node;
+          weight = edge.getWeight();
+        }
+      }
+    }
+    
+    if(closest != null) return closest;
+    
+    // if the above doesn't work, see if we know about the node at all
+    for(Node node : nodeMap.getNodes()) {
+      for(Edge edge : nodeMap.getEdges(node)) {
+        if(edge.getNode().equals(uuid)
+            && (closest == null || edge.getWeight() < weight)) {
+          closest = node;
+          weight = edge.getWeight();
+        }
+      }
+    }
+    
+    // if we don't know about the node, give up
+    if(closest == null) return null;
+    
+    // if we find it in 3+ degrees, backtrack to the closest direct node
+    return getBestRoute(closest.getUUID());
   }
   
 }

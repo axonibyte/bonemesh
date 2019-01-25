@@ -14,7 +14,7 @@ public interface BoneMeshDataListener {
    * 
    * @param message the message to react to
    */
-  public void reactToJSON(JSONObject message);
+  public void digest(JSONObject message);
   
   /**
    * Determines whether or not this listener should eavesdrop on messages to

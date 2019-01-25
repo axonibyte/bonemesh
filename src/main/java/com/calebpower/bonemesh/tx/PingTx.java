@@ -6,6 +6,7 @@ import org.json.JSONObject;
 
 import com.calebpower.bonemesh.BoneMesh;
 import com.calebpower.bonemesh.exception.BadTxException;
+import com.calebpower.bonemesh.node.Node;
 import com.calebpower.bonemesh.socket.IncomingDataHandler;
 
 public class PingTx extends GenericTx {
@@ -21,7 +22,12 @@ public class PingTx extends GenericTx {
   
   @Override public void followUp(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
     linkNode(boneMesh, incomingDataHandler);
-    // TODO execute ping transaction
+    if(!route(boneMesh, incomingDataHandler)) {
+      MapTx mapTx = new MapTx(boneMesh.getUUID(),
+          getOriginNode(),
+          boneMesh.getNodeMap());
+      incomingDataHandler.send(mapTx);
+    }
   }
   
 }

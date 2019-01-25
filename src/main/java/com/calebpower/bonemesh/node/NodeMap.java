@@ -5,6 +5,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class NodeMap { // purpose of this is to add concurrency to list of node-edge relations
   
@@ -12,7 +14,7 @@ public class NodeMap { // purpose of this is to add concurrency to list of node-
   private Map<Node, ArrayList<Edge>> knownNodes = null;
   
   public NodeMap() {
-    this.knownNodes = new HashMap<>();
+    this.knownNodes = new ConcurrentHashMap<>();
   }
   
   public synchronized void lock() {
@@ -86,6 +88,15 @@ public class NodeMap { // purpose of this is to add concurrency to list of node-
     }
     
     unlock();
+  }
+  
+  public Node getNode(UUID uuid) {
+    synchronized(knownNodes) {
+      for(Node node : knownNodes.keySet())
+        if(node.equals(uuid)) return node;
+    }
+    
+    return null;
   }
   
   public Set<Node> getNodes() {

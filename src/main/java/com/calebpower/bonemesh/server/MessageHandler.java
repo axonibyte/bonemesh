@@ -118,7 +118,7 @@ public class MessageHandler implements Runnable {
             String listenerID = payloadObject.has("listenerID") ? payloadObject.getString("listenerID") : null;
             for(BoneMeshDataListener dataListener : boneMesh.getDataListeners())
               if(dataListener.eavesdrop() || listenerID == null || dataListener.getID().equals(listenerID))
-                dataListener.reactToJSON(message);
+                dataListener.digest(message);
             break;
           case WELFARE:
             boneMesh.log("Received welfare check from "

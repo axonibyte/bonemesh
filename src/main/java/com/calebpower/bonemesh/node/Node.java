@@ -8,6 +8,7 @@ public class Node {
   
   private int curlyCount = 0;
   private int port = 0;
+  private long lastAck = 0L;
   private IncomingDataHandler incomingDataHandler = null;
   private String informalName = null;
   private String ip = null;
@@ -40,6 +41,10 @@ public class Node {
     return node != null && uuid.compareTo(node.uuid) == 0;
   }
   
+  public boolean equals(UUID uuid) {
+    return uuid.compareTo(uuid) == 0;
+  }
+  
   public String getIP() {
     return ip;
   }
@@ -56,6 +61,14 @@ public class Node {
   public Node setPort(int port) {
     this.port = port;
     return this;
+  }
+  
+  public void touch() {
+    lastAck = System.currentTimeMillis();
+  }
+  
+  public IncomingDataHandler getIncomingDataHandler() {
+    return incomingDataHandler;
   }
   
   public Node setIncomingDataHandler(IncomingDataHandler incomingDataHandler) {
