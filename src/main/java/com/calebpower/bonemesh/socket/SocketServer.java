@@ -1,12 +1,15 @@
 package com.calebpower.bonemesh.socket;
 
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.List;
+
+import org.json.JSONObject;
 
 import com.calebpower.bonemesh.BoneMesh;
-import com.calebpower.bonemesh.node.Node;
+import com.calebpower.bonemesh.tx.GenericTx;
+import com.calebpower.bonemesh.tx.GenericTx.TxType;
 
 /**
  * Listens for incoming connections.
@@ -34,9 +37,17 @@ public class SocketServer implements Runnable {
       
       try(ServerSocket serverSocket = new ServerSocket(port)) {
         Socket clientSocket = null;
+        serverSocket.setSoTimeout(0);
         while((clientSocket = serverSocket.accept()) != null) {
+          //PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true);
+          //out.println(new GenericTx(boneMesh.getUUID(), null, TxType.GENERIC_TX,
+            //new JSONObject().put("message", "MSG A FROM " + boneMesh.getIdentifier())).toString());
+          //out.println(new GenericTx(boneMesh.getUUID(), null, TxType.GENERIC_TX,
+              //new JSONObject().put("message", "MSG B FROM " + boneMesh.getIdentifier())).toString());
           System.out.println("Accepted connection from some client.");
+          clientSocket.setKeepAlive(true);
           clientSocket.setSoTimeout(0);
+          clientSocket.setTcpNoDelay(true);
           IncomingDataHandler.build(boneMesh, clientSocket);
           // BoneMesh.syncNode(nodeList, new Node().setSocket(clientSocket));
           /*
@@ -49,6 +60,7 @@ public class SocketServer implements Runnable {
           */
         }
       } catch(IOException e) {
+        System.out.println("In SocketServer.java: " + e.getMessage());
         /*
           if(this.serverSocket != null)
             Logger.error("Exception caught when trying to listen on port "

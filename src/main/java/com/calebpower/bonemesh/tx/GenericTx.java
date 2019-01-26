@@ -48,7 +48,7 @@ public class GenericTx extends JSONObject {
         .put("originNode", originNode.toString())
         .put("targetNode", targetNode == null ? JSONObject.NULL : targetNode.toString())
         .put("messageID", messageID.toString())
-        .put("messageType", messageType == null ? TxType.GENERIC_TX : messageType));
+        .put("messageType", messageType == null ? TxType.GENERIC_TX.toString() : messageType.toString()));
     if(data != null) put("data", data);
   }
   
@@ -58,7 +58,7 @@ public class GenericTx extends JSONObject {
       JSONObject data = json.getJSONObject("data");
       put("meta", new JSONObject()
           .put("originNode", meta.getString("originNode"))
-          .put("targetNode", meta.getString("targetNode"))
+          .put("targetNode", meta.isNull("targetNode") ? JSONObject.NULL : meta.getString("targetNode"))
           .put("messageID", meta.getString("messageID"))
           .put("messageType", meta.getString("messageType")));
       put("data", data);
@@ -92,7 +92,7 @@ public class GenericTx extends JSONObject {
   
   protected void linkNode(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
     Node node = new Node()
-        .setUUID(getString("originNode"));
+        .setUUID(getOriginNode());
     node = boneMesh.syncNode(node);
     if(node.getIncomingDataHandler() == null)
       node.setIncomingDataHandler(incomingDataHandler);
@@ -100,16 +100,14 @@ public class GenericTx extends JSONObject {
   }
   
   protected boolean route(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
-    UUID uuid = null;
-    try {
-      uuid = getTargetNode();
-    } catch(IllegalArgumentException e) { }
+    if(getTargetNode() == null) return false;
     
-    if(uuid == null
-        || getOriginNode().compareTo(boneMesh.getUUID()) != 0) {
-      Node node = uuid == null ? null : boneMesh.getBestRoute(uuid);
+    UUID uuid = getTargetNode();
+    
+    if(uuid != null && getTargetNode().compareTo(boneMesh.getUUID()) != 0) {
+      Node node = boneMesh.getBestRoute(uuid);
       if(node == null) {
-        System.out.println("Node nod available in map! Refunding transaction.");
+        System.out.println("Node not available in map! Refunding transaction.");
         incomingDataHandler.send(this);
       } else {
         System.out.println("Found path via " + node.getInformalName());
@@ -124,7 +122,7 @@ public class GenericTx extends JSONObject {
   
   public void followUp(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
     linkNode(boneMesh, incomingDataHandler);
-    if(UUID.fromString(getString("targetNode")).compareTo(boneMesh.getUUID()) == 0) {
+    if(getTargetNode() == null || getTargetNode().compareTo(boneMesh.getUUID()) == 0) {
       boneMesh.consumePayload(this);
     } else {
       Node node = boneMesh.getBestRoute(boneMesh.getUUID());
@@ -150,9 +148,7 @@ public class GenericTx extends JSONObject {
   public UUID getTargetNode() {
     try {
       return UUID.fromString(getJSONObject("meta").getString("targetNode"));
-    } catch(JSONException | IllegalArgumentException e) {
-      e.printStackTrace();
-    }
+    } catch(JSONException | IllegalArgumentException e) { }
     return null;
   }
   

@@ -43,6 +43,7 @@ public class NodeMap { // purpose of this is to add concurrency to list of node-
   }
   
   public synchronized NodeMap sync(NodeMap nodeMap) { // wipes this object and copies data from provided NodeMap
+    System.out.println("Provided NodeMap is " + (nodeMap == null ? "null." : "not null."));
     lock();
     nodeMap.lock();
     

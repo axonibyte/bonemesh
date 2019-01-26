@@ -17,6 +17,7 @@ import com.calebpower.bonemesh.tx.PingTx;
 public class SocketClient implements Runnable {
 
   private BoneMesh boneMesh = null;
+  private IncomingDataHandler incomingDataHandler = null;
   private int port = 0;
   private String ip = null;
   private Socket socket = null;
@@ -34,8 +35,11 @@ public class SocketClient implements Runnable {
   @Override public void run() {
     System.out.println("Attempting to connect to some server...");
     
-    try(Socket socket = new Socket(ip, port)) {
+    try {
+      socket = new Socket(ip, port);
+      socket.setKeepAlive(true);
       socket.setSoTimeout(0);
+      socket.setTcpNoDelay(true);
       /*
       synchronized(connectionStatus) {
         connectionStatus.setStatus(ConnectionStatus.Status.LIVE_CONNECTION);
@@ -44,7 +48,7 @@ public class SocketClient implements Runnable {
       */
       // node = new Node().setSocket(socket).start(); //add socket here
       
-      IncomingDataHandler incomingDataHandler = IncomingDataHandler.build(boneMesh, socket);
+      incomingDataHandler = IncomingDataHandler.build(boneMesh, socket);
       incomingDataHandler.send(new PingTx(boneMesh.getUUID(), null, boneMesh.getIdentifier()));
       
       // Logger.info("Peer-to-peer client pointed to " + ip + ":" + port);
@@ -79,6 +83,10 @@ public class SocketClient implements Runnable {
    */
   public String getTarget() {
     return ip + ":" + port;
+  }
+  
+  public IncomingDataHandler getIncomingDataHandler() {
+    return incomingDataHandler;
   }
   
   public static SocketClient build(BoneMesh boneMesh, String ip, int port) {

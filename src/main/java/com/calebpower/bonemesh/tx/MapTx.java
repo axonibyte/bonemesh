@@ -19,6 +19,7 @@ public class MapTx extends GenericTx {
   
   public MapTx(UUID thisNode, UUID targetNode, NodeMap nodeMap) {
     super(thisNode, targetNode, TxType.MAP_TX);
+    System.out.println("NodeMap is " + (nodeMap == null ? "still null." : "not null."));
     this.nodeMap = new NodeMap().sync(nodeMap);
     JSONArray map = new JSONArray();
     for(Node node : this.nodeMap.getNodes()) {

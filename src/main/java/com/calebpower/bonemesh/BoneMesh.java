@@ -1,5 +1,6 @@
 package com.calebpower.bonemesh;
 
+import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -17,6 +18,7 @@ import com.calebpower.bonemesh.listener.BoneMeshDataListener;
 import com.calebpower.bonemesh.node.Edge;
 import com.calebpower.bonemesh.node.Node;
 import com.calebpower.bonemesh.node.NodeMap;
+import com.calebpower.bonemesh.socket.IncomingDataHandler;
 import com.calebpower.bonemesh.socket.SocketClient;
 import com.calebpower.bonemesh.socket.SocketServer;
 
@@ -41,6 +43,7 @@ public class BoneMesh {
   
   public BoneMesh(String identifier) {
     this.nodeList = new CopyOnWriteArrayList<>();
+    this.nodeMap = new NodeMap();
     uuid = UUID.randomUUID();
     if(identifier == null)
       this.identifier = uuid.toString();
@@ -98,7 +101,8 @@ public class BoneMesh {
   }
   
   public BoneMesh connect(String ip, int port) {
-    SocketClient.build(this, ip, port);
+    IncomingDataHandler incomingDataHandler = SocketClient.build(this, ip, port).getIncomingDataHandler();
+    syncNode(new Node().setIP(ip).setPort(port)).setIncomingDataHandler(incomingDataHandler);
     
     /*
       Future<Node> nodePromise = executor.submit(new SocketClient(ip, port));
@@ -123,6 +127,7 @@ public class BoneMesh {
     Node found = null;
     for(Node n : nodeList)
       if(node.equals(n)) {
+        System.out.println("Found an existing node by UUID during sync.");
         found = n;
         break;
       }
@@ -130,16 +135,19 @@ public class BoneMesh {
     if(found == null && node.getIP() != null)
       for(Node n : nodeList)
         if(node.getIP() == n.getIP() && node.getPort() == n.getPort()) {
+          System.out.println("Found an existing node by IP and port during sync.");
+          n.setUUID(node.getUUID());
           found = n;
           break;
         }
     
     if(found == null) {
-      nodeList.add(node);
-    } else if(!node.equals(found)) {
-      nodeList.remove(found);
+      System.out.println("Added a new node during sync.");
       nodeList.add(node);
     } else {
+      if(node.getUUID() != null) found.setUUID(node.getUUID());
+      if(node.getIP() != null) found.setIP(node.getIP());
+      if(node.getPort() != 0) found.setPort(node.getPort());
       return found;
     }
     

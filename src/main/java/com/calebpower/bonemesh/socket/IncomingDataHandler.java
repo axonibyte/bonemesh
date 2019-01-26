@@ -1,10 +1,13 @@
 package com.calebpower.bonemesh.socket;
 
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.net.Socket;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
 
@@ -22,27 +25,43 @@ public class IncomingDataHandler implements Runnable {
   
   private BoneMesh boneMesh = null;
   private BufferedReader input = null;
+  //private BufferedWriter output = null;
   private List<Character> incomingData = null;
   private List<Character> dataBuffer = null;
   private int curlyCount = 0;
   private int previousCurlyCount = 0;
   private PrintWriter output = null;
   
-  private IncomingDataHandler() { }
+  private IncomingDataHandler() {
+    incomingData = new LinkedList<>();
+    dataBuffer = new LinkedList<>();
+  }
 
-  @Override public void run() { // this should only be invoked if we have a direct connection to it
+  @Override public void run() {
     new Thread(new IncomingDataListener()).start();
+    
+    //send(new GenericTx(boneMesh.getUUID(), null, TxType.GENERIC_TX,
+        //new JSONObject().put("message", "MSG 0 FROM " + boneMesh.getIdentifier())));
+    
+    System.out.println("Hit.");
     
     try {
       // Logger.info("Spinning up a message handler.");
       for(;;) {
+        //send(new GenericTx(boneMesh.getUUID(), null, TxType.GENERIC_TX,
+            //new JSONObject().put("message", "MSG 1 FROM " + boneMesh.getIdentifier())));
+        
         char current;
+        
         synchronized(incomingData) {
           while(incomingData.isEmpty()) {
             incomingData.wait();
           }
           current = incomingData.remove(0);
         }
+
+        //send(new GenericTx(boneMesh.getUUID(), null, TxType.GENERIC_TX,
+            //new JSONObject().put("message", "MSG 2 FROM " + boneMesh.getIdentifier())));
         
         if(previousCurlyCount == 0 && curlyCount == 0 && current != '{') continue;
         
@@ -68,7 +87,8 @@ public class IncomingDataHandler implements Runnable {
             try {
               JSONObject jsonObject = new JSONObject(new String(characters));
               
-              System.out.println(jsonObject.toString());
+              System.out.println("Received data:");
+              System.out.println(jsonObject.toString(2));
               // TODO do something with jsonObject here, including calling BoneMesh.syncNode
               // basically, interpret the JSON object at this point in time.
               
@@ -95,21 +115,30 @@ public class IncomingDataHandler implements Runnable {
                 
                 System.out.println("Received " + txType + " transaction.");
                 
+                /* XXX
                 if(!transaction.isOfType(TxType.ACK_TX)) {
-                  transaction.followUp(boneMesh, this);
-                  
                   send(new AckTx(boneMesh.getUUID(), UUID.fromString(
                       transaction
                         .getJSONObject("meta")
                         .getString("originNode"))));
+                  
+                  transaction.followUp(boneMesh, this);
                 }
+                */
+                
+                send(new AckTx(boneMesh.getUUID(), UUID.fromString(
+                    transaction
+                      .getJSONObject("meta")
+                      .getString("originNode"))).put("trace", jsonObject));
                 
               } catch(Exception e) {
+                e.printStackTrace();
                 send(new AckTx(boneMesh.getUUID(), null, "Malformed transaction."));
               }
                 
             } catch(JSONException e) {
               // Logger.error("Some JSONException was thrown in the peer-to-peer connection handler. " + e.getMessage());
+              e.printStackTrace();
               send(new AckTx(boneMesh.getUUID(), null, e.getMessage()));
             }
             
@@ -132,7 +161,10 @@ public class IncomingDataHandler implements Runnable {
    * @param jsonObject the JSON object
    */
   public void send(JSONObject jsonObject) {
+    //System.out.println("Sending message...");
+    System.out.println(jsonObject.toString(0));
     send(jsonObject.toString());
+    //System.out.println("Sent!");
   }
   
   /**
@@ -145,9 +177,16 @@ public class IncomingDataHandler implements Runnable {
       while(output == null) Thread.sleep(500L);
     } catch(InterruptedException e) { }
     
-    synchronized(output) {
-      // Logger.info("Sending " + message);
-      output.println(message);
+    try {
+      synchronized(output) {
+        // Logger.info("Sending " + message);
+        output.println(message);
+        //output.write(message.toCharArray());
+        //output.newLine();
+        output.flush();
+      }
+    } catch(Exception e) {
+      e.printStackTrace();
     }
   }
   
@@ -165,9 +204,13 @@ public class IncomingDataHandler implements Runnable {
   
   public static IncomingDataHandler build(BoneMesh boneMesh, Socket socket) throws IOException {
     IncomingDataHandler incomingDataHandler = new IncomingDataHandler();
-    incomingDataHandler.output = new PrintWriter(socket.getOutputStream(), true);
     incomingDataHandler.input = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+    incomingDataHandler.output = new PrintWriter(socket.getOutputStream(), true); //new PrintWriter(socket.getOutputStream(), true);
     incomingDataHandler.boneMesh = boneMesh;
+    //System.out.println("Builing!");
+    //incomingDataHandler.output.println(new GenericTx(boneMesh.getUUID(), null, TxType.GENERIC_TX,
+        //new JSONObject().put("message", "MSG C FROM " + boneMesh.getIdentifier())).toString());
+    //System.out.println("Built!");
     Thread thread = new Thread(incomingDataHandler);
     thread.setDaemon(true);
     thread.start();
@@ -180,7 +223,9 @@ public class IncomingDataHandler implements Runnable {
       int datum;
       try {
         while((datum = input.read()) != -1) queue((char)datum);
-      } catch(IOException e) { }
+      } catch(IOException e) {
+        e.printStackTrace();
+      }
     }
     
   }
