@@ -36,6 +36,8 @@ public class MapTx extends GenericTx {
           .put("edges", edgeArray));
     }
     getJSONObject("data").put("map", map);
+    System.out.println("------------------ MAP ------------------\n"
+        + toString(2) + "-----------------------------------------");
   }
   
   public MapTx(JSONObject json) throws BadTxException {
@@ -44,22 +46,26 @@ public class MapTx extends GenericTx {
     nodeMap = new NodeMap();
     
     try {
-      JSONArray map = json.getJSONArray("map");
+      JSONArray map = json.getJSONObject("data").getJSONArray("map");
+      System.out.println("------------ GOT MAP OBJECT ------------");
       for(Object nodeObject : map) {
+        System.out.println("------------ GOT MAP ---------------");
         JSONObject node = (JSONObject)nodeObject;
         String nodeUUID = node.getString("uuid");
-        String nodeName = node.getString("name");
-        JSONArray edges = json.getJSONArray("edges");
+        String nodeName = node.has("name") ? node.getString("name") : null;
+        JSONArray edges = node.getJSONArray("edges");
         Node importedNode = new Node().setUUID(nodeUUID).setInformalName(nodeName);
         for(Object edgeObject : edges) {
+          System.out.println("----------------- GOT EDGE ------------");
           JSONObject edge = (JSONObject)edgeObject;
           String edgeUUID = edge.getString("uuid");
-          String edgeName = edge.getString("name");
+          String edgeName = edge.has("name") ? edge.getString("name") : edgeUUID;
           long weight = edge.getLong("weight");
           Edge importedEdge = new Edge(importedNode)
               .setUUID(edgeUUID)
               .setInformalName(edgeName)
               .setWeight(weight);
+          System.out.println("UPDATING NODE " + importedNode.getUUID() + " -> " + importedEdge.getUUID());
           nodeMap.update(importedNode, importedEdge);
         }
       }

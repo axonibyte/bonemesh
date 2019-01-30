@@ -1,14 +1,16 @@
 package com.calebpower.bonemesh.node;
 
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class Edge {
   
   private Node node = null;
-  private Long weight = null;
+  private AtomicLong weight = null;
   
   public Edge(Node node) {
-    this.node = null;
+    this.node = node;
+    this.weight = new AtomicLong();
   }
   
   public Node getNode() {
@@ -16,6 +18,9 @@ public class Edge {
   }
 
   public UUID getUUID() {
+    if(node == null) System.out.println("Node is null.");
+    if(node.getUUID() == null) System.out.println("UUID is null.");
+    System.out.println(node.getUUID());
     return node.getUUID();
   }
   
@@ -39,16 +44,18 @@ public class Edge {
   }
   
   public long getWeight() {
-    return weight;
+    return weight.get();
   }
   
   public Edge setWeight(long weight) {
-    this.weight = weight;
+    this.weight.set(weight);
     return this;
   }
   
   public boolean equals(Edge edge) {
-    return node.equals(edge.node);
+    return edge != null
+        && edge.node != null
+        && node.equals(edge.node);
   }
   
 }

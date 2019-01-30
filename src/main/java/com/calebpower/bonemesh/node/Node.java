@@ -1,19 +1,22 @@
 package com.calebpower.bonemesh.node;
 
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.calebpower.bonemesh.socket.IncomingDataHandler;
 
 public class Node {
   
-  private int curlyCount = 0;
   private int port = 0;
-  private long lastAck = 0L;
+  private AtomicLong lastAck = null;
   private IncomingDataHandler incomingDataHandler = null;
   private String informalName = null;
   private String ip = null;
-  private Thread thread = null;
   private UUID uuid = null;
+  
+  public Node() {
+    this.lastAck = new AtomicLong();
+  }
   
   public UUID getUUID() {
     return uuid;
@@ -38,7 +41,7 @@ public class Node {
   }
   
   public boolean equals(Node node) {
-    return node != null && uuid.compareTo(node.uuid) == 0;
+    return node != null && node.uuid != null && uuid.compareTo(node.uuid) == 0;
   }
   
   public boolean equals(UUID uuid) {
@@ -63,8 +66,12 @@ public class Node {
     return this;
   }
   
+  public boolean isStale() {
+    return System.currentTimeMillis() - lastAck.get() > 10000L; // ten seconds
+  }
+  
   public void touch() {
-    lastAck = System.currentTimeMillis();
+    lastAck.set(System.currentTimeMillis());
   }
   
   public IncomingDataHandler getIncomingDataHandler() {

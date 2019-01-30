@@ -1,11 +1,8 @@
 package com.calebpower.bonemesh;
 
-import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
@@ -16,11 +13,13 @@ import org.json.JSONObject;
 
 import com.calebpower.bonemesh.listener.BoneMeshDataListener;
 import com.calebpower.bonemesh.node.Edge;
+import com.calebpower.bonemesh.node.Heartbeat;
 import com.calebpower.bonemesh.node.Node;
 import com.calebpower.bonemesh.node.NodeMap;
 import com.calebpower.bonemesh.socket.IncomingDataHandler;
 import com.calebpower.bonemesh.socket.SocketClient;
 import com.calebpower.bonemesh.socket.SocketServer;
+import com.calebpower.bonemesh.tx.GenericTx;
 
 /**
  * Virtual Mesh Network for Java.
@@ -29,28 +28,35 @@ import com.calebpower.bonemesh.socket.SocketServer;
  */
 public class BoneMesh {
   
+  private Heartbeat heartbeat = null;
   private List<BoneMeshDataListener> dataListeners = null;
-  private ExecutorService executor = null;
   private List<Node> nodeList = null; // directly connected nodes
+  private Node thisNode = null;
   private NodeMap nodeMap = null; // all known nodes and their known edges
   private SocketServer server = null;
   private String identifier = null;
   private UUID uuid = null;
   
-  public BoneMesh() {
-    this(null);
-  }
-  
-  public BoneMesh(String identifier) {
+  private BoneMesh(String identifier) {
     this.nodeList = new CopyOnWriteArrayList<>();
-    this.nodeMap = new NodeMap();
     uuid = UUID.randomUUID();
+    this.thisNode = new Node().setUUID(uuid);
+    this.nodeMap = new NodeMap(thisNode);
     if(identifier == null)
       this.identifier = uuid.toString();
     else this.identifier = identifier;
     System.out.println("Set identifier as " + this.identifier);
     this.dataListeners = new CopyOnWriteArrayList<>();
-    this.executor = Executors.newSingleThreadExecutor();
+  }
+  
+  public static BoneMesh build() {
+    return build(null);
+  }
+  
+  public static BoneMesh build(String identifier) {
+    BoneMesh boneMesh = new BoneMesh(identifier);
+    boneMesh.heartbeat = Heartbeat.defibrillate(boneMesh);
+    return boneMesh;
   }
   
   public static void main(String[] args) throws ParseException { // this is for testing
@@ -62,8 +68,8 @@ public class BoneMesh {
     CommandLine cmd = parser.parse(options, args);
     
     BoneMesh boneMesh = cmd.hasOption("informal_name")
-        ? new BoneMesh(cmd.getOptionValue("informal_name"))
-            : new BoneMesh();
+        ? BoneMesh.build(cmd.getOptionValue("informal_name"))
+            : BoneMesh.build();
     
     if(cmd.hasOption("listening_port")) {
       try {
@@ -192,6 +198,10 @@ public class BoneMesh {
     return identifier;
   }
   
+  public List<Node> getNodeList() {
+    return nodeList;
+  }
+  
   public NodeMap getNodeMap() {
     return nodeMap;
   }
@@ -239,6 +249,18 @@ public class BoneMesh {
     
     // if we find it in 3+ degrees, backtrack to the closest direct node
     return getBestRoute(closest.getUUID());
+  }
+  
+  public void send(Node node, JSONObject data) {
+    node.getIncomingDataHandler().send(
+        new GenericTx(
+            getUUID(),
+            node.getUUID(),
+            data));
+  }
+  
+  public Node getThisNode() {
+    return thisNode;
   }
   
 }

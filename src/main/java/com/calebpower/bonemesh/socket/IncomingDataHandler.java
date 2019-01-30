@@ -84,9 +84,12 @@ public class IncomingDataHandler implements Runnable {
             for(int i = 0; i < dataBuffer.size(); i++)
               characters[i] = dataBuffer.get(i);
             
+            JSONObject jsonObject = null;
+            
             try {
-              JSONObject jsonObject = new JSONObject(new String(characters));
+              jsonObject = new JSONObject(new String(characters));
               
+              System.out.println("I am " + boneMesh.getUUID().toString());
               System.out.println("Received data:");
               System.out.println(jsonObject.toString(2));
               // TODO do something with jsonObject here, including calling BoneMesh.syncNode
@@ -115,25 +118,28 @@ public class IncomingDataHandler implements Runnable {
                 
                 System.out.println("Received " + txType + " transaction.");
                 
-                /* XXX
                 if(!transaction.isOfType(TxType.ACK_TX)) {
                   send(new AckTx(boneMesh.getUUID(), UUID.fromString(
                       transaction
                         .getJSONObject("meta")
-                        .getString("originNode"))));
-                  
-                  transaction.followUp(boneMesh, this);
+                        .getString("originNode")), boneMesh));
                 }
-                */
-                
-                send(new AckTx(boneMesh.getUUID(), UUID.fromString(
-                    transaction
-                      .getJSONObject("meta")
-                      .getString("originNode"))).put("trace", jsonObject));
+                  
+                transaction.followUp(boneMesh, this);
                 
               } catch(Exception e) {
                 e.printStackTrace();
-                send(new AckTx(boneMesh.getUUID(), null, "Malformed transaction."));
+                
+                UUID originNode = null;
+                try {
+                  String uuid = jsonObject
+                    .getJSONObject("meta")
+                    .getString("originNode");
+                  if(uuid != null)
+                    originNode = UUID.fromString(uuid);
+                } catch(JSONException e2) { }
+                
+                send(new AckTx(boneMesh.getUUID(), originNode, "Malformed transaction."));
               }
                 
             } catch(JSONException e) {
@@ -160,10 +166,10 @@ public class IncomingDataHandler implements Runnable {
    * 
    * @param jsonObject the JSON object
    */
-  public void send(JSONObject jsonObject) {
+  public boolean send(JSONObject jsonObject) {
     //System.out.println("Sending message...");
     System.out.println(jsonObject.toString(0));
-    send(jsonObject.toString());
+    return send(jsonObject.toString());
     //System.out.println("Sent!");
   }
   
@@ -172,7 +178,7 @@ public class IncomingDataHandler implements Runnable {
    * 
    * @param message the message
    */
-  public synchronized void send(String message) {
+  public synchronized boolean send(String message) {
     try {
       while(output == null) Thread.sleep(500L);
     } catch(InterruptedException e) { }
@@ -185,9 +191,11 @@ public class IncomingDataHandler implements Runnable {
         //output.newLine();
         output.flush();
       }
+      return true;
     } catch(Exception e) {
       e.printStackTrace();
     }
+    return false;
   }
   
   /**

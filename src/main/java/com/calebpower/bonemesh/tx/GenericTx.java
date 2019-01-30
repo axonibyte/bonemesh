@@ -52,6 +52,10 @@ public class GenericTx extends JSONObject {
     if(data != null) put("data", data);
   }
   
+  public GenericTx(UUID originNode, UUID targetNode, JSONObject data) {
+    this(originNode, targetNode, TxType.GENERIC_TX, data);
+  }
+  
   public GenericTx(JSONObject json) throws BadTxException {
     try {
       JSONObject meta = json.getJSONObject("meta");
@@ -122,6 +126,7 @@ public class GenericTx extends JSONObject {
   
   public void followUp(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
     linkNode(boneMesh, incomingDataHandler);
+    boneMesh.getNodeMap().getNode(getOriginNode()).touch();
     if(getTargetNode() == null || getTargetNode().compareTo(boneMesh.getUUID()) == 0) {
       boneMesh.consumePayload(this);
     } else {
