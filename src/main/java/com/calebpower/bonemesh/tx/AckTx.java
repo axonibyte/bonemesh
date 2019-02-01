@@ -34,12 +34,16 @@ public class AckTx extends GenericTx {
   }
   
   @Override public void followUp(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
+    incomingDataHandler.touch();
+    //boneMesh.getNodeMap().getNode(getOriginNode()).touch();
     linkNode(boneMesh, incomingDataHandler);
     // TODO execute ack transaction (or don't, since this is an ack)
     System.out.println("\n------------------- ACK UPDATED: " + getOriginNode().toString() + " -----------------");
     try {
     System.out.println("Target node is " + getTargetNode().toString());
-    } catch(Exception e) { }
+    } catch(Exception e) {
+      e.printStackTrace();
+    }
     boneMesh.getNodeMap().update(new Edge(new Node().setUUID(getOriginNode())));
     route(boneMesh, incomingDataHandler);
   }

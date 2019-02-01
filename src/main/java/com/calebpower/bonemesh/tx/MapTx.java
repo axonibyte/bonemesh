@@ -79,7 +79,9 @@ public class MapTx extends GenericTx {
       while(nodeMap.isUnlocked()) {
         try {
           nodeMap.wait();
-        } catch(InterruptedException e) { }
+        } catch(InterruptedException e) {
+          e.printStackTrace();
+        }
       }
       return nodeMap;
     }

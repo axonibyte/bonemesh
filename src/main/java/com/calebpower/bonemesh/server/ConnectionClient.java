@@ -26,9 +26,9 @@ public class ConnectionClient implements Runnable {
       socket.setSoTimeout(0);
       
     } catch(UnknownHostException e) {
-      
+      e.printStackTrace();
     } catch(IOException e) {
-      
+      e.printStackTrace();
     }
   }
   

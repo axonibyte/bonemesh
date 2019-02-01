@@ -124,6 +124,14 @@ public class BoneMesh {
     return this;
   }
   
+  public BoneMesh disconnect(Node node) {
+    node.kill();
+    for(Node n : nodeList)
+      if(node.equals(n)) nodeList.remove(n);
+    nodeMap.remove(node);
+    return this;
+  }
+  
   public BoneMesh spinUp(int port) {
     server = new SocketServer(this, port).start();
     return this;

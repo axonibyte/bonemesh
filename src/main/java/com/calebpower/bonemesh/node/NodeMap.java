@@ -29,7 +29,9 @@ public class NodeMap { // purpose of this is to add concurrency to list of node-
       while(lock.locked) {
         try {
           lock.wait();
-        } catch(InterruptedException e) { }
+        } catch(InterruptedException e) {
+          e.printStackTrace();
+        }
       }
       lock.locked = true;
     }
@@ -160,6 +162,12 @@ public class NodeMap { // purpose of this is to add concurrency to list of node-
       if(node.equals(n))
         return knownNodes.get(n);
     return null;
+  }
+  
+  public void remove(Node node) {
+    Node foundNode = grab(node.getUUID());
+    if(foundNode != null)
+      knownNodes.remove(foundNode);
   }
   
   private class Lock {

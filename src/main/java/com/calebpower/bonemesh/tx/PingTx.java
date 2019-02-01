@@ -23,6 +23,7 @@ public class PingTx extends GenericTx {
   @Override public void followUp(BoneMesh boneMesh, IncomingDataHandler incomingDataHandler) {
     linkNode(boneMesh, incomingDataHandler);
     System.out.println("NodeMap is " + (boneMesh.getNodeMap() == null ? "stil still not null." : "not null."));
+    System.out.println("!!!!!!!!!!!!!!!" + boneMesh.getUUID().toString() + " <-> " + getOriginNode());
     if(!route(boneMesh, incomingDataHandler)) {
       MapTx mapTx = new MapTx(boneMesh.getUUID(),
           getOriginNode(),

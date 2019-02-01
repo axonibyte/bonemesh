@@ -13,19 +13,28 @@ public class Heartbeat implements Runnable {
       for(;;) {
         Thread.sleep(1000L);
         for(Node node : boneMesh.getNodeList()) {
+          if(node.getIncomingDataHandler() == null) System.out.println("incoming handler is null");
           if(node.getIncomingDataHandler() != null && node.isStale())
-            if(node.getIncomingDataHandler().send(
-                new PingTx(
-                    boneMesh.getUUID(),
-                    node.getUUID(),
-                    node.getInformalName()))) {
-              node.touch();
+            if(node.isDead()) {
+              System.out.println("Node " + node.getInformalName() + " is dead.");
+              boneMesh.disconnect(node);
             } else {
-              System.out.println("Heartbeat failed!");
+              System.out.println("XXXXXXXXXXXXXXX" + boneMesh.getUUID().toString() + " " + node.getUUID().toString());
+              if(node.getIncomingDataHandler().send(
+                  new PingTx(
+                      boneMesh.getUUID(),
+                      node.getUUID(),
+                      node.getInformalName()))) {
+                //node.touch();
+              } else {
+                System.out.println("Heartbeat failed!");
+              }
             }
         }
       }
-    } catch(InterruptedException e) { }
+    } catch(InterruptedException e) {
+      e.printStackTrace();
+    }
   }
   
   public static Heartbeat defibrillate(BoneMesh boneMesh) {

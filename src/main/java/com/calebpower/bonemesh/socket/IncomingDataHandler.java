@@ -1,15 +1,14 @@
 package com.calebpower.bonemesh.socket;
 
 import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.net.Socket;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -23,6 +22,7 @@ import com.calebpower.bonemesh.tx.PingTx;
 
 public class IncomingDataHandler implements Runnable {
   
+  private AtomicLong lastAck = null;
   private BoneMesh boneMesh = null;
   private BufferedReader input = null;
   //private BufferedWriter output = null;
@@ -31,10 +31,12 @@ public class IncomingDataHandler implements Runnable {
   private int curlyCount = 0;
   private int previousCurlyCount = 0;
   private PrintWriter output = null;
+  private Thread thread = null;
   
   private IncomingDataHandler() {
     incomingData = new LinkedList<>();
     dataBuffer = new LinkedList<>();
+    lastAck = new AtomicLong(System.currentTimeMillis());
   }
 
   @Override public void run() {
@@ -47,7 +49,7 @@ public class IncomingDataHandler implements Runnable {
     
     try {
       // Logger.info("Spinning up a message handler.");
-      for(;;) {
+      while(!Thread.interrupted()) {
         //send(new GenericTx(boneMesh.getUUID(), null, TxType.GENERIC_TX,
             //new JSONObject().put("message", "MSG 1 FROM " + boneMesh.getIdentifier())));
         
@@ -137,7 +139,9 @@ public class IncomingDataHandler implements Runnable {
                     .getString("originNode");
                   if(uuid != null)
                     originNode = UUID.fromString(uuid);
-                } catch(JSONException e2) { }
+                } catch(JSONException e2) {
+                  e2.printStackTrace();
+                }
                 
                 send(new AckTx(boneMesh.getUUID(), originNode, "Malformed transaction."));
               }
@@ -158,7 +162,9 @@ public class IncomingDataHandler implements Runnable {
           }
         }
       }
-    } catch(InterruptedException e) { }
+    } catch(InterruptedException e) {
+      e.printStackTrace();
+    }
   }
   
   /**
@@ -181,7 +187,9 @@ public class IncomingDataHandler implements Runnable {
   public synchronized boolean send(String message) {
     try {
       while(output == null) Thread.sleep(500L);
-    } catch(InterruptedException e) { }
+    } catch(InterruptedException e) {
+      e.printStackTrace();
+    }
     
     try {
       synchronized(output) {
@@ -196,6 +204,22 @@ public class IncomingDataHandler implements Runnable {
       e.printStackTrace();
     }
     return false;
+  }
+  
+  public boolean isStale() {
+    return System.currentTimeMillis() - lastAck.get() > 10000L; // ten seconds
+  }
+  
+  public boolean isDead() {
+    return System.currentTimeMillis() - lastAck.get() > 20000L; // twenty seconds
+  }
+  
+  public void touch() {
+    lastAck.set(System.currentTimeMillis());
+  }
+  
+  public void kill() {
+    thread.interrupt();
   }
   
   /**
@@ -220,6 +244,7 @@ public class IncomingDataHandler implements Runnable {
         //new JSONObject().put("message", "MSG C FROM " + boneMesh.getIdentifier())).toString());
     //System.out.println("Built!");
     Thread thread = new Thread(incomingDataHandler);
+    incomingDataHandler.thread = thread;
     thread.setDaemon(true);
     thread.start();
     return incomingDataHandler;
@@ -232,7 +257,7 @@ public class IncomingDataHandler implements Runnable {
       try {
         while((datum = input.read()) != -1) queue((char)datum);
       } catch(IOException e) {
-        e.printStackTrace();
+        System.out.println("Could not read from socket: " + e.getMessage());
       }
     }
     

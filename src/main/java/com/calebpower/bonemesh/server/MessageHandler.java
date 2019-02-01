@@ -49,6 +49,7 @@ public class MessageHandler implements Runnable {
           try {
             socketListener.getSocketPool().wait();
           } catch(InterruptedException e) {
+            e.printStackTrace();
             continue;
           }
         }
@@ -139,12 +140,16 @@ public class MessageHandler implements Runnable {
         }
       } catch(JSONException e) {
         boneMesh.log("Bad JSON request came through. " + e.getMessage());
+        e.printStackTrace();
       } catch(IOException e) {
         boneMesh.log("Some IOException was thrown in the message handler. " + e.getMessage());
+        e.printStackTrace();
       } finally {
         try {
           socket.close();
-        } catch(IOException e) { }
+        } catch(IOException e) {
+          e.printStackTrace();
+        }
       }
       
     }
