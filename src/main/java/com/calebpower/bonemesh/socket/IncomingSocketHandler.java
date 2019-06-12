@@ -20,6 +20,7 @@ public class IncomingSocketHandler implements Runnable {
   private Thread thread = null;
   
   public void handle(Socket socket, SocketServer callback) {
+    this.server = callback;
     this.socket = socket;
     thread = new Thread(this);
     thread.setDaemon(true);
