@@ -71,6 +71,17 @@ public class BoneMesh implements AckListener {
     Scanner scanner = new Scanner(System.in);
     String line = null;
     while((line = scanner.nextLine()) != null && line.length() != 0) {
+      try {
+        if(line.startsWith("to:")) {
+          String target = line.substring(3, line.indexOf(' '));
+          Node node = boneMesh.nodeMap.getNodeByLabel(target);
+          if(node != null) {
+            boneMesh.sendDatum(node.getLabel(), new JSONObject()
+                .put("line", line.substring(line.indexOf(' ') + 1)));
+            continue;
+          }
+        }
+      } catch(Exception e) { }
       for(Node node : boneMesh.nodeMap.getNodes()) {
         boneMesh.sendDatum(node.getLabel(), new JSONObject().put("line", line));
       }
