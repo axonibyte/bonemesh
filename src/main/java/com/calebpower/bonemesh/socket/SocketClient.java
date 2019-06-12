@@ -70,8 +70,9 @@ public class SocketClient implements Runnable {
           inputStream.close();
           outputStream.close();
         } catch(IOException e) {
-          e.printStackTrace();
-          queuePayload(payload); // try again later
+          System.out.println("Ran into issues sending data: " + e.getMessage());
+          payload.getAckListener().receiveNak(payload);
+          if(payload.doRequeueOnFailure()) queuePayload(payload); // try again later
         }
         
       }

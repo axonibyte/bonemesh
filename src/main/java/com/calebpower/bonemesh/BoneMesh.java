@@ -1,6 +1,7 @@
 package com.calebpower.bonemesh;
 
 import java.util.Scanner;
+import java.util.Set;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
@@ -27,12 +28,17 @@ public class BoneMesh implements AckListener {
   private SocketClient socketClient = null;
   private SocketServer socketServer = null;
   private String instanceLabel = null;
+  private Thread heartbeatThread = null;
   
   public BoneMesh(String label, int port) {
     this.instanceLabel = label;
     this.nodeMap = new NodeMap();
     this.socketClient = SocketClient.build();
     this.socketServer = SocketServer.build(port);
+    Heartbeat heartbeat = new Heartbeat();
+    heartbeatThread = new Thread(heartbeat);
+    heartbeatThread.setDaemon(true);
+    heartbeatThread.start();
   }
   
   public static void main(String[] args) throws Exception {
@@ -113,6 +119,14 @@ public class BoneMesh implements AckListener {
     }
   }
   
+  public Set<Node> getNodes() {
+    return nodeMap.getNodes();
+  }
+  
+  public String getInstanceLabel() {
+    return instanceLabel;
+  }
+  
   public void addDataListener(DataListener listener) {
     socketServer.addDataListener(listener);
   }
@@ -122,6 +136,7 @@ public class BoneMesh implements AckListener {
   }
   
   public void kill() {
+    heartbeatThread.interrupt();
     socketClient.kill();
     socketServer.kill();
   }
@@ -132,6 +147,21 @@ public class BoneMesh implements AckListener {
 
   @Override public void receiveNak(Payload payload) {
     setNodeStatus(payload, false);
+  }
+  
+  private class Heartbeat implements Runnable {
+    @Override public void run() {
+      try {
+        for(;;) {
+          Thread.sleep(10000L);
+          for(Node node : nodeMap.getNodes()) {
+            HelloMessage message = new HelloMessage(instanceLabel, node.getLabel());
+            Payload payload = new Payload(message, node.getIP(), node.getPort(), BoneMesh.this, false);
+            socketClient.queuePayload(payload);
+          }
+        }
+      } catch(InterruptedException e) { }
+    }
   }
   
 }
