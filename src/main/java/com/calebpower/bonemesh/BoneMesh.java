@@ -82,9 +82,7 @@ public class BoneMesh implements AckListener {
           }
         }
       } catch(Exception e) { }
-      for(Node node : boneMesh.nodeMap.getNodes()) {
-        boneMesh.sendDatum(node.getLabel(), new JSONObject().put("line", line));
-      }
+      boneMesh.broadcastDatum(new JSONObject().put("line", line));
     }
     scanner.close();
     boneMesh.kill();
@@ -107,6 +105,13 @@ public class BoneMesh implements AckListener {
   public void removeNode(String label) {
     Node node = nodeMap.getNodeByLabel(label);
     if(node != null) nodeMap.removeNode(node);
+  }
+  
+  public boolean broadcastDatum(JSONObject datum) {
+    boolean success = true;
+    for(Node node : nodeMap.getNodes())
+      success = sendDatum(node.getLabel(), datum) && success;
+    return success;
   }
   
   public boolean sendDatum(String target, JSONObject datum) {
