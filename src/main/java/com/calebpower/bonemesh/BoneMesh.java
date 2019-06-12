@@ -22,6 +22,10 @@ public class BoneMesh implements AckListener {
     this.socketClient = SocketClient.build();
   }
   
+  public static void main(String[] args) {
+    System.out.println("Hello, world!");
+  }
+  
   public void addNode(String label, String address) throws Exception { // this is a synchronous (blocking) method
     if(label == null) throw new Exception("Node label cannot be null.");
     if(address == null) throw new Exception("Node address cannot be null.");
