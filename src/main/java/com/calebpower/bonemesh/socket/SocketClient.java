@@ -52,12 +52,14 @@ public class SocketClient implements Runnable {
           outputStream = new DataOutputStream(socket.getOutputStream());
           
           PrintWriter out = new PrintWriter(outputStream);
+          System.out.printf("CLIENT SENDING DATA: %1$s\n", payload.getRawData());
           out.println(payload.getRawData());
           out.flush();
           
           BufferedReader in = new BufferedReader(new InputStreamReader(inputStream));
           try {
             JSONObject json = new JSONObject(in.readLine());
+            System.out.printf("CLIENT RECEIVED DATA: %1$s\n", json.toString());
             if(payload.getAckListener() != null
                 && AckMessage.isImplementedBy(json))
               payload.getAckListener().receiveAck(payload);
@@ -81,6 +83,10 @@ public class SocketClient implements Runnable {
       payloadQueue.add(payload);
       payloadQueue.notifyAll();
     }
+  }
+  
+  public void kill() {
+    thread.interrupt();
   }
   
 }

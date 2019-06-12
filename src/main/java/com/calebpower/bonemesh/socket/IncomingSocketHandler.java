@@ -36,10 +36,12 @@ public class IncomingSocketHandler implements Runnable {
       
       BufferedReader in = new BufferedReader(new InputStreamReader(inputStream));
       JSONObject json = new JSONObject(in.readLine());
+      System.out.printf("SERVER RECEIVED DATA: %1$s\n", json.toString());
       if(!AckMessage.isImplementedBy(json)) {
         AckMessage ack = new AckMessage(json);
         server.dispatchToListeners(json);
         PrintWriter out = new PrintWriter(outputStream);
+        System.out.printf("SERVER SENT DATA: %1$s\n", ack.toString());
         out.println(ack);
         out.flush();
       }
@@ -47,6 +49,10 @@ public class IncomingSocketHandler implements Runnable {
       e.printStackTrace();
     }
     server.killHandler(this);
+  }
+  
+  public void kill() {
+    thread.interrupt();
   }
 
 }

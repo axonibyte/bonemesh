@@ -1,6 +1,7 @@
 package com.calebpower.bonemesh.node;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class NodeMap {
@@ -31,6 +32,10 @@ public class NodeMap {
       if(node.getLabel().equalsIgnoreCase(label))
         return node;
     return null;
+  }
+  
+  public Set<Node> getNodes() {
+    return nodes.keySet();
   }
   
   public boolean isKnown(Node node) {

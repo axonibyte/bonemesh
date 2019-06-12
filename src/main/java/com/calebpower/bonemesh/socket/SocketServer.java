@@ -34,9 +34,11 @@ public class SocketServer implements Runnable {
   @Override public void run() {
     while(!thread.isInterrupted()) { // keep the server alive
       try(ServerSocket serverSocket = new ServerSocket(port)) {
+        System.out.printf("SERVER OPENED TO PORT %1$d\n", port);
         Socket socket = null;
         serverSocket.setSoTimeout(0);
         while((socket = serverSocket.accept()) != null) {
+          System.out.println("SERVER ACCEPTED SOCKET CONNECTION");
           IncomingSocketHandler handler = new IncomingSocketHandler();
           handlers.add(handler);
           handler.handle(socket, this);
@@ -56,4 +58,17 @@ public class SocketServer implements Runnable {
     handlers.remove(handler);
   }
   
+  public void kill() {
+    thread.interrupt();
+    for(IncomingSocketHandler handler : handlers)
+      handler.kill();
+  }
+  
+  public void addDataListener(DataListener listener) {
+    dataListeners.add(listener);
+  }
+  
+  public void removeDataListener(DataListener listener) {
+    dataListeners.remove(listener);
+  }
 }
