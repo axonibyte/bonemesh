@@ -1,6 +1,7 @@
 package com.calebpower.bonemesh.socket;
 
 import java.io.IOException;
+import java.net.BindException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.List;
@@ -43,6 +44,9 @@ public class SocketServer implements Runnable {
           handlers.add(handler);
           handler.handle(socket, this);
         }
+      } catch(BindException e) {
+        e.printStackTrace();
+        throw new RuntimeException(e);
       } catch(IOException e) {
         e.printStackTrace();
       }
