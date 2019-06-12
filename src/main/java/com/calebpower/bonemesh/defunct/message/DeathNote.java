@@ -3,7 +3,7 @@ package com.calebpower.bonemesh.defunct.message;
 import com.calebpower.bonemesh.defunct.server.ServerNode;
 
 /**
- * Message to be sent when a server leaves the network. Generally, this will be
+ * GenericMessage to be sent when a server leaves the network. Generally, this will be
  * sent to all known nodes at the same time.
  * 
  * @author Caleb L. Power
