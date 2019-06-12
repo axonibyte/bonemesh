@@ -9,6 +9,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.json.JSONObject;
 
+import com.calebpower.bonemesh.Logger;
 import com.calebpower.bonemesh.listener.DataListener;
 
 public class SocketServer implements Runnable {
@@ -16,16 +17,18 @@ public class SocketServer implements Runnable {
   private int port;
   private List<DataListener> dataListeners = null;
   private List<IncomingSocketHandler> handlers = null;
+  private Logger logger = null;
   private Thread thread = null;
   
-  private SocketServer(int port) {
+  private SocketServer(Logger logger, int port) {
     this.port = port;
     this.dataListeners = new CopyOnWriteArrayList<>();
     this.handlers = new CopyOnWriteArrayList<>();
+    this.logger = logger;
   }
   
-  public static SocketServer build(int port) {
-    SocketServer socketServer = new SocketServer(port);
+  public static SocketServer build(Logger logger, int port) {
+    SocketServer socketServer = new SocketServer(logger, port);
     socketServer.thread = new Thread(socketServer);
     socketServer.thread.setDaemon(true);
     socketServer.thread.start();
@@ -35,20 +38,21 @@ public class SocketServer implements Runnable {
   @Override public void run() {
     while(!thread.isInterrupted()) { // keep the server alive
       try(ServerSocket serverSocket = new ServerSocket(port)) {
-        System.out.printf("SERVER OPENED TO PORT %1$d\n", port);
+        logger.logInfo("SERVER", String.format("Opened on port %1$d", port));
         Socket socket = null;
         serverSocket.setSoTimeout(0);
         while((socket = serverSocket.accept()) != null) {
-          System.out.println("SERVER ACCEPTED SOCKET CONNECTION");
-          IncomingSocketHandler handler = new IncomingSocketHandler();
+          logger.logDebug("SERVER", String.format("Accepted socket connection from %1$s",
+              socket.getInetAddress().getHostAddress()));
+          IncomingSocketHandler handler = new IncomingSocketHandler(logger);
           handlers.add(handler);
           handler.handle(socket, this);
         }
       } catch(BindException e) {
-        e.printStackTrace();
+        logger.logError("SERVER", e.getMessage());
         throw new RuntimeException(e);
       } catch(IOException e) {
-        e.printStackTrace();
+        logger.logError("SERVER", e.getMessage());
       }
     }
   }

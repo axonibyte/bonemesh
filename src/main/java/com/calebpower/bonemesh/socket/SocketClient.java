@@ -13,19 +13,22 @@ import java.util.List;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import com.calebpower.bonemesh.Logger;
 import com.calebpower.bonemesh.message.AckMessage;
 
 public class SocketClient implements Runnable {
 
   private List<Payload> payloadQueue = null;
+  private Logger logger = null;
   private Thread thread = null;
   
-  private SocketClient() {
+  private SocketClient(Logger logger) {
+    this.logger = logger;
     this.payloadQueue = new LinkedList<>();
   }
   
-  public static SocketClient build() {
-    SocketClient socketClient = new SocketClient();
+  public static SocketClient build(Logger logger) {
+    SocketClient socketClient = new SocketClient(logger);
     socketClient.thread = new Thread(socketClient);
     socketClient.thread.setDaemon(true);
     socketClient.thread.start();
@@ -52,25 +55,25 @@ public class SocketClient implements Runnable {
           outputStream = new DataOutputStream(socket.getOutputStream());
           
           PrintWriter out = new PrintWriter(outputStream);
-          System.out.printf("CLIENT SENDING DATA: %1$s\n", payload.getRawData());
+          logger.logDebug("CLIENT", String.format("Sending data: %1$s", payload.getRawData()));
           out.println(payload.getRawData());
           out.flush();
           
           BufferedReader in = new BufferedReader(new InputStreamReader(inputStream));
           try {
             JSONObject json = new JSONObject(in.readLine());
-            System.out.printf("CLIENT RECEIVED DATA: %1$s\n", json.toString());
+            logger.logDebug("CLIENT", String.format("Received data: %1$s", json.toString()));
             if(payload.getAckListener() != null
                 && AckMessage.isImplementedBy(json))
               payload.getAckListener().receiveAck(payload);
           } catch(JSONException e) {
-            e.printStackTrace();
+            logger.logError("CLIENT", e.getMessage());
           }
           
           inputStream.close();
           outputStream.close();
         } catch(IOException e) {
-          System.out.println("Ran into issues sending data: " + e.getMessage());
+          logger.logError("CLIENT", String.format("Ran into issues sending data: %1$s", e.getMessage()));
           payload.getAckListener().receiveNak(payload);
           if(payload.doRequeueOnFailure()) queuePayload(payload); // try again later
         }

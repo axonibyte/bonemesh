@@ -12,8 +12,9 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import com.calebpower.bonemesh.listener.AckListener;
-import com.calebpower.bonemesh.listener.CheapDataListenerImpl;
 import com.calebpower.bonemesh.listener.DataListener;
+import com.calebpower.bonemesh.listener.cheap.CheapDataListener;
+import com.calebpower.bonemesh.listener.cheap.CheapLogListener;
 import com.calebpower.bonemesh.message.GenericMessage;
 import com.calebpower.bonemesh.message.HelloMessage;
 import com.calebpower.bonemesh.node.Node;
@@ -24,6 +25,7 @@ import com.calebpower.bonemesh.socket.SocketServer;
 
 public class BoneMesh implements AckListener {
   
+  private Logger logger = null;
   private NodeMap nodeMap = null;
   private SocketClient socketClient = null;
   private SocketServer socketServer = null;
@@ -31,10 +33,11 @@ public class BoneMesh implements AckListener {
   private Thread heartbeatThread = null;
   
   public BoneMesh(String label, int port) {
+    this.logger = new Logger();
     this.instanceLabel = label;
     this.nodeMap = new NodeMap();
-    this.socketClient = SocketClient.build();
-    this.socketServer = SocketServer.build(port);
+    this.socketClient = SocketClient.build(logger);
+    this.socketServer = SocketServer.build(logger, port);
     Heartbeat heartbeat = new Heartbeat();
     heartbeatThread = new Thread(heartbeat);
     heartbeatThread.setDaemon(true);
@@ -56,6 +59,9 @@ public class BoneMesh implements AckListener {
     BoneMesh boneMesh = new BoneMesh(
         cmd.getOptionValue("node_label"),
         Integer.parseInt(cmd.getOptionValue("listening_port")));
+    
+    boneMesh.logger.addListener(new CheapLogListener());
+    
     if(cmd.hasOption("target_nodes")) {
       String[] targetNodes = cmd.getOptionValues("target_nodes");
       for(String targetNode : targetNodes) {
@@ -64,9 +70,9 @@ public class BoneMesh implements AckListener {
       }
     }
     
-    System.out.println("PROMPT IS READY");
+    boneMesh.logger.logInfo("BONEMESH", "Prompt is ready.");
     
-    DataListener listener = new CheapDataListenerImpl();
+    DataListener listener = new CheapDataListener(boneMesh.logger);
     boneMesh.addDataListener(listener);
     Scanner scanner = new Scanner(System.in);
     String line = null;
@@ -86,7 +92,7 @@ public class BoneMesh implements AckListener {
     }
     scanner.close();
     boneMesh.kill();
-    System.out.println("goodbye!");
+    boneMesh.logger.logInfo("BONEMESH", "Goodbye! :)");
   }
   
   public void addNode(String label, String address) throws Exception { // this is a synchronous (blocking) method
@@ -127,11 +133,16 @@ public class BoneMesh implements AckListener {
     try {
       String target = payload.getData().getString("to");
       Node node = nodeMap.getNodeByLabel(target);
-      if(node != null)
+      boolean wasAlive = false;
+      if(node != null) {
+        wasAlive = nodeMap.isAlive(node);
         nodeMap.setNodeAlive(node, alive);
-      System.out.printf("Attempted to set node %1$s to alive=%2$b\n", target, alive);
+      }
+      String message = String.format("Node %1$s is %2$s!", target, alive ? "ALIVE" : "DEAD");
+      if(!wasAlive && alive) logger.logInfo("BONEMESH", message);
+      else if(!alive) logger.logError("BONEMESH", message);
     } catch(JSONException e) {
-      e.printStackTrace();
+      logger.logError("BONEMESH", e.getMessage());
     }
   }
   
