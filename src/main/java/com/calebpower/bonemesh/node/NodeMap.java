@@ -3,7 +3,6 @@ package com.calebpower.bonemesh.node;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.Logger;
 
 public class NodeMap {
   
