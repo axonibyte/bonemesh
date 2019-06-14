@@ -23,6 +23,11 @@ import com.calebpower.bonemesh.socket.Payload;
 import com.calebpower.bonemesh.socket.SocketClient;
 import com.calebpower.bonemesh.socket.SocketServer;
 
+/**
+ * Virtual point-to-point mesh network driver for Java.
+ * 
+ * @author Caleb L. Power
+ */
 public class BoneMesh implements AckListener {
   
   private Logger logger = null;
@@ -32,6 +37,12 @@ public class BoneMesh implements AckListener {
   private String instanceLabel = null;
   private Thread heartbeatThread = null;
   
+  /**
+   * Overloaded constructor.
+   * 
+   * @param label the name of this instance
+   * @param port the port to listen to
+   */
   public BoneMesh(String label, int port) {
     this.logger = new Logger();
     this.instanceLabel = label;
@@ -44,6 +55,13 @@ public class BoneMesh implements AckListener {
     heartbeatThread.start();
   }
   
+  /**
+   * Test driver implementation.
+   * Not to be used when implemented as a library.
+   * 
+   * @param args command-line arguments
+   * @throws Exception to be thrown if something bad happens
+   */
   public static void main(String[] args) throws Exception {
     Options options = new Options();
     options.addOption("l", "node_label", true, "Node label.");
@@ -95,6 +113,13 @@ public class BoneMesh implements AckListener {
     boneMesh.logger.logInfo("BONEMESH", "Goodbye! :)");
   }
   
+  /**
+   * Adds a node to the BoneMesh network.
+   * 
+   * @param label the name of the server to be added
+   * @param address the address of the server, i.e. <code>127.0.0.1:8888</code>
+   * @throws Exception to be thrown if something bad happens
+   */
   public void addNode(String label, String address) throws Exception { // this is a synchronous (blocking) method
     if(label == null) throw new Exception("Node label cannot be null.");
     if(address == null) throw new Exception("Node address cannot be null.");
@@ -108,11 +133,22 @@ public class BoneMesh implements AckListener {
     socketClient.queuePayload(payload);
   }
   
+  /**
+   * Removes a node from the BoneMesh network.
+   * 
+   * @param label the name of the server to be removed
+   */
   public void removeNode(String label) {
     Node node = nodeMap.getNodeByLabel(label);
     if(node != null) nodeMap.removeNode(node);
   }
   
+  /**
+   * Broadcasts data to the entire network.
+   * 
+   * @param datum the datum to be broadcasted
+   * @return <code>true</code> if broadcasting was successful
+   */
   public boolean broadcastDatum(JSONObject datum) {
     boolean success = true;
     for(Node node : nodeMap.getNodes())
@@ -120,6 +156,14 @@ public class BoneMesh implements AckListener {
     return success;
   }
   
+  /**
+   * Sends data to a target server.
+   * 
+   * @param target the recipient server
+   * @param datum the datum to be sent
+   * @return <code>true</code> if the payload was queued;
+   *         <code>false</code> is not an indicator of message reception
+   */
   public boolean sendDatum(String target, JSONObject datum) {
     Node node = nodeMap.getNodeByLabel(target);
     if(node == null) return false;
@@ -146,32 +190,61 @@ public class BoneMesh implements AckListener {
     }
   }
   
+  /**
+   * Retrieves all known nodes.
+   * 
+   * @return a set of all known nodes
+   */
   public Set<Node> getNodes() {
     return nodeMap.getNodes();
   }
   
+  /**
+   * Retrieves this label of this instance.
+   * 
+   * @return the label denoting this instance
+   */
   public String getInstanceLabel() {
     return instanceLabel;
   }
   
+  /**
+   * Adds a data listener for data reception.
+   * 
+   * @param listener the data listener
+   */
   public void addDataListener(DataListener listener) {
     socketServer.addDataListener(listener);
   }
   
+  /**
+   * Removes a data listener from the BoneMesh instance.
+   * 
+   * @param listener the data listener
+   */
   public void removeDataListener(DataListener listener) {
     socketServer.removeDataListener(listener);
   }
   
+  /**
+   * Kills this BoneMesh node.
+   */
   public void kill() {
     heartbeatThread.interrupt();
     socketClient.kill();
     socketServer.kill();
   }
 
+  /**
+   * {@inheritDoc}
+   */
   @Override public void receiveAck(Payload payload) {
     setNodeStatus(payload, true);
   }
 
+  /**
+   * {@inheritDoc}
+   */
   @Override public void receiveNak(Payload payload) {
     setNodeStatus(payload, false);
   }

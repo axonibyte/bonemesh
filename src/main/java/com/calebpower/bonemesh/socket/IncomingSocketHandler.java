@@ -14,6 +14,11 @@ import org.json.JSONObject;
 import com.calebpower.bonemesh.Logger;
 import com.calebpower.bonemesh.message.AckMessage;
 
+/**
+ * Handles incoming data.
+ * 
+ * @author Caleb L. Power
+ */
 public class IncomingSocketHandler implements Runnable {
   
   private Logger logger = null;
@@ -21,10 +26,21 @@ public class IncomingSocketHandler implements Runnable {
   private SocketServer server = null;
   private Thread thread = null;
   
+  /**
+   * Overloaded constructor.
+   * 
+   * @param logger the logger
+   */
   public IncomingSocketHandler(Logger logger) {
     this.logger = logger;
   }
   
+  /**
+   * Launches a thread to handle the socket.
+   * 
+   * @param socket the incoming socket
+   * @param callback a callback to the socket server
+   */
   public void handle(Socket socket, SocketServer callback) {
     this.server = callback;
     this.socket = socket;
@@ -33,6 +49,9 @@ public class IncomingSocketHandler implements Runnable {
     thread.start();
   }
   
+  /**
+   * {@inheritDoc}
+   */
   @Override public void run() {
     DataInputStream inputStream = null;
     DataOutputStream outputStream = null;
@@ -58,6 +77,9 @@ public class IncomingSocketHandler implements Runnable {
     server.killHandler(this);
   }
   
+  /**
+   * Interrupts the thread for this handler instance.
+   */
   public void kill() {
     thread.interrupt();
   }

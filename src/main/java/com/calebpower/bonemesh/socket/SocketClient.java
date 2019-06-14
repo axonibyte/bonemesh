@@ -16,6 +16,11 @@ import org.json.JSONObject;
 import com.calebpower.bonemesh.Logger;
 import com.calebpower.bonemesh.message.AckMessage;
 
+/**
+ * Sends out payloads.
+ * 
+ * @author Caleb L. Power
+ */
 public class SocketClient implements Runnable {
 
   private List<Payload> payloadQueue = null;
@@ -27,6 +32,12 @@ public class SocketClient implements Runnable {
     this.payloadQueue = new LinkedList<>();
   }
   
+  /**
+   * Builds and launches a socket client thread.
+   * 
+   * @param logger the logger
+   * @return a reference to the new socket client object
+   */
   public static SocketClient build(Logger logger) {
     SocketClient socketClient = new SocketClient(logger);
     socketClient.thread = new Thread(socketClient);
@@ -35,6 +46,9 @@ public class SocketClient implements Runnable {
     return socketClient;
   }
   
+  /**
+   * {@inheritDoc}
+   */
   @Override public void run() {
     try {
       for(;;) {
@@ -82,6 +96,11 @@ public class SocketClient implements Runnable {
     } catch(InterruptedException e) { }
   }
   
+  /**
+   * Queues up a payload for delivery
+   * 
+   * @param payload the payload with wrapped data
+   */
   public synchronized void queuePayload(Payload payload) {
     synchronized(payloadQueue) {
       payloadQueue.add(payload);
@@ -89,6 +108,9 @@ public class SocketClient implements Runnable {
     }
   }
   
+  /**
+   * Interrupts the socket client thread.
+   */
   public void kill() {
     thread.interrupt();
   }
