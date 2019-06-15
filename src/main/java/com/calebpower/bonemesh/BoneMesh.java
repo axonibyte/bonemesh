@@ -13,6 +13,7 @@ import org.json.JSONObject;
 
 import com.calebpower.bonemesh.listener.AckListener;
 import com.calebpower.bonemesh.listener.DataListener;
+import com.calebpower.bonemesh.listener.LogListener;
 import com.calebpower.bonemesh.listener.cheap.CheapDataListener;
 import com.calebpower.bonemesh.listener.cheap.CheapLogListener;
 import com.calebpower.bonemesh.message.GenericMessage;
@@ -224,6 +225,24 @@ public class BoneMesh implements AckListener {
    */
   public void removeDataListener(DataListener listener) {
     socketServer.removeDataListener(listener);
+  }
+  
+  /**
+   * Adds a log listener for log reception.
+   * 
+   * @param listener the log listener
+   */
+  public void addLogListener(LogListener listener) {
+    logger.addListener(listener);
+  }
+  
+  /**
+   * Removes a log listener from the BoneMesh logger instance.
+   * 
+   * @param listener the log listener
+   */
+  public void removeLogListener(LogListener listener) {
+    logger.removeListener(listener);
   }
   
   /**
