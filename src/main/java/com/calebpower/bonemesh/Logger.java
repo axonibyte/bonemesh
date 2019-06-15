@@ -17,7 +17,7 @@ public class Logger {
   /**
    * Null constructor.
    */
-  Logger() {
+  public Logger() {
     this.listeners = new CopyOnWriteArrayList<>();
   }
   
