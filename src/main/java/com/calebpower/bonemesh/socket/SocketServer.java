@@ -103,7 +103,7 @@ public class SocketServer implements Runnable {
    */
   public void kill() {
     thread.interrupt();
-    try {
+    if(serverSocket != null) try {
       serverSocket.close();
     } catch(IOException e) { }
     for(IncomingSocketHandler handler : handlers)
