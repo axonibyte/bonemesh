@@ -21,7 +21,7 @@ version = theVersion
 sourceCompatibility = theSourceCompatibility
 
 dependencies {
-  implementation 'org.json:json:20180130'
+  api 'org.json:json:20180130'
   implementation 'commons-cli:commons-cli:1.4'
   testImplementation 'junit:junit:4.12'
 }
