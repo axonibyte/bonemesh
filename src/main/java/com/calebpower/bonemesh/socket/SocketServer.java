@@ -23,6 +23,7 @@ public class SocketServer implements Runnable {
   private List<DataListener> dataListeners = null;
   private List<IncomingSocketHandler> handlers = null;
   private Logger logger = null;
+  private ServerSocket serverSocket = null;
   private Thread thread = null;
   
   private SocketServer(Logger logger, int port) {
@@ -52,7 +53,8 @@ public class SocketServer implements Runnable {
    */
   @Override public void run() {
     while(!thread.isInterrupted()) { // keep the server alive
-      try(ServerSocket serverSocket = new ServerSocket(port)) {
+      try {
+        serverSocket = new ServerSocket(port);
         logger.logInfo("SERVER", String.format("Opened on port %1$d", port));
         Socket socket = null;
         serverSocket.setSoTimeout(0);
@@ -69,6 +71,10 @@ public class SocketServer implements Runnable {
       } catch(IOException e) {
         logger.logError("SERVER", e.getMessage());
       }
+      
+      if(serverSocket != null) try {
+        serverSocket.close();
+      } catch(IOException e) { }
     }
   }
   
@@ -97,6 +103,9 @@ public class SocketServer implements Runnable {
    */
   public void kill() {
     thread.interrupt();
+    try {
+      serverSocket.close();
+    } catch(IOException e) { }
     for(IncomingSocketHandler handler : handlers)
       handler.kill();
   }
