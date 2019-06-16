@@ -130,7 +130,7 @@ public class BoneMesh implements AckListener {
     Node node = new Node(label, splitAddress[0], port);
     nodeMap.addOrReplaceNode(node, false);
     HelloMessage message = new HelloMessage(instanceLabel, label);
-    Payload payload = new Payload(message, node.getIP(), node.getPort(), this);
+    Payload payload = new Payload(message, node.getIP(), node.getPort(), this, false);
     socketClient.queuePayload(payload);
   }
   
