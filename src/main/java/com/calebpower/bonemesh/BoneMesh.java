@@ -153,9 +153,20 @@ public class BoneMesh implements AckListener {
    * @return <code>true</code> if broadcasting was successful
    */
   public boolean broadcastDatum(JSONObject datum) {
+    return broadcastDatum(datum, true);
+  }
+  
+  /**
+   * Broadcasts data to the entire network.
+   * 
+   * @param datum the datum to be broadcasted
+   * @param retryOnFailure resent the payload if there is a network error
+   * @return <code>true</code> if broadcasting was successful
+   */
+  public boolean broadcastDatum(JSONObject datum, boolean retryOnFailure) {
     boolean success = true;
     for(Node node : nodeMap.getNodes())
-      success = sendDatum(node.getLabel(), datum) && success;
+      success = sendDatum(node.getLabel(), datum, retryOnFailure) && success;
     return success;
   }
   
@@ -189,12 +200,12 @@ public class BoneMesh implements AckListener {
    * 
    * @param target the recipient server
    * @param datum the datum to be sent
-   * @param tryAgainOnFailure repeat the request if there is a network failure
+   * @param retryOnFailure repeat the request if there is a network failure
    * @return <code>true</code> if the payload was queued;
    *         <code>false</code> is not an indicator of message reception
    */
-  public boolean sendDatum(String target, JSONObject datum, boolean tryAgainOnFailure) {
-    return sendDatum(target, datum, tryAgainOnFailure, (AckListener[])null);
+  public boolean sendDatum(String target, JSONObject datum, boolean retryOnFailure) {
+    return sendDatum(target, datum, retryOnFailure, (AckListener[])null);
   }
   
   /**
@@ -203,11 +214,11 @@ public class BoneMesh implements AckListener {
    * @param target the recipient server
    * @param datum the datum to be sent
    * @param ackListeners additional listeners
-   * @param tryAgainOnFailure repeat the request if there is a network failure
+   * @param retryOnFailure repeat the request if there is a network failure
    * @return <code>true</code> if the payload was queued;
    *         <code>false</code> is not an indicator of message reception
    */
-  public boolean sendDatum(String target, JSONObject datum, boolean tryAgainOnFailure, AckListener... ackListeners) {
+  public boolean sendDatum(String target, JSONObject datum, boolean retryOnFailure, AckListener... ackListeners) {
     Node node = nodeMap.getNodeByLabel(target);
     if(node == null) return false;
     GenericMessage message = new GenericMessage(instanceLabel, node.getLabel(), datum);
@@ -216,7 +227,7 @@ public class BoneMesh implements AckListener {
     if(ackListeners != null)
       for(AckListener listener : ackListeners)
         ackListenerArray.add(listener);
-    Payload payload = new Payload(message, node.getIP(), node.getPort(), ackListenerArray, tryAgainOnFailure);
+    Payload payload = new Payload(message, node.getIP(), node.getPort(), ackListenerArray, retryOnFailure);
     socketClient.queuePayload(payload);
     return true;
   }
