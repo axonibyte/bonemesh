@@ -164,11 +164,50 @@ public class BoneMesh implements AckListener {
    * 
    * @param target the recipient server
    * @param datum the datum to be sent
+   * @return <code>true</code> if the payload was queued;
+   *         <code>false</code> is not an indicator of message reception
+   */
+  public boolean sendDatum(String target, JSONObject datum) {
+    return sendDatum(target, datum, (AckListener[])null);
+  }
+    
+  /**
+   * Sends data to a target server.
+   * 
+   * @param target the recipient server
+   * @param datum the datum to be sent
    * @param ackListeners additional listeners
    * @return <code>true</code> if the payload was queued;
    *         <code>false</code> is not an indicator of message reception
    */
   public boolean sendDatum(String target, JSONObject datum, AckListener... ackListeners) {
+    return sendDatum(target, datum, true, ackListeners);
+  }
+  
+  /**
+   * Sends data to a target server.
+   * 
+   * @param target the recipient server
+   * @param datum the datum to be sent
+   * @param tryAgainOnFailure repeat the request if there is a network failure
+   * @return <code>true</code> if the payload was queued;
+   *         <code>false</code> is not an indicator of message reception
+   */
+  public boolean sendDatum(String target, JSONObject datum, boolean tryAgainOnFailure) {
+    return sendDatum(target, datum, tryAgainOnFailure, (AckListener[])null);
+  }
+  
+  /**
+   * Sends data to a target server.
+   * 
+   * @param target the recipient server
+   * @param datum the datum to be sent
+   * @param ackListeners additional listeners
+   * @param tryAgainOnFailure repeat the request if there is a network failure
+   * @return <code>true</code> if the payload was queued;
+   *         <code>false</code> is not an indicator of message reception
+   */
+  public boolean sendDatum(String target, JSONObject datum, boolean tryAgainOnFailure, AckListener... ackListeners) {
     Node node = nodeMap.getNodeByLabel(target);
     if(node == null) return false;
     GenericMessage message = new GenericMessage(instanceLabel, node.getLabel(), datum);
@@ -177,21 +216,9 @@ public class BoneMesh implements AckListener {
     if(ackListeners != null)
       for(AckListener listener : ackListeners)
         ackListenerArray.add(listener);
-    Payload payload = new Payload(message, node.getIP(), node.getPort(), ackListenerArray);
+    Payload payload = new Payload(message, node.getIP(), node.getPort(), ackListenerArray, tryAgainOnFailure);
     socketClient.queuePayload(payload);
     return true;
-  }
-  
-  /**
-   * Sends data to a target server.
-   * 
-   * @param target the recipient server
-   * @param datum the datum to be sent
-   * @return <code>true</code> if the payload was queued;
-   *         <code>false</code> is not an indicator of message reception
-   */
-  public boolean sendDatum(String target, JSONObject datum) {
-    return sendDatum(target, datum, (AckListener[])null);
   }
   
   private void setNodeStatus(Payload payload, boolean alive) {
