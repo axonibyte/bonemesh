@@ -14,6 +14,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import com.calebpower.bonemesh.Logger;
+import com.calebpower.bonemesh.listener.AckListener;
 import com.calebpower.bonemesh.message.AckMessage;
 
 /**
@@ -77,9 +78,10 @@ public class SocketClient implements Runnable {
           try {
             JSONObject json = new JSONObject(in.readLine());
             logger.logDebug("CLIENT", String.format("Received data: %1$s", json.toString()));
-            if(payload.getAckListener() != null
+            if(payload.getAckListeners() != null
                 && AckMessage.isImplementedBy(json))
-              payload.getAckListener().receiveAck(payload);
+              for(AckListener listener : payload.getAckListeners())
+                listener.receiveAck(payload);
           } catch(JSONException e) {
             logger.logError("CLIENT", e.getMessage());
           }
@@ -88,7 +90,9 @@ public class SocketClient implements Runnable {
           outputStream.close();
         } catch(IOException e) {
           logger.logError("CLIENT", String.format("Ran into issues sending data: %1$s", e.getMessage()));
-          payload.getAckListener().receiveNak(payload);
+          if(payload.getAckListeners() != null)
+            for(AckListener listener : payload.getAckListeners())
+              listener.receiveNak(payload);
           if(payload.doRequeueOnFailure()) queuePayload(payload); // try again later
         }
         

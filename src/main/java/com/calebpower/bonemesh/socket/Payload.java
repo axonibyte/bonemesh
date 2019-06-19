@@ -1,5 +1,8 @@
 package com.calebpower.bonemesh.socket;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.json.JSONObject;
 
 import com.calebpower.bonemesh.listener.AckListener;
@@ -14,7 +17,7 @@ public class Payload {
   
   private boolean requeueOnFailure;
   private int targetPort;
-  private AckListener ackListener = null;
+  private List<AckListener> ackListeners = null;
   private JSONObject data = null;
   private String targetIP = null;
   
@@ -28,7 +31,7 @@ public class Payload {
    * @param targetPort the target port
    */
   public Payload(JSONObject data, String targetIP, int targetPort) {
-    this(data, targetIP, targetPort, null);
+    this(data, targetIP, targetPort, (List<AckListener>)null);
   }
   
   /**
@@ -41,7 +44,20 @@ public class Payload {
    * @param requeueOnFailure <code>true</code> to requeue on failure
    */
   public Payload(JSONObject data, String targetIP, int targetPort, boolean requeueOnFailure) {
-    this(data, targetIP, targetPort, null, requeueOnFailure);
+    this(data, targetIP, targetPort, (List<AckListener>)null, requeueOnFailure);
+  }
+
+  /**
+   * Overloaded constructor.
+   * Requeues on routing failure (downed node/server).
+   * 
+   * @param data the wrapped data
+   * @param targetIP the target IP
+   * @param targetPort the target port
+   * @param ackListeners an ack/nak listener
+   */
+  public Payload(JSONObject data, String targetIP, int targetPort, AckListener ackListener) {
+    this(data, targetIP, targetPort, ackListener, true);
   }
   
   /**
@@ -53,8 +69,8 @@ public class Payload {
    * @param targetPort the target port
    * @param ackListener an ack/nak listener
    */
-  public Payload(JSONObject data, String targetIP, int targetPort, AckListener ackListener) {
-    this(data, targetIP, targetPort, ackListener, true);
+  public Payload(JSONObject data, String targetIP, int targetPort, List<AckListener> ackListeners) {
+    this(data, targetIP, targetPort, ackListeners, true);
   }
   
   /**
@@ -63,14 +79,33 @@ public class Payload {
    * @param data the wrapped data
    * @param targetIP the target IP
    * @param targetPort the target port
-   * @param ackListener an ack/nak listener
+   * @param ackListeners an ack/nak listener
    * @param requeueOnFailure <code>true</code> to requeue on failure
    */
   public Payload(JSONObject data, String targetIP, int targetPort, AckListener ackListener, boolean requeueOnFailure) {
+    List<AckListener> ackListeners = new ArrayList<>();
+    ackListeners.add(ackListener);
     this.data = data;
     this.targetIP = targetIP;
     this.targetPort = targetPort;
-    this.ackListener = ackListener;
+    this.ackListeners = ackListeners;
+    this.requeueOnFailure = requeueOnFailure;
+  }
+  
+  /**
+   * Overloaded constructor.
+   * 
+   * @param data the wrapped data
+   * @param targetIP the target IP
+   * @param targetPort the target port
+   * @param ackListeners ack/nak listeners
+   * @param requeueOnFailure <code>true</code> to requeue on failure
+   */
+  public Payload(JSONObject data, String targetIP, int targetPort, List<AckListener> ackListeners, boolean requeueOnFailure) {
+    this.data = data;
+    this.targetIP = targetIP;
+    this.targetPort = targetPort;
+    this.ackListeners = ackListeners;
     this.requeueOnFailure = requeueOnFailure;
   }
   
@@ -111,12 +146,12 @@ public class Payload {
   }
   
   /**
-   * Retrieves the ack/nak listener.
+   * Retrieves the ack/nak listeners.
    * 
-   * @return the ack listener or <code>null</code> if there isn't one
+   * @return the ack listeners or <code>null</code> if there aren't any
    */
-  public AckListener getAckListener() {
-    return ackListener;
+  public List<AckListener> getAckListeners() {
+    return ackListeners;
   }
   
   /**

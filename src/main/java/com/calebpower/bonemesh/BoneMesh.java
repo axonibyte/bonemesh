@@ -1,5 +1,7 @@
 package com.calebpower.bonemesh;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Scanner;
 import java.util.Set;
 
@@ -162,16 +164,34 @@ public class BoneMesh implements AckListener {
    * 
    * @param target the recipient server
    * @param datum the datum to be sent
+   * @param ackListeners additional listeners
+   * @return <code>true</code> if the payload was queued;
+   *         <code>false</code> is not an indicator of message reception
+   */
+  public boolean sendDatum(String target, JSONObject datum, AckListener... ackListeners) {
+    Node node = nodeMap.getNodeByLabel(target);
+    if(node == null) return false;
+    GenericMessage message = new GenericMessage(instanceLabel, node.getLabel(), datum);
+    List<AckListener> ackListenerArray = new ArrayList<>();
+    ackListenerArray.add(this);
+    if(ackListeners != null)
+      for(AckListener listener : ackListeners)
+        ackListenerArray.add(listener);
+    Payload payload = new Payload(message, node.getIP(), node.getPort(), ackListenerArray);
+    socketClient.queuePayload(payload);
+    return true;
+  }
+  
+  /**
+   * Sends data to a target server.
+   * 
+   * @param target the recipient server
+   * @param datum the datum to be sent
    * @return <code>true</code> if the payload was queued;
    *         <code>false</code> is not an indicator of message reception
    */
   public boolean sendDatum(String target, JSONObject datum) {
-    Node node = nodeMap.getNodeByLabel(target);
-    if(node == null) return false;
-    GenericMessage message = new GenericMessage(instanceLabel, node.getLabel(), datum);
-    Payload payload = new Payload(message, node.getIP(), node.getPort(), this);
-    socketClient.queuePayload(payload);
-    return true;
+    return sendDatum(target, datum, (AckListener[])null);
   }
   
   private void setNodeStatus(Payload payload, boolean alive) {
