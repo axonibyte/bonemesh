@@ -1,19 +1,12 @@
 plugins {
-  id "com.github.johnrengelman.shadow" version "2.0.1"
+  id "com.github.johnrengelman.shadow" version "5.1.0"
 }
 
-//apply the java-library plugin to add support for Java Library
 apply plugin: 'java-library'
-
-//apply the eclipse plugin to add support for the eclipse IDE
 apply plugin: 'eclipse'
 
-//in this section you declare where to find the dependencies of your project
 repositories {
   jcenter()
-  maven {
-    url "http://artifactory.calebpower.com/artifactory/meep-deps"
-  }
 }
 
 group = theGroup
@@ -21,7 +14,7 @@ version = theVersion
 sourceCompatibility = theSourceCompatibility
 
 dependencies {
-  api 'org.json:json:20180130'
+  api 'org.json:json:20190722'
   implementation 'commons-cli:commons-cli:1.4'
   testImplementation 'junit:junit:4.12'
 }
@@ -35,7 +28,7 @@ eclipse {
 
 jar {
   manifest {
-    attributes 'Main-Class': 'com.calebpower.bonemesh.BoneMesh'
+    attributes 'Main-Class': theGroup + "." + theName
   }
 }
 
@@ -46,7 +39,3 @@ shadowJar {
     version = theVersion
   }
 }
-
-//configurations {
-//  runtime.exclude module: 'spigot-api'
-//}
