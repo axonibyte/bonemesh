@@ -1,0 +1,18 @@
+image: openjdk:8
+
+pipelines:
+  branches:
+    master:
+      - step:
+          caches:
+            - gradle
+          script:
+            - echo "Running pipeline for master branch."
+            - bash ./gradlew clean test shadowJar
+    dev:
+      - step:
+          caches:
+            - gradle
+          script:
+            - echo "Running pipeline for dev branch."
+            - bash ./gradlew clean test shadowJar
