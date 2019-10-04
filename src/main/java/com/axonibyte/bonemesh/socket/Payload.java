@@ -70,7 +70,7 @@ public class Payload {
    * @param data the wrapped data
    * @param targetIP the target IP
    * @param targetPort the target port
-   * @param ackListeners an ack/nak listener
+   * @param ackListener an ack/nak listener
    */
   public Payload(JSONObject data, String targetIP, int targetPort, AckListener ackListener) {
     this(data, targetIP, targetPort, ackListener, true);
@@ -83,7 +83,7 @@ public class Payload {
    * @param data the wrapped data
    * @param targetIP the target IP
    * @param targetPort the target port
-   * @param ackListener an ack/nak listener
+   * @param ackListeners an ack/nak listener
    */
   public Payload(JSONObject data, String targetIP, int targetPort, List<AckListener> ackListeners) {
     this(data, targetIP, targetPort, ackListeners, true);
@@ -95,7 +95,7 @@ public class Payload {
    * @param data the wrapped data
    * @param targetIP the target IP
    * @param targetPort the target port
-   * @param ackListeners an ack/nak listener
+   * @param ackListener an ack/nak listener
    * @param requeueOnFailure <code>true</code> to requeue on failure
    */
   public Payload(JSONObject data, String targetIP, int targetPort, AckListener ackListener, boolean requeueOnFailure) {

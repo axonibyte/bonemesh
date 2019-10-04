@@ -4,11 +4,32 @@ plugins {
 
 apply plugin: 'java-library'
 apply plugin: 'eclipse'
+apply plugin: 'maven'
+apply plugin: 'signing'
 
 repositories {
   jcenter()
 }
 
+task javadocJar(type: Jar) {
+  classifier = 'javadoc'
+  from javadoc
+}
+
+task sourcesJar(type: Jar) {
+  classifier = 'sources'
+  from sourceSets.main.allSource
+}
+
+artifacts {
+  archives javadocJar, sourcesJar
+}
+
+signing {
+  sign configurations.archives
+}
+
+archivesBaseName = theName
 group = theGroup
 version = theVersion
 sourceCompatibility = theSourceCompatibility
@@ -29,6 +50,50 @@ eclipse {
 jar {
   manifest {
     attributes 'Main-Class': theGroup + "." + theName
+  }
+}
+
+uploadArchives {
+  repositories {
+    mavenDeployer {
+      beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
+      
+      repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
+        authentication(userName: project.findProperty('nexusUsername') ?: null, password: project.findProperty('nexusPassword') ?: null)
+      }
+      
+      snapshotRepository(url: "https://oss.sonatype.org/content/repositories/snapshots/") {
+        authentication(userName: project.findProperty('nexusUsername') ?: null, password: project.findProperty('nexusPassword') ?: null)
+      }
+      
+      pom.project {
+        name theName
+        packaging 'jar'
+        description 'BoneMesh high-level fully-connected network.'
+        url 'https://bonemesh.axonibyte.com'
+        
+        scm {
+          connection 'scm:https://bitbucket.org/axonibyte/bonemesh.git'
+          developerConnection 'scm:git://bitbucket.org/axonibyte/bonemesh.git'
+          url 'https://bitbucket.org/axonibyte/bonemesh'
+        }
+        
+        licenses {
+          license {
+            name 'The Apache License, Version 2.0'
+            url 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+          }
+        }
+        
+        developers {
+          developer {
+            id 'cpower'
+            name 'Caleb L. Power'
+            email 'caleb.power@axonibyte.com'
+          }
+        }
+      }
+    }
   }
 }
 
