@@ -188,8 +188,8 @@ public class BoneMesh implements AckListener {
    */
   public boolean broadcastDatum(JSONObject datum, boolean retryOnFailure) {
     boolean success = true;
-    for(Node node : nodeMap.getNodes())
-      success = sendDatum(node.getLabel(), datum, retryOnFailure) && success;
+    for(String node : nodeMap.getAllKnownNodeLabels())
+      success = sendDatum(node, datum, retryOnFailure) && success;
     return success;
   }
   
@@ -301,7 +301,7 @@ public class BoneMesh implements AckListener {
    * @return a set of all known nodes
    */
   public Set<Node> getNodes() {
-    return nodeMap.getNodes();
+    return nodeMap.getDirectNodes();
   }
   
   /**
@@ -378,7 +378,7 @@ public class BoneMesh implements AckListener {
         for(;;) {
           Thread.sleep(10000L);
           Map<String, Long> livingNodes = nodeMap.getLivingNodes();
-          for(Node node : nodeMap.getNodes()) {
+          for(Node node : nodeMap.getDirectNodes()) {
             DiscoveryMessage message = new DiscoveryMessage(instanceLabel, node.getLabel(), livingNodes);
             Payload payload = new Payload(message, node.getLabel(), BoneMesh.this, false);
             socketClient.queuePayload(payload);

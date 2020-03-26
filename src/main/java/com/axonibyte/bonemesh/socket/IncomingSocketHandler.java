@@ -48,6 +48,7 @@ public class IncomingSocketHandler implements Runnable {
   /**
    * Overloaded constructor.
    * 
+   * @param boneMesh the BoneMesh instance
    * @param logger the logger
    */
   public IncomingSocketHandler(BoneMesh boneMesh, Logger logger) {

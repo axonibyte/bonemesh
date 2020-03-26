@@ -18,6 +18,7 @@ package com.axonibyte.bonemesh.node;
 
 import java.util.AbstractMap.SimpleEntry;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -104,12 +105,26 @@ public class NodeMap {
   }
   
   /**
-   * Retrieves all known nodes.
+   * Retrieves all directly-known nodes.
    * 
-   * @return a set of all nodes.
+   * @return a set of all directly-known nodes.
    */
-  public Set<Node> getNodes() {
+  public Set<Node> getDirectNodes() {
     return nodes.keySet();
+  }
+  
+  /**
+   * Retrieves the labels of all directly- and indirectly-known nodes.
+   * 
+   * @return a set of all known node labels
+   */
+  public Set<String> getAllKnownNodeLabels() {
+    Set<String> nodes = new HashSet<>();
+    synchronized(routes) {
+      for(String node : routes.keySet())
+        nodes.add(node);
+    }
+    return nodes;
   }
   
   /**
