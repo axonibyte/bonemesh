@@ -178,6 +178,21 @@ public class NodeMap {
     return Long.MAX_VALUE;
   }
   
+  /**
+   * Retrieve a neighboring node that will eventually connect to
+   * the specified target node.
+   * 
+   * @param label the label of the target node
+   * @return a good Node if it exists, or <code>null</code> if it doesn't
+   */
+  public Node getNextBestNode(String label) {
+    Node node = null;
+    synchronized(routes) {
+      if(routes.containsKey(label)) node = routes.get(label);
+    }
+    return node;
+  }
+  
   private synchronized void reworkRoutes() {
     Map<String, Map<String, Long>> discoveredRoutes = new HashMap<>();
     for(String node : neighbors.keySet()) { // for every known node

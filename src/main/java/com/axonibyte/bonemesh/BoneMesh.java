@@ -237,7 +237,10 @@ public class BoneMesh implements AckListener {
    */
   public boolean sendDatum(String target, JSONObject datum, boolean retryOnFailure, AckListener... ackListeners) {
     Node node = nodeMap.getNodeByLabel(target);
-    if(node == null) return false;
+    if(node == null) { // try the next best thing if the first try didn't work
+      node = nodeMap.getNextBestNode(target);
+      if(node == null) return false;
+    }
     GenericMessage message = new GenericMessage(instanceLabel, node.getLabel(), datum);
     List<AckListener> ackListenerArray = new ArrayList<>();
     ackListenerArray.add(this);
