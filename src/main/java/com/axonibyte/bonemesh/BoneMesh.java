@@ -252,6 +252,26 @@ public class BoneMesh implements AckListener {
     return true;
   }
   
+  /**
+   * Send a GenericMessage to a particular node. Generally used to transport
+   * messages from other nodes.
+   * 
+   * @param message the generic message
+   * @return <code>true</code> iff the payload was queued
+   */
+  public boolean sendDatum(GenericMessage message) {
+    Node node = nodeMap.getNodeByLabel(message.getTo());
+    if(node == null) {
+      node = nodeMap.getNextBestNode(message.getTo());
+      if(node == null) return false;
+    }
+    List<AckListener> ackListenerArray = new ArrayList<>();
+    ackListenerArray.add(this);
+    Payload payload = new Payload(message, node.getLabel(), ackListenerArray, false);
+    socketClient.queuePayload(payload);
+    return true;
+  }
+  
   private void setNodeStatus(Payload payload, boolean alive) {
     try {
       String target = payload.getData().getString("to");

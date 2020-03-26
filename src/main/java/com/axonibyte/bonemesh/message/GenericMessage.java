@@ -53,6 +53,19 @@ public class GenericMessage extends JSONObject {
   }
   
   /**
+   * Generates a generic message from a JSON object.
+   * 
+   * @param json the raw JSON object
+   * @throws JSONException if there is unexpected data or lack thereof
+   */
+  public GenericMessage(JSONObject json) throws JSONException {
+    this(json.getString("from"),
+        json.getString("to"),
+        json.getString("action"),
+        json.getJSONObject("payload"));
+  }
+  
+  /**
    * Determines if an incoming JSON object implements a generic message
    * with no custom action.
    * 
@@ -66,4 +79,40 @@ public class GenericMessage extends JSONObject {
     return false;
   }
   
+  /**
+   * Retrieves the sender.
+   * 
+   * @return String denoting the sender
+   */
+  public String getFrom() {
+    return getString("from");
+  }
+  
+  /**
+   * Retrieves the intended target. If message had to be rerouted, then the
+   * receiver might be different than the target.
+   * 
+   * @return String denoting the intended target
+   */
+  public String getTo() {
+    return getString("to");
+  }
+  
+  /**
+   * Retrieves the message payload.
+   * 
+   * @return JSONObject containing the payload data
+   */
+  public JSONObject getPayload() {
+    return getJSONObject("payload");
+  }
+  
+  /**
+   * Retrieves the message action.
+   * 
+   * @return String denoting the message action 
+   */
+  public String getAction() {
+    return getString("action");
+  }
 }

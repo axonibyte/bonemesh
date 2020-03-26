@@ -27,8 +27,10 @@ import java.net.Socket;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import com.axonibyte.bonemesh.BoneMesh;
 import com.axonibyte.bonemesh.Logger;
 import com.axonibyte.bonemesh.message.AckMessage;
+import com.axonibyte.bonemesh.message.GenericMessage;
 
 /**
  * Handles incoming data.
@@ -37,6 +39,7 @@ import com.axonibyte.bonemesh.message.AckMessage;
  */
 public class IncomingSocketHandler implements Runnable {
   
+  private BoneMesh boneMesh = null;
   private Logger logger = null;
   private Socket socket = null;
   private SocketServer server = null;
@@ -47,7 +50,8 @@ public class IncomingSocketHandler implements Runnable {
    * 
    * @param logger the logger
    */
-  public IncomingSocketHandler(Logger logger) {
+  public IncomingSocketHandler(BoneMesh boneMesh, Logger logger) {
+    this.boneMesh = boneMesh;
     this.logger = logger;
   }
   
@@ -81,7 +85,10 @@ public class IncomingSocketHandler implements Runnable {
       logger.logDebug("HANDLER", String.format("Received data: %1$s", json.toString()));
       if(!AckMessage.isImplementedBy(json)) {
         AckMessage ack = new AckMessage(json);
-        server.dispatchToListeners(json);
+        GenericMessage message = new GenericMessage(json); // attempt to deserialize message
+        if(boneMesh.getInstanceLabel().equalsIgnoreCase(message.getTo())) // intended for us?
+          server.dispatchToListeners(json); // yes, dispatch to listeners
+        else boneMesh.sendDatum(message.getTo(), json, false); // no, send to appropriate location
         PrintWriter out = new PrintWriter(outputStream);
         logger.logDebug("HANDLER", String.format("Sending data: %1$s", ack.toString()));
         out.println(ack);
