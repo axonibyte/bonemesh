@@ -90,6 +90,7 @@ public class BoneMesh implements AckListener {
    */
   public static void main(String[] args) throws Exception {
     Options options = new Options();
+    options.addOption("h", "help", false, "Displays a friendly help message.");
     options.addOption("l", "node_label", true, "Node label.");
     options.addOption("p", "listening_port", true, "Server listening port.");
     Option targetNodesOption = new Option("t", "target_nodes", true, "Target nodes.");
@@ -98,45 +99,55 @@ public class BoneMesh implements AckListener {
     options.addOption(targetNodesOption);
     CommandLineParser parser = new DefaultParser();
     CommandLine cmd = parser.parse(options, args);
-    if(!cmd.hasOption("node_label")) throw new Exception("Missing label.");
-    if(!cmd.hasOption("listening_port")) throw new Exception ("Missing listening port.");
-    BoneMesh boneMesh = BoneMesh.build(
-        cmd.getOptionValue("node_label"),
-        Integer.parseInt(cmd.getOptionValue("listening_port")));
-    
-    boneMesh.logger.addListener(new CheapLogListener());
-    
-    if(cmd.hasOption("target_nodes")) {
-      String[] targetNodes = cmd.getOptionValues("target_nodes");
-      for(String targetNode : targetNodes) {
-        String[] nodeArgs = targetNode.split("=");
-        boneMesh.addNode(nodeArgs[0], nodeArgs[1]);
-      }
-    }
-    
-    boneMesh.logger.logInfo("BONEMESH", "Prompt is ready.");
-    
-    DataListener listener = new CheapDataListener(boneMesh.logger);
-    boneMesh.addDataListener(listener);
-    Scanner scanner = new Scanner(System.in);
-    String line = null;
-    while((line = scanner.nextLine()) != null && line.length() != 0) {
-      try {
-        if(line.startsWith("to:")) {
-          String target = line.substring(3, line.indexOf(' '));
-          Node node = boneMesh.nodeMap.getNodeByLabel(target);
-          if(node != null) {
-            boneMesh.sendDatum(node.getLabel(), new JSONObject()
-                .put("line", line.substring(line.indexOf(' ') + 1)));
-            continue;
-          }
+    if(cmd.hasOption("help")) {
+      System.out.println("BoneMesh: From Axonibyte Innovations, LLC.");
+      System.out.println("Designed and Developed by Caleb L. Power");
+      for(Option option : options.getOptions())
+        System.out.println(String.format("%1$s | %2$s\t%3$s",
+            option.getLongOpt(),
+            option.getOpt(),
+            option.getDescription()));
+    } else {
+      if(!cmd.hasOption("node_label")) throw new Exception("Missing label.");
+      if(!cmd.hasOption("listening_port")) throw new Exception ("Missing listening port.");
+      BoneMesh boneMesh = BoneMesh.build(
+          cmd.getOptionValue("node_label"),
+          Integer.parseInt(cmd.getOptionValue("listening_port")));
+      
+      boneMesh.logger.addListener(new CheapLogListener());
+      
+      if(cmd.hasOption("target_nodes")) {
+        String[] targetNodes = cmd.getOptionValues("target_nodes");
+        for(String targetNode : targetNodes) {
+          String[] nodeArgs = targetNode.split("=");
+          boneMesh.addNode(nodeArgs[0], nodeArgs[1]);
         }
-      } catch(Exception e) { }
-      boneMesh.broadcastDatum(new JSONObject().put("line", line));
+      }
+      
+      boneMesh.logger.logInfo("BONEMESH", "Prompt is ready.");
+      
+      DataListener listener = new CheapDataListener(boneMesh.logger);
+      boneMesh.addDataListener(listener);
+      Scanner scanner = new Scanner(System.in);
+      String line = null;
+      while((line = scanner.nextLine()) != null && line.length() != 0) {
+        try {
+          if(line.startsWith("to:")) {
+            String target = line.substring(3, line.indexOf(' '));
+            Node node = boneMesh.nodeMap.getNodeByLabel(target);
+            if(node != null) {
+              boneMesh.sendDatum(node.getLabel(), new JSONObject()
+                  .put("line", line.substring(line.indexOf(' ') + 1)));
+              continue;
+            }
+          }
+        } catch(Exception e) { }
+        boneMesh.broadcastDatum(new JSONObject().put("line", line));
+      }
+      scanner.close();
+      boneMesh.kill();
+      boneMesh.logger.logInfo("BONEMESH", "Goodbye! :)");
     }
-    scanner.close();
-    boneMesh.kill();
-    boneMesh.logger.logInfo("BONEMESH", "Goodbye! :)");
   }
   
   /**
