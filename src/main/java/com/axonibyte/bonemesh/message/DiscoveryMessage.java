@@ -17,6 +17,7 @@
 package com.axonibyte.bonemesh.message;
 
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -47,6 +48,16 @@ public class DiscoveryMessage extends GenericMessage {
   }
   
   /**
+   * Generates a discovery message from a JSON object.
+   * 
+   * @param json the raw JSON object
+   * @throws JSONException if there is unexpected data or lack thereof
+   */
+  public DiscoveryMessage(JSONObject json) throws JSONException {
+    super(json);
+  }
+  
+  /**
    * Determines if an incoming JSON object implements a hello-type message.
    * 
    * @param data the incoming data
@@ -59,4 +70,17 @@ public class DiscoveryMessage extends GenericMessage {
     return false;
   }
   
+  /**
+   * Retrieve a map of neighbors and their latencies.
+   * 
+   * @return map of node neighbors and their latencies
+   */
+  public Map<String, Long> getLatencies() {
+    Map<String, Long> latencies = new ConcurrentHashMap<>();
+    for(int i = 0; i < getJSONArray("payload").length(); i++) {
+      latencies.put(getJSONArray("payload").getJSONObject(i).getString("node"),
+          getJSONArray("payload").getJSONObject(i).getLong("latency"));
+    }
+    return latencies;
+  }
 }

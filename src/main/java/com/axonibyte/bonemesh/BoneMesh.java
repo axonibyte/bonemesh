@@ -75,7 +75,7 @@ public class BoneMesh implements AckListener {
    */
   public static BoneMesh build(String label, int port) {
     BoneMesh boneMesh = new BoneMesh(label);
-    boneMesh.socketClient = SocketClient.build(boneMesh.logger);
+    boneMesh.socketClient = SocketClient.build(boneMesh, boneMesh.logger);
     boneMesh.socketServer = SocketServer.build(boneMesh, boneMesh.logger, port);
     boneMesh.heartbeatThread.start();
     return boneMesh;
@@ -141,7 +141,9 @@ public class BoneMesh implements AckListener {
               continue;
             }
           }
-        } catch(Exception e) { }
+        } catch(Exception e) {
+          e.printStackTrace();
+        }
         boneMesh.broadcastDatum(new JSONObject().put("line", line));
       }
       scanner.close();
@@ -164,7 +166,7 @@ public class BoneMesh implements AckListener {
     if(splitAddress.length != 2) throw new Exception("Invalid node address.");
     int port = Integer.parseInt(splitAddress[1]);
     Node node = new Node(label, splitAddress[0], port);
-    nodeMap.addOrReplaceNode(node, false);
+    nodeMap.addOrReplaceNode(node, false, true);
     DiscoveryMessage message = new DiscoveryMessage(instanceLabel, label, nodeMap.getLivingNodes());
     Payload payload = new Payload(message, node.getLabel(), this, false);
     socketClient.queuePayload(payload);
@@ -177,7 +179,7 @@ public class BoneMesh implements AckListener {
    */
   public void removeNode(String label) {
     Node node = nodeMap.getNodeByLabel(label);
-    if(node != null) nodeMap.removeNode(node);
+    if(node != null) nodeMap.removeNode(node, true);
   }
   
   /**
@@ -199,7 +201,7 @@ public class BoneMesh implements AckListener {
    */
   public boolean broadcastDatum(JSONObject datum, boolean retryOnFailure) {
     boolean success = true;
-    for(String node : nodeMap.getAllKnownNodeLabels())
+    for(String node : nodeMap.getAllKnownNodeLabels()) 
       success = sendDatum(node, datum, retryOnFailure) && success;
     return success;
   }
@@ -307,6 +309,26 @@ public class BoneMesh implements AckListener {
   }
   
   /**
+   * Sets the neighbors of a node.
+   * 
+   * @param label the name of the node
+   * @param neighbors the node's neighbors
+   */
+  public void setNodeNeighbors(String label, Map<String, Long> neighbors) {
+    nodeMap.setNodeNeighbors(label, neighbors);
+  }
+  
+  /**
+   * Retrieves a node by its label, if it exists.
+   * 
+   * @param label the name of the node
+   * @return the matching node or <code>null</code> if it is isn't in the map
+   */
+  public Node getNodeByLabel(String label) {
+    return nodeMap.getNodeByLabel(label);
+  }
+  
+  /**
    * Retrieves all known nodes.
    * 
    * @return a set of all known nodes
@@ -389,6 +411,7 @@ public class BoneMesh implements AckListener {
         for(;;) {
           Thread.sleep(10000L);
           Map<String, Long> livingNodes = nodeMap.getLivingNodes();
+          nodeMap.bumpDiscoveryTime();
           for(Node node : nodeMap.getDirectNodes()) {
             DiscoveryMessage message = new DiscoveryMessage(instanceLabel, node.getLabel(), livingNodes);
             Payload payload = new Payload(message, node.getLabel(), BoneMesh.this, false);

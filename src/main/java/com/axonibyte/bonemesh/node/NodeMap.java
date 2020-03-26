@@ -58,12 +58,13 @@ public class NodeMap {
    * Adds or replaces a node in the map.
    * 
    * @param node the node to be added
-   * @param alive <code>true</code> if the node is alive
+   * @param alive <code>true</code> iff the node is alive
+   * @param rework <code>true</code> to rework the node routes
    */
-  public void addOrReplaceNode(Node node, boolean alive) {
-    removeNode(node);
+  public void addOrReplaceNode(Node node, boolean alive, boolean rework) {
+    removeNode(node, false);
     nodes.put(node, alive ? System.currentTimeMillis() : -1L);
-    reworkRoutes();
+    if(rework) reworkRoutes();
   }
   
   /**
@@ -71,10 +72,11 @@ public class NodeMap {
    * The node will not be in the map upon return.
    * 
    * @param node the node to be removed
+   * @param rework <code>true</code> to rework the node routes
    */
-  public void removeNode(Node node) {
+  public void removeNode(Node node, boolean rework) {
     if(nodes.containsKey(node)) nodes.remove(node);
-    reworkRoutes();
+    if(rework) reworkRoutes();
   }
   
   /**
@@ -85,10 +87,22 @@ public class NodeMap {
    * @param alive <code>true</code> if the node is alive
    */
   public void setNodeAlive(Node node, boolean alive) {
-    if(nodes.containsKey(node))
+    if(nodes.containsKey(node)) {
       nodes.replace(node, alive ? System.currentTimeMillis() : -1L);
-    else addOrReplaceNode(node, alive);
+    } else addOrReplaceNode(node, alive, false);
     reworkRoutes();
+  }
+  
+  /**
+   * Sets the neighbors of a node.
+   * 
+   * @param label the name of the node
+   * @param neighbors the node's neighbors
+   */
+  public void setNodeNeighbors(String label, Map<String, Long> neighbors) {
+    if(this.neighbors.containsKey(label))
+      this.neighbors.replace(label, neighbors);
+    else this.neighbors.put(label, neighbors);
   }
   
   /**
@@ -124,6 +138,7 @@ public class NodeMap {
       for(String node : routes.keySet())
         nodes.add(node);
     }
+    
     return nodes;
   }
   
@@ -209,6 +224,7 @@ public class NodeMap {
   }
   
   private synchronized void reworkRoutes() {
+    System.out.println("!!!!!!!!!! 1");
     Map<String, Map<String, Long>> discoveredRoutes = new HashMap<>();
     for(String node : neighbors.keySet()) { // for every known node
       Map<String, Long> neighborhood = neighbors.get(node); // get a map of their neighbors
@@ -226,6 +242,7 @@ public class NodeMap {
       }
     }
     
+    System.out.println("!!!!!!!!!! 2");
     Map<String, Node> newRoutes = new HashMap<>();
     for(String target : discoveredRoutes.keySet()) { // iterate through each target
       // get the best route to this node
@@ -236,13 +253,17 @@ public class NodeMap {
       }
     }
     
+    System.out.println("!!!!!!!!!! 4");
     synchronized(this.routes) { // save the results
       for(String target : newRoutes.keySet())
         this.routes.put(target, newRoutes.get(target));
     }
+    
+    System.out.println("!!!!!!!!!! 5");
   }
   
   private Entry<String, Long> getBestRoute(Map<String, Map<String, Long>> routes, String start, String target, List<String> seen) {
+    System.out.println("!!!!!!!!!! 3");
     if(!routes.containsKey(target)) return null; // if the route doesn't contain the target, return null
     if(routes.get(target).containsKey(start)) // if the node has a direct link, return it 
       return new SimpleEntry<>(start, routes.get(target).get(start));

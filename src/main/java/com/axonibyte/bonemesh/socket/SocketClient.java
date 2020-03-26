@@ -29,9 +29,11 @@ import java.util.List;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import com.axonibyte.bonemesh.BoneMesh;
 import com.axonibyte.bonemesh.Logger;
 import com.axonibyte.bonemesh.listener.AckListener;
 import com.axonibyte.bonemesh.message.AckMessage;
+import com.axonibyte.bonemesh.node.Node;
 
 /**
  * Sends out payloads.
@@ -40,11 +42,13 @@ import com.axonibyte.bonemesh.message.AckMessage;
  */
 public class SocketClient implements Runnable {
 
+  private BoneMesh boneMesh = null;
   private List<Payload> payloadQueue = null;
   private Logger logger = null;
   private Thread thread = null;
   
-  private SocketClient(Logger logger) {
+  private SocketClient(BoneMesh boneMesh, Logger logger) {
+    this.boneMesh = boneMesh;
     this.logger = logger;
     this.payloadQueue = new LinkedList<>();
   }
@@ -52,11 +56,12 @@ public class SocketClient implements Runnable {
   /**
    * Builds and launches a socket client thread.
    * 
+   * @param boneMesh the BoneMesh instance
    * @param logger the logger
    * @return a reference to the new socket client object
    */
-  public static SocketClient build(Logger logger) {
-    SocketClient socketClient = new SocketClient(logger);
+  public static SocketClient build(BoneMesh boneMesh, Logger logger) {
+    SocketClient socketClient = new SocketClient(boneMesh, logger);
     socketClient.thread = new Thread(socketClient);
     socketClient.thread.setDaemon(true);
     socketClient.thread.start();
@@ -80,13 +85,9 @@ public class SocketClient implements Runnable {
         
         DataInputStream inputStream = null;
         DataOutputStream outputStream = null;
+        Node node = boneMesh.getNodeByLabel(payload.getTarget());
         
-        String targetIP = null;
-        int targetPort = -1;
-        
-        // TODO make sure to actually obtain target IP and port
-        
-        try(Socket socket = new Socket(targetIP, targetPort)) {
+        if(node != null) try(Socket socket = new Socket(node.getIP(), node.getPort())) {
           inputStream = new DataInputStream(socket.getInputStream());
           outputStream = new DataOutputStream(socket.getOutputStream());
           
