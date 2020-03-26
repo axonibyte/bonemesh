@@ -18,6 +18,7 @@ package com.axonibyte.bonemesh;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
 
@@ -34,8 +35,8 @@ import com.axonibyte.bonemesh.listener.DataListener;
 import com.axonibyte.bonemesh.listener.LogListener;
 import com.axonibyte.bonemesh.listener.cheap.CheapDataListener;
 import com.axonibyte.bonemesh.listener.cheap.CheapLogListener;
+import com.axonibyte.bonemesh.message.DiscoveryMessage;
 import com.axonibyte.bonemesh.message.GenericMessage;
-import com.axonibyte.bonemesh.message.HelloMessage;
 import com.axonibyte.bonemesh.node.Node;
 import com.axonibyte.bonemesh.node.NodeMap;
 import com.axonibyte.bonemesh.socket.Payload;
@@ -147,7 +148,7 @@ public class BoneMesh implements AckListener {
     int port = Integer.parseInt(splitAddress[1]);
     Node node = new Node(label, splitAddress[0], port);
     nodeMap.addOrReplaceNode(node, false);
-    HelloMessage message = new HelloMessage(instanceLabel, label);
+    DiscoveryMessage message = new DiscoveryMessage(instanceLabel, label, nodeMap.getLivingNodes());
     Payload payload = new Payload(message, node.getIP(), node.getPort(), this, false);
     socketClient.queuePayload(payload);
   }
@@ -347,8 +348,9 @@ public class BoneMesh implements AckListener {
       try {
         for(;;) {
           Thread.sleep(10000L);
+          Map<String, Long> livingNodes = nodeMap.getLivingNodes();
           for(Node node : nodeMap.getNodes()) {
-            HelloMessage message = new HelloMessage(instanceLabel, node.getLabel());
+            DiscoveryMessage message = new DiscoveryMessage(instanceLabel, node.getLabel(), livingNodes);
             Payload payload = new Payload(message, node.getIP(), node.getPort(), BoneMesh.this, false);
             socketClient.queuePayload(payload);
           }

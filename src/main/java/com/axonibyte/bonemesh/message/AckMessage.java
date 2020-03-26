@@ -49,7 +49,7 @@ public class AckMessage extends GenericMessage {
   }
   
   /**
-   * Determines if an incoming JSON object implements a hello-type message.
+   * Determines if an incoming JSON object implements a ack-type message.
    * 
    * @param data the incoming data
    * @return <code>true</code> if the action is of type <code>ack</code>

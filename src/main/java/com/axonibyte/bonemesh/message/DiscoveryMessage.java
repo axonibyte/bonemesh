@@ -16,6 +16,9 @@
 
 package com.axonibyte.bonemesh.message;
 
+import java.util.Map;
+
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -24,16 +27,23 @@ import org.json.JSONObject;
  * 
  * @author Caleb L. Power
  */
-public class HelloMessage extends GenericMessage {
+public class DiscoveryMessage extends GenericMessage {
   
   /**
    * Overloaded constructor.
    * 
    * @param from the node from which the message is sent
    * @param to the recipient node
+   * @param latencies known and living nodes and their latencies
    */
-  public HelloMessage(String from, String to) {
+  public DiscoveryMessage(String from, String to, Map<String, Long> latencies) {
     super(from, to, "hello", null);
+    JSONArray nodes = new JSONArray();
+    for(String node : latencies.keySet())
+      nodes.put(new JSONObject()
+          .put("node", node)
+          .put("latency", latencies.get(node)));
+    getJSONObject("payload").put("nodes", nodes);
   }
   
   /**

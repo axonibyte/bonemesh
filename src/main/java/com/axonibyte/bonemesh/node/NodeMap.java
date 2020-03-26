@@ -16,9 +16,11 @@
 
 package com.axonibyte.bonemesh.node;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * A container for a list of all nodes.
@@ -28,12 +30,14 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class NodeMap {
   
-  private Map<Node, Boolean> nodes = null;
+  private AtomicLong discoveryTimestamp = null;
+  private Map<Node, Long> nodes = null;
   
   /**
    * Null constructor.
    */
   public NodeMap() {
+    this.discoveryTimestamp = new AtomicLong();
     this.nodes = new ConcurrentHashMap<>();
   }
   
@@ -45,7 +49,7 @@ public class NodeMap {
    */
   public void addOrReplaceNode(Node node, boolean alive) {
     removeNode(node);
-    nodes.put(node, alive);
+    nodes.put(node, alive ? System.currentTimeMillis() : -1L);
   }
   
   /**
@@ -67,7 +71,7 @@ public class NodeMap {
    */
   public void setNodeAlive(Node node, boolean alive) {
     if(nodes.containsKey(node))
-      nodes.replace(node, alive);
+      nodes.replace(node, alive ? System.currentTimeMillis() : -1L);
     else addOrReplaceNode(node, alive);
   }
   
@@ -94,6 +98,19 @@ public class NodeMap {
   }
   
   /**
+   * Retrieves all living nodes.
+   * 
+   * @return a map of all living nodes and their latencies
+   */
+  public Map<String, Long> getLivingNodes() {
+    Map<String, Long> livingNodes = new HashMap<>();
+    for(Node n : nodes.keySet())
+      if(nodes.get(n) > -1L)
+        livingNodes.put(n.getLabel(), getLatency(n));
+    return livingNodes;
+  }
+  
+  /**
    * Determines if a particular node is known.
    * 
    * @param node the node to check
@@ -110,7 +127,39 @@ public class NodeMap {
    * @return <code>true</code> if the node is in the map and is alive
    */
   public boolean isAlive(Node node) {
-    return nodes.containsKey(node) && nodes.get(node).booleanValue();
+    return nodes.containsKey(node) && nodes.get(node) > -1L;
   }
   
+  /**
+   * Bumps the discovery timestamp.
+   */
+  public void bumpDiscoveryTime() {
+    discoveryTimestamp.set(System.currentTimeMillis());
+  }
+  
+  /**
+   * Retrieves the latency of a particular node.
+   * 
+   * @param node the node in question
+   * @return UNIX timestamp delta or <code>Long.MAX_VALUE</code> if the node
+   *         doesn't exist or isn't alive 
+   */
+  public long getLatency(Node node) {
+    return nodes.containsKey(node) && nodes.get(node) > -1L
+        ? (nodes.get(node) - discoveryTimestamp.longValue()) : Long.MAX_VALUE;
+  }
+  
+  /**
+   * Retrieves the latency of a particular node by label.
+   * 
+   * @param label the name of the node in question
+   * @return UNIX timestamp delta or <code>Long.MAX_VALUE</code> if the node
+   *         doesn't exist or isn't alive
+   */
+  public long getLatency(String label) {
+    for(Node n : nodes.keySet())
+      if(n.getLabel().equalsIgnoreCase(label))
+        return getLatency(n);
+    return Long.MAX_VALUE;
+  }
 }
