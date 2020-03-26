@@ -25,6 +25,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.json.JSONObject;
 
+import com.axonibyte.bonemesh.BoneMesh;
 import com.axonibyte.bonemesh.Logger;
 import com.axonibyte.bonemesh.listener.DataListener;
 
@@ -36,28 +37,31 @@ import com.axonibyte.bonemesh.listener.DataListener;
 public class SocketServer implements Runnable {
   
   private int port;
+  private BoneMesh boneMesh = null;
   private List<DataListener> dataListeners = null;
   private List<IncomingSocketHandler> handlers = null;
   private Logger logger = null;
   private ServerSocket serverSocket = null;
   private Thread thread = null;
   
-  private SocketServer(Logger logger, int port) {
+  private SocketServer(BoneMesh boneMesh, Logger logger, int port) {
     this.port = port;
     this.dataListeners = new CopyOnWriteArrayList<>();
     this.handlers = new CopyOnWriteArrayList<>();
     this.logger = logger;
+    this.boneMesh = boneMesh;
   }
   
   /**
    * Builds and launches a socket server thread.
    * 
+   * @param boneMesh the BoneMesh instance
    * @param logger the logger
    * @param port the listening port
    * @return a reference to the new socket server object
    */
-  public static SocketServer build(Logger logger, int port) {
-    SocketServer socketServer = new SocketServer(logger, port);
+  public static SocketServer build(BoneMesh boneMesh, Logger logger, int port) {
+    SocketServer socketServer = new SocketServer(boneMesh, logger, port);
     socketServer.thread = new Thread(socketServer);
     socketServer.thread.setDaemon(true);
     socketServer.thread.start();
@@ -77,7 +81,7 @@ public class SocketServer implements Runnable {
         while((socket = serverSocket.accept()) != null) {
           logger.logDebug("SERVER", String.format("Accepted socket connection from %1$s",
               socket.getInetAddress().getHostAddress()));
-          IncomingSocketHandler handler = new IncomingSocketHandler(logger);
+          IncomingSocketHandler handler = new IncomingSocketHandler(boneMesh, logger);
           handlers.add(handler);
           handler.handle(socket, this);
         }

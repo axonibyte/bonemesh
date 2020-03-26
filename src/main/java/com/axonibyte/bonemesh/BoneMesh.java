@@ -56,23 +56,29 @@ public class BoneMesh implements AckListener {
   private SocketServer socketServer = null;
   private String instanceLabel = null;
   private Thread heartbeatThread = null;
-  
-  /**
-   * Overloaded constructor.
-   * 
-   * @param label the name of this instance
-   * @param port the port to listen to
-   */
-  public BoneMesh(String label, int port) {
+
+  private BoneMesh(String label) {
     this.logger = new Logger();
     this.instanceLabel = label;
     this.nodeMap = new NodeMap(label);
-    this.socketClient = SocketClient.build(logger);
-    this.socketServer = SocketServer.build(logger, port);
     Heartbeat heartbeat = new Heartbeat();
     heartbeatThread = new Thread(heartbeat);
     heartbeatThread.setDaemon(true);
-    heartbeatThread.start();
+  }
+    
+  /**
+   * Builds a BoneMesh instance
+   * 
+   * @param label the name of this instance
+   * @param port the port to listen to
+   * @return BoneMesh the new BoneMesh instance
+   */
+  public static BoneMesh build(String label, int port) {
+    BoneMesh boneMesh = new BoneMesh(label);
+    boneMesh.socketClient = SocketClient.build(boneMesh.logger);
+    boneMesh.socketServer = SocketServer.build(boneMesh, boneMesh.logger, port);
+    boneMesh.heartbeatThread.start();
+    return boneMesh;
   }
   
   /**
@@ -94,7 +100,7 @@ public class BoneMesh implements AckListener {
     CommandLine cmd = parser.parse(options, args);
     if(!cmd.hasOption("node_label")) throw new Exception("Missing label.");
     if(!cmd.hasOption("listening_port")) throw new Exception ("Missing listening port.");
-    BoneMesh boneMesh = new BoneMesh(
+    BoneMesh boneMesh = BoneMesh.build(
         cmd.getOptionValue("node_label"),
         Integer.parseInt(cmd.getOptionValue("listening_port")));
     
