@@ -81,7 +81,12 @@ public class SocketClient implements Runnable {
         DataInputStream inputStream = null;
         DataOutputStream outputStream = null;
         
-        try(Socket socket = new Socket(payload.getTargetIP(), payload.getTargetPort())) {
+        String targetIP = null;
+        int targetPort = -1;
+        
+        // TODO make sure to actually obtain target IP and port
+        
+        try(Socket socket = new Socket(targetIP, targetPort)) {
           inputStream = new DataInputStream(socket.getInputStream());
           outputStream = new DataOutputStream(socket.getOutputStream());
           

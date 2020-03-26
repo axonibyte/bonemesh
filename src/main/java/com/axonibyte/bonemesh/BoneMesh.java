@@ -66,7 +66,7 @@ public class BoneMesh implements AckListener {
   public BoneMesh(String label, int port) {
     this.logger = new Logger();
     this.instanceLabel = label;
-    this.nodeMap = new NodeMap();
+    this.nodeMap = new NodeMap(label);
     this.socketClient = SocketClient.build(logger);
     this.socketServer = SocketServer.build(logger, port);
     Heartbeat heartbeat = new Heartbeat();
@@ -149,7 +149,7 @@ public class BoneMesh implements AckListener {
     Node node = new Node(label, splitAddress[0], port);
     nodeMap.addOrReplaceNode(node, false);
     DiscoveryMessage message = new DiscoveryMessage(instanceLabel, label, nodeMap.getLivingNodes());
-    Payload payload = new Payload(message, node.getIP(), node.getPort(), this, false);
+    Payload payload = new Payload(message, node.getLabel(), this, false);
     socketClient.queuePayload(payload);
   }
   
@@ -244,7 +244,7 @@ public class BoneMesh implements AckListener {
     if(ackListeners != null)
       for(AckListener listener : ackListeners)
         ackListenerArray.add(listener);
-    Payload payload = new Payload(message, node.getIP(), node.getPort(), ackListenerArray, retryOnFailure);
+    Payload payload = new Payload(message, node.getLabel(), ackListenerArray, retryOnFailure);
     socketClient.queuePayload(payload);
     return true;
   }
@@ -351,7 +351,7 @@ public class BoneMesh implements AckListener {
           Map<String, Long> livingNodes = nodeMap.getLivingNodes();
           for(Node node : nodeMap.getNodes()) {
             DiscoveryMessage message = new DiscoveryMessage(instanceLabel, node.getLabel(), livingNodes);
-            Payload payload = new Payload(message, node.getIP(), node.getPort(), BoneMesh.this, false);
+            Payload payload = new Payload(message, node.getLabel(), BoneMesh.this, false);
             socketClient.queuePayload(payload);
           }
         }

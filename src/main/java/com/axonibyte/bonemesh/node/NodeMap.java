@@ -16,8 +16,12 @@
 
 package com.axonibyte.bonemesh.node;
 
+import java.util.AbstractMap.SimpleEntry;
 import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -30,15 +34,23 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class NodeMap {
   
-  private AtomicLong discoveryTimestamp = null;
-  private Map<Node, Long> nodes = null;
+  private AtomicLong discoveryTimestamp = null; // system time at last discovery ping
+  private Map<Node, Long> nodes = null; // all known nodes and their last discovery response
+  private Map<String, Map<String, Long>> neighbors = null; // all known nodes and their neighbors, by label
+  private Map<String, Node> routes = null; // target nodes and best first-degree of routing
+  private String thisLabel = null;
   
   /**
-   * Null constructor.
+   * Overloaded constructor.
+   * 
+   * @param label the label of this BoneMesh instance 
    */
-  public NodeMap() {
+  public NodeMap(String label) {
     this.discoveryTimestamp = new AtomicLong();
     this.nodes = new ConcurrentHashMap<>();
+    this.neighbors = new ConcurrentHashMap<>();
+    this.routes = new HashMap<>();
+    this.thisLabel = label;
   }
   
   /**
@@ -50,6 +62,7 @@ public class NodeMap {
   public void addOrReplaceNode(Node node, boolean alive) {
     removeNode(node);
     nodes.put(node, alive ? System.currentTimeMillis() : -1L);
+    reworkRoutes();
   }
   
   /**
@@ -60,6 +73,7 @@ public class NodeMap {
    */
   public void removeNode(Node node) {
     if(nodes.containsKey(node)) nodes.remove(node);
+    reworkRoutes();
   }
   
   /**
@@ -73,6 +87,7 @@ public class NodeMap {
     if(nodes.containsKey(node))
       nodes.replace(node, alive ? System.currentTimeMillis() : -1L);
     else addOrReplaceNode(node, alive);
+    reworkRoutes();
   }
   
   /**
@@ -161,5 +176,55 @@ public class NodeMap {
       if(n.getLabel().equalsIgnoreCase(label))
         return getLatency(n);
     return Long.MAX_VALUE;
+  }
+  
+  private synchronized void reworkRoutes() {
+    Map<String, Map<String, Long>> discoveredRoutes = new HashMap<>();
+    for(String node : neighbors.keySet()) { // for every known node
+      Map<String, Long> neighborhood = neighbors.get(node); // get a map of their neighbors
+      
+      for(String neighbor : neighborhood.keySet()) { // for every neighbor in the neighborhood
+        if(!discoveredRoutes.containsKey(neighbor)) // if we don't already know about it
+          discoveredRoutes.put(node, new HashMap<>()); // create an empty entry
+        
+        Node known = getNodeByLabel(neighbor); // see if they're our neighbor too
+        if(known != null && !discoveredRoutes.get(neighbor).containsKey(thisLabel)) // and if they are
+          discoveredRoutes.get(neighbor).put(thisLabel, nodes.get(known)); // add our distance
+        
+        // in any case, also get the distance in the actual neighborhood
+        discoveredRoutes.get(neighbor).put(node, neighborhood.get(neighbor));
+      }
+    }
+    
+    Map<String, Node> newRoutes = new HashMap<>();
+    for(String target : discoveredRoutes.keySet()) { // iterate through each target
+      // get the best route to this node
+      Entry<String, Long> route = getBestRoute(discoveredRoutes, thisLabel, target, new LinkedList<>());
+      if(route != null) { // if we get an answer
+        Node best = getNodeByLabel(route.getKey()); // retrieve the actual node
+        if(best != null) newRoutes.put(target, best); // save the node if it exists
+      }
+    }
+    
+    synchronized(this.routes) { // save the results
+      for(String target : newRoutes.keySet())
+        this.routes.put(target, newRoutes.get(target));
+    }
+  }
+  
+  private Entry<String, Long> getBestRoute(Map<String, Map<String, Long>> routes, String start, String target, List<String> seen) {
+    if(!routes.containsKey(target)) return null; // if the route doesn't contain the target, return null
+    if(routes.get(target).containsKey(start)) // if the node has a direct link, return it 
+      return new SimpleEntry<>(start, routes.get(target).get(start));
+    Entry<String, Long> newRoute = null;
+    seen.add(0, start); // make sure to not loop through the graph
+    for(String neighbor : routes.keySet()) { // iterate through the neighbors
+      Entry<String, Long> route = getBestRoute(routes, neighbor, start, seen); // recurse
+      if(route != null) // do something if we get a result
+        if(newRoute == null || route.getValue() < newRoute.getValue())
+          newRoute = route; // save the lesser value
+    }
+    seen.remove(0); // make sure to pop the stack so we don't screw up other recursions
+    return newRoute; // return the best route
   }
 }
