@@ -109,7 +109,7 @@ public class IncomingSocketHandler implements Runnable {
           System.out.println("!!!!!!!!!!!! " + message.getTo() + " -> " + boneMesh.getInstanceLabel());
           if(boneMesh.getInstanceLabel().equalsIgnoreCase(message.getTo())) // intended for us?
             server.dispatchToListeners(json); // yes, dispatch to listeners
-          else boneMesh.sendDatum(message.getTo(), json, false); // no, send to appropriate location
+          else boneMesh.sendDatum(message); // no, send to appropriate location
         }
         PrintWriter out = new PrintWriter(outputStream);
         logger.logDebug("HANDLER", String.format("Sending data: %1$s", ack.toString()));
