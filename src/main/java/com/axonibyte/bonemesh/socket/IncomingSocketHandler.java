@@ -86,8 +86,11 @@ public class IncomingSocketHandler implements Runnable {
       BufferedReader in = new BufferedReader(new InputStreamReader(inputStream));
       JSONObject json = new JSONObject(in.readLine());
       logger.logDebug("HANDLER", String.format("Received data: %1$s", json.toString()));
-      if(!AckMessage.isImplementedBy(json)) {
-        AckMessage ack = new AckMessage(json);
+      if(AckMessage.isImplementedBy(json)) {
+        AckMessage ack = new AckMessage(json, false);
+        boneMesh.sendDatum(ack);
+      } else if(!AckMessage.isImplementedBy(json)) {
+        AckMessage ack = new AckMessage(json, true);
         if(DiscoveryMessage.isImplementedBy(json)) {
           DiscoveryMessage message = new DiscoveryMessage(json); // deserialize discovery message
           Node node = boneMesh.getNodeByLabel(message.getFrom());

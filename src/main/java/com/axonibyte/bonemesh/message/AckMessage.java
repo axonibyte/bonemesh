@@ -41,11 +41,13 @@ public class AckMessage extends GenericMessage {
    * Intentionally flips the "to" and "from" values.
    * 
    * @param json the incoming data
+   * @param flip <code>true</code> to receive the ACK,
+   *        or <code>false</code> to pass it on
    * @throws JSONException to be thrown if the JSON object couldn't be parsed
    */
-  public AckMessage(JSONObject json) throws JSONException {
-    // intentionally flip values
-    this(json.getString("to"), json.getString("from"));
+  public AckMessage(JSONObject json, boolean flip) throws JSONException {
+    this(json.getString(flip ? "to" : "from"),
+        json.getString(flip ? "from" : "to"));
   }
   
   /**
