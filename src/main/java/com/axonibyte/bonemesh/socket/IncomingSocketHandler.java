@@ -88,10 +88,12 @@ public class IncomingSocketHandler implements Runnable {
       logger.logDebug("HANDLER", String.format("Received data: %1$s", json.toString()));
       if(AckMessage.isImplementedBy(json)) {
         AckMessage ack = new AckMessage(json, false);
+        logger.logDebug("HANDLER", String.format("Kicking ack back to %1$s.", ack.getTo()));
         boneMesh.sendDatum(ack);
       } else if(!AckMessage.isImplementedBy(json)) {
         AckMessage ack = new AckMessage(json, true);
         if(DiscoveryMessage.isImplementedBy(json)) {
+          logger.logDebug("HANDLER", "Received DiscoveryMessage.");
           DiscoveryMessage message = new DiscoveryMessage(json); // deserialize discovery message
           Node node = boneMesh.getNodeMap().getNodeByLabel(message.getFrom());
           boneMesh.getNodeMap().setNodeNeighbors(message.getFrom(), message.getNodes());
@@ -100,13 +102,7 @@ public class IncomingSocketHandler implements Runnable {
                 socket.getInetAddress().toString(),
                 message.getPort());
             boneMesh.getNodeMap().addOrReplaceNode(node, true);
-          } else {
-            node.setIP(socket.getInetAddress().toString())
-                .setPort(message.getPort());
-          }
-          // TODO here, save new nodes if necessary
-          // make sure to pass the appropriate IP address
-          
+          } else node.setIP(socket.getInetAddress().toString()).setPort(message.getPort());
         } else {
           GenericMessage message = new GenericMessage(json); // attempt to deserialize message
           if(boneMesh.getInstanceLabel().equalsIgnoreCase(message.getTo())) // intended for us?
