@@ -32,6 +32,7 @@ import com.axonibyte.bonemesh.Logger;
 import com.axonibyte.bonemesh.message.AckMessage;
 import com.axonibyte.bonemesh.message.DiscoveryMessage;
 import com.axonibyte.bonemesh.message.GenericMessage;
+import com.axonibyte.bonemesh.node.Node;
 
 /**
  * Handles incoming data.
@@ -89,7 +90,20 @@ public class IncomingSocketHandler implements Runnable {
         AckMessage ack = new AckMessage(json);
         if(DiscoveryMessage.isImplementedBy(json)) {
           DiscoveryMessage message = new DiscoveryMessage(json); // deserialize discovery message
-          boneMesh.setNodeNeighbors(message.getFrom(), message.getLatencies());
+          Node node = boneMesh.getNodeByLabel(message.getFrom());
+          boneMesh.getNodeMap().setNodeNeighbors(message.getFrom(), message.getNodes());
+          if(node == null) {
+            node = new Node(message.getFrom(),
+                socket.getInetAddress().toString(),
+                message.getPort());
+            boneMesh.getNodeMap().addOrReplaceNode(node, true);
+          } else {
+            node.setIP(socket.getInetAddress().toString())
+                .setPort(message.getPort());
+          }
+          // TODO here, save new nodes if necessary
+          // make sure to pass the appropriate IP address
+          
         } else {
           GenericMessage message = new GenericMessage(json); // attempt to deserialize message
           if(boneMesh.getInstanceLabel().equalsIgnoreCase(message.getTo())) // intended for us?

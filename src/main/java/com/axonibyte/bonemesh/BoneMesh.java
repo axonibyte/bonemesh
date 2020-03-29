@@ -134,12 +134,9 @@ public class BoneMesh implements AckListener {
         try {
           if(line.startsWith("to:")) {
             String target = line.substring(3, line.indexOf(' '));
-            Node node = boneMesh.nodeMap.getNodeByLabel(target);
-            if(node != null) {
-              boneMesh.sendDatum(node.getLabel(), new JSONObject()
-                  .put("line", line.substring(line.indexOf(' ') + 1)));
-              continue;
-            }
+            boneMesh.sendDatum(target, new JSONObject()
+                .put("line", line.substring(line.indexOf(' ') + 1)));
+            continue;
           }
         } catch(Exception e) {
           e.printStackTrace();
@@ -166,8 +163,11 @@ public class BoneMesh implements AckListener {
     if(splitAddress.length != 2) throw new Exception("Invalid node address.");
     int port = Integer.parseInt(splitAddress[1]);
     Node node = new Node(label, splitAddress[0], port);
-    nodeMap.addOrReplaceNode(node, false, true);
-    DiscoveryMessage message = new DiscoveryMessage(instanceLabel, label, nodeMap.getLivingNodes());
+    nodeMap.addOrReplaceNode(node, false);
+    DiscoveryMessage message = new DiscoveryMessage(instanceLabel,
+        label,
+        nodeMap.getKnownNodes(),
+        socketServer.getPort());
     Payload payload = new Payload(message, node.getLabel(), this, false);
     socketClient.queuePayload(payload);
   }
@@ -179,7 +179,7 @@ public class BoneMesh implements AckListener {
    */
   public void removeNode(String label) {
     Node node = nodeMap.getNodeByLabel(label);
-    if(node != null) nodeMap.removeNode(node, true);
+    if(node != null) nodeMap.removeNode(node);
   }
   
   /**
@@ -258,8 +258,11 @@ public class BoneMesh implements AckListener {
     Node node = nodeMap.getNodeByLabel(target);
     if(node == null) { // try the next best thing if the first try didn't work
       node = nodeMap.getNextBestNode(target);
-      if(node == null) return false;
-    }
+      if(node == null) {
+        System.err.println("Third round, failed.");
+        return false;
+      } else System.err.println("Second round, found " + node.getLabel());
+    } else System.err.println("First round, found " + node.getLabel());
     GenericMessage message = new GenericMessage(instanceLabel, node.getLabel(), datum);
     List<AckListener> ackListenerArray = new ArrayList<>();
     ackListenerArray.add(this);
@@ -282,8 +285,11 @@ public class BoneMesh implements AckListener {
     Node node = nodeMap.getNodeByLabel(message.getTo());
     if(node == null) {
       node = nodeMap.getNextBestNode(message.getTo());
-      if(node == null) return false;
-    }
+      if(node == null) {
+        System.err.println("Third round, failed.");
+        return false;
+      } else System.err.println("Second round, found " + node.getLabel());
+    } else System.err.println("First round, found " + node.getLabel());
     List<AckListener> ackListenerArray = new ArrayList<>();
     ackListenerArray.add(this);
     Payload payload = new Payload(message, node.getLabel(), ackListenerArray, false);
@@ -306,16 +312,6 @@ public class BoneMesh implements AckListener {
     } catch(JSONException e) {
       logger.logError("BONEMESH", e.getMessage());
     }
-  }
-  
-  /**
-   * Sets the neighbors of a node.
-   * 
-   * @param label the name of the node
-   * @param neighbors the node's neighbors
-   */
-  public void setNodeNeighbors(String label, Map<String, Long> neighbors) {
-    nodeMap.setNodeNeighbors(label, neighbors);
   }
   
   /**
@@ -383,6 +379,15 @@ public class BoneMesh implements AckListener {
   }
   
   /**
+   * Retrieves the node map.
+   * 
+   * @return the NodeMap instance
+   */
+  public NodeMap getNodeMap() {
+    return nodeMap;
+  }
+  
+  /**
    * Kills this BoneMesh node.
    */
   public void kill() {
@@ -390,7 +395,7 @@ public class BoneMesh implements AckListener {
     socketClient.kill();
     socketServer.kill();
   }
-
+  
   /**
    * {@inheritDoc}
    */
@@ -410,10 +415,13 @@ public class BoneMesh implements AckListener {
       try {
         for(;;) {
           Thread.sleep(10000L);
-          Map<String, Long> livingNodes = nodeMap.getLivingNodes();
+          Map<String, Long> nodes = nodeMap.getKnownNodes();
           nodeMap.bumpDiscoveryTime();
           for(Node node : nodeMap.getDirectNodes()) {
-            DiscoveryMessage message = new DiscoveryMessage(instanceLabel, node.getLabel(), livingNodes);
+            DiscoveryMessage message = new DiscoveryMessage(instanceLabel,
+                node.getLabel(),
+                nodes,
+                socketServer.getPort());
             Payload payload = new Payload(message, node.getLabel(), BoneMesh.this, false);
             socketClient.queuePayload(payload);
           }

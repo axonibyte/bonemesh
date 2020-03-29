@@ -16,6 +16,9 @@
 
 package com.axonibyte.bonemesh.node;
 
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
 /**
  * A model of a node or server in the BoneMesh network.
  * 
@@ -23,9 +26,9 @@ package com.axonibyte.bonemesh.node;
  */
 public class Node {
   
-  private int port = 0;
-  private String label = null;
-  private String ip = null;
+  private AtomicReference<String> label = null;
+  private AtomicReference<String> ip = null;
+  private AtomicInteger port = null;
   
   /**
    * Overloaded constructor.
@@ -35,9 +38,10 @@ public class Node {
    * @param port the node's listening port
    */
   public Node(String label, String ip, int port) {
-    this.label = label;
-    this.ip = ip;
-    this.port = port;
+    this.label = new AtomicReference<>(label);
+    this.ip = new AtomicReference<>(ip.startsWith("/") ? ip.substring(1) : ip);
+    this.port = new AtomicInteger(port);
+    System.out.println(this.label + " - " + this.ip + " - " + this.port);
   }
   
   /**
@@ -46,7 +50,18 @@ public class Node {
    * @return the label
    */
   public String getLabel() {
-    return label;
+    return label.get();
+  }
+  
+  /**
+   * Sets the node's label.
+   * 
+   * @param label the label
+   * @return this Node object
+   */
+  public Node setLabel(String label) {
+    this.label.set(label);
+    return this;
   }
   
   /**
@@ -55,16 +70,38 @@ public class Node {
    * @return the IP address
    */
   public String getIP() {
-    return ip;
+    return ip.get();
   }
   
   /**
-   * Retrieves a node's listening port number.
+   * Sets the node's IP address.
+   * 
+   * @param ip the IP address
+   * @return this Node object
+   */
+  public Node setIP(String ip) {
+    this.ip.set(ip.startsWith("/") ? ip.substring(1) : ip);
+    return this;
+  }
+  
+  /**
+   * Retrieves the node's listening port number.
    * 
    * @return the port number
    */
   public int getPort() {
-    return port;
+    return port.get();
+  }
+  
+  /**
+   * Sets the node's listening port number.
+   * 
+   * @param port the port number
+   * @return this Node object
+   */
+  public Node setPort(int port) {
+    this.port.set(port);
+    return this;
   }
   
 }

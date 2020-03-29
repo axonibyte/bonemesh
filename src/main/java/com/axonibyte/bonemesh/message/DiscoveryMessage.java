@@ -35,16 +35,19 @@ public class DiscoveryMessage extends GenericMessage {
    * 
    * @param from the node from which the message is sent
    * @param to the recipient node
-   * @param latencies known and living nodes and their latencies
+   * @param knownNodes directly connected nodes and their latencies
+   * @param port the BoneMesh listening port
    */
-  public DiscoveryMessage(String from, String to, Map<String, Long> latencies) {
+  public DiscoveryMessage(String from, String to, Map<String, Long> knownNodes, int port) {
     super(from, to, "hello", null);
     JSONArray nodes = new JSONArray();
-    for(String node : latencies.keySet())
+    for(String node : knownNodes.keySet())
       nodes.put(new JSONObject()
           .put("node", node)
-          .put("latency", latencies.get(node)));
-    getJSONObject("payload").put("nodes", nodes);
+          .put("latency", knownNodes.get(node)));
+    getJSONObject("payload")
+        .put("nodes", nodes)
+        .put("port", port);
   }
   
   /**
@@ -71,16 +74,26 @@ public class DiscoveryMessage extends GenericMessage {
   }
   
   /**
-   * Retrieve a map of neighbors and their latencies.
+   * Retrieves a map of neighbors and their latencies.
    * 
    * @return map of node neighbors and their latencies
    */
-  public Map<String, Long> getLatencies() {
+  public Map<String, Long> getNodes() {
     Map<String, Long> latencies = new ConcurrentHashMap<>();
-    for(int i = 0; i < getJSONArray("payload").length(); i++) {
-      latencies.put(getJSONArray("payload").getJSONObject(i).getString("node"),
-          getJSONArray("payload").getJSONObject(i).getLong("latency"));
+    JSONArray nodes = getJSONObject("payload").getJSONArray("nodes");
+    for(int i = 0; i < nodes.length(); i++) {
+      latencies.put(nodes.getJSONObject(i).getString("node"),
+          nodes.getJSONObject(i).getLong("latency"));
     }
     return latencies;
+  }
+  
+  /**
+   * Retrieves the listening port for the sender.
+   * 
+   * @return integer denoting the listening port
+   */
+  public int getPort() {
+    return getJSONObject("payload").getInt("port");
   }
 }

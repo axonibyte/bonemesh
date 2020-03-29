@@ -147,4 +147,13 @@ public class SocketServer implements Runnable {
   public void removeDataListener(DataListener listener) {
     dataListeners.remove(listener);
   }
+  
+  /**
+   * Retrieves the listening port.
+   * 
+   * @return integer representation of the listening port
+   */
+  public int getPort() {
+    return port;
+  }
 }
