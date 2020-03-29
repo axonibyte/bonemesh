@@ -41,7 +41,6 @@ public class Node {
     this.label = new AtomicReference<>(label);
     this.ip = new AtomicReference<>(ip.startsWith("/") ? ip.substring(1) : ip);
     this.port = new AtomicInteger(port);
-    System.out.println(this.label + " - " + this.ip + " - " + this.port);
   }
   
   /**

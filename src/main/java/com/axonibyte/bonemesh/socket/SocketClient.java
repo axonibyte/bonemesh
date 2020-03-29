@@ -85,7 +85,7 @@ public class SocketClient implements Runnable {
         
         DataInputStream inputStream = null;
         DataOutputStream outputStream = null;
-        Node node = boneMesh.getNodeByLabel(payload.getTarget());
+        Node node = boneMesh.getNodeMap().getNodeByLabel(payload.getTarget());
         
         if(node != null) try(Socket socket = new Socket(node.getIP(), node.getPort())) {
           inputStream = new DataInputStream(socket.getInputStream());

@@ -117,7 +117,6 @@ public class NodeMap {
   public void setNodeNeighbors(String label, Map<String, Long> knownNodes) {
     Node node = getNodeByLabel(label);
     if(node == null) {
-      System.err.println("Label " + label + " not found.");
       return;
     }
     
@@ -147,11 +146,9 @@ public class NodeMap {
    * @return the matching node or <code>null</code> if it is isn't in the map
    */
   public Node getNodeByLabel(String label) {
-    for(Node node : nodes.keySet()) {
-      System.err.println("comparing " + node.getLabel() + " to " + label);
+    for(Node node : nodes.keySet())
       if(node.getLabel().equalsIgnoreCase(label))
         return node;
-    }
     return null;
   }
   
@@ -229,84 +226,8 @@ public class NodeMap {
    */
   public Node getNextBestNode(String label) {
     Node node = null;
-    //synchronized(routes) {
-    if(routes.containsKey(label)) node = routes.get(label).getKey(); //routes.get(label);
-    //}
+    if(routes.containsKey(label)) node = routes.get(label).getKey();
     return node;
   }
-  
-  /*
-  private synchronized void reworkRoutes() {
-    Map<String, Map<String, Long>> discoveredRoutes = new HashMap<>();
-    for(String node : neighbors.keySet()) { // for every known node
-      Map<String, Long> neighborhood = neighbors.get(node); // get a map of their neighbors
-      
-      for(String neighbor : neighborhood.keySet()) { // for every neighbor in the neighborhood
-        if(!discoveredRoutes.containsKey(neighbor)) // if we don't already know about it
-          discoveredRoutes.put(neighbor, new HashMap<>()); // create an empty entry
-        
-        Node known = getNodeByLabel(neighbor); // see if they're our neighbor too
-        if(known != null && !discoveredRoutes.get(neighbor).containsKey(thisLabel)) // and if they are
-          discoveredRoutes.get(neighbor).put(thisLabel, nodes.get(known)); // add our distance
-        
-        // in any case, also get the distance in the actual neighborhood
-        discoveredRoutes.get(neighbor).put(node, neighborhood.get(neighbor));
-      }
-    }
-    
-    System.out.println("Discovered Routes:");
-    Map<String, Node> newRoutes = new HashMap<>();
-    for(String target : discoveredRoutes.keySet()) { // iterate through each target
-      System.out.println("- " + target);
-      for(String s : discoveredRoutes.get(target).keySet()) {
-        System.out.println("--- " + s + " -> " + discoveredRoutes.get(target).get(s));
-      }
-      // get the best route to this node
-      Entry<String, Long> route = getBestRoute(discoveredRoutes, thisLabel, target, new LinkedList<>());
-      if(route != null) { // if we get an answer
-        Node best = getNodeByLabel(route.getKey()); // retrieve the actual node
-        if(best != null) newRoutes.put(target, best); // save the node if it exists
-      }
-    }
-    
-    synchronized(this.routes) { // save the results
-      this.routes.clear();
-      for(String target : newRoutes.keySet())
-        this.routes.put(target, newRoutes.get(target));
-    }
-    
-  }
-  
-  private Entry<String, Long> getBestRoute(Map<String, Map<String, Long>> routes, String start, String target, List<String> seen) {
-    System.out.print(start + " -> " + target + ": ");
-    for(String s : seen) System.out.print(s + " ");
-    System.out.println();
-    
-    if(seen.contains(start) || !routes.containsKey(target)) { // if the route doesn't contain the target, return null
-      System.out.println("Already seen or route doesn't contain target.");
-      return null;
-    }
-    
-    if(routes.get(target).containsKey(start)) { // if the node has a direct link, return it
-      System.out.println("Target " + target + " has start " + start);
-      return new SimpleEntry<>(start, routes.get(target).get(start));
-    }
-    
-    Entry<String, Long> newRoute = null;
-    seen.add(0, start); // make sure to not loop through the graph
-    for(String neighbor : routes.keySet()) { // iterate through the neighbors
-      Entry<String, Long> route = getBestRoute(routes, neighbor, start, seen); // recurse
-      if(route != null) { // do something if we get a result
-        System.err.println("Route is not null: " + route.getKey() + " -> " + route.getValue());
-        if(newRoute == null || route.getValue() < newRoute.getValue())
-          newRoute = route; // save the lesser value
-      } else {
-        System.err.println("Route is null.");
-      }
-    }
-    seen.remove(0); // make sure to pop the stack so we don't screw up other recursions
-    return newRoute; // return the best route
-  }
-  */
   
 }

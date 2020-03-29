@@ -20,7 +20,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
-import java.util.Set;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
@@ -89,7 +88,7 @@ public class BoneMesh implements AckListener {
    * @throws Exception to be thrown if something bad happens
    */
   public static void main(String[] args) throws Exception {
-    Options options = new Options();
+    Options options = new Options(); // start defining options
     options.addOption("h", "help", false, "Displays a friendly help message.");
     options.addOption("l", "node_label", true, "Node label.");
     options.addOption("p", "listening_port", true, "Server listening port.");
@@ -102,12 +101,12 @@ public class BoneMesh implements AckListener {
     if(cmd.hasOption("help")) {
       System.out.println("BoneMesh: From Axonibyte Innovations, LLC.");
       System.out.println("Designed and Developed by Caleb L. Power");
-      for(Option option : options.getOptions())
+      for(Option option : options.getOptions()) // TODO prettify this
         System.out.println(String.format("%1$s | %2$s\t%3$s",
             option.getLongOpt(),
             option.getOpt(),
             option.getDescription()));
-    } else {
+    } else { // bad command args
       if(!cmd.hasOption("node_label")) throw new Exception("Missing label.");
       if(!cmd.hasOption("listening_port")) throw new Exception ("Missing listening port.");
       BoneMesh boneMesh = BoneMesh.build(
@@ -266,8 +265,6 @@ public class BoneMesh implements AckListener {
     if(ackListeners != null)
       for(AckListener listener : ackListeners)
         ackListenerArray.add(listener);
-    System.err.println();
-    System.err.println("??????????????????? Assigning node " + node.getLabel() + " for " + message.getTo());
     Payload payload = new Payload(message, node.getLabel(), ackListenerArray, retryOnFailure);
     socketClient.queuePayload(payload);
     return true;
@@ -288,8 +285,6 @@ public class BoneMesh implements AckListener {
     }
     List<AckListener> ackListenerArray = new ArrayList<>();
     ackListenerArray.add(this);
-    System.err.println();
-    System.err.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!! Assigning node " + node.getLabel() + " for " + message.getTo());
     Payload payload = new Payload(message, node.getLabel(), ackListenerArray, false);
     socketClient.queuePayload(payload);
     return true;
@@ -311,26 +306,7 @@ public class BoneMesh implements AckListener {
       logger.logError("BONEMESH", e.getMessage());
     }
   }
-  
-  /**
-   * Retrieves a node by its label, if it exists.
-   * 
-   * @param label the name of the node
-   * @return the matching node or <code>null</code> if it is isn't in the map
-   */
-  public Node getNodeByLabel(String label) {
-    return nodeMap.getNodeByLabel(label);
-  }
-  
-  /**
-   * Retrieves all known nodes.
-   * 
-   * @return a set of all known nodes
-   */
-  public Set<Node> getNodes() {
-    return nodeMap.getDirectNodes();
-  }
-  
+
   /**
    * Retrieves this label of this instance.
    * 

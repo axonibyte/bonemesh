@@ -93,7 +93,7 @@ public class IncomingSocketHandler implements Runnable {
         AckMessage ack = new AckMessage(json, true);
         if(DiscoveryMessage.isImplementedBy(json)) {
           DiscoveryMessage message = new DiscoveryMessage(json); // deserialize discovery message
-          Node node = boneMesh.getNodeByLabel(message.getFrom());
+          Node node = boneMesh.getNodeMap().getNodeByLabel(message.getFrom());
           boneMesh.getNodeMap().setNodeNeighbors(message.getFrom(), message.getNodes());
           if(node == null) {
             node = new Node(message.getFrom(),
@@ -109,7 +109,6 @@ public class IncomingSocketHandler implements Runnable {
           
         } else {
           GenericMessage message = new GenericMessage(json); // attempt to deserialize message
-          System.out.println("!!!!!!!!!!!! " + message.getTo() + " -> " + boneMesh.getInstanceLabel());
           if(boneMesh.getInstanceLabel().equalsIgnoreCase(message.getTo())) // intended for us?
             server.dispatchToListeners(json); // yes, dispatch to listeners
           else boneMesh.sendDatum(message); // no, send to appropriate location

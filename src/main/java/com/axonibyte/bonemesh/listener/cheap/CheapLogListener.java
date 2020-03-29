@@ -16,6 +16,10 @@
 
 package com.axonibyte.bonemesh.listener.cheap;
 
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+
 import com.axonibyte.bonemesh.listener.LogListener;
 
 /**
@@ -25,25 +29,27 @@ import com.axonibyte.bonemesh.listener.LogListener;
  */
 public class CheapLogListener implements LogListener {
   
+  private static final DateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSS");
+  
   /**
    * {@inheritDoc}
    */
   @Override public void onDebug(String label, String message, long timestamp) {
-    System.out.printf("[DEBUG:%1$s %2$s] %3$s\n", label, Long.toString(timestamp), message);
+    System.out.printf("[DEBUG:%1$s %2$s] %3$s\n", label, DATE_FORMAT.format(new Date(timestamp)), message);
   }
   
   /**
    * {@inheritDoc}
    */
   @Override public void onInfo(String label, String message, long timestamp) {
-    System.out.printf("[INFO:%1$s %2$s] %3$s\n", label, Long.toString(timestamp), message);
+    System.out.printf("[INFO:%1$s %2$s] %3$s\n", label, DATE_FORMAT.format(new Date(timestamp)), message);
   }
 
   /**
    * {@inheritDoc}
    */
   @Override public void onError(String label, String message, long timestamp) {
-    System.out.printf("[ERROR:%1$s %2$s] %3$s\n", label, Long.toString(timestamp), message);
+    System.out.printf("[ERROR:%1$s %2$s] %3$s\n", label, DATE_FORMAT.format(new Date(timestamp)), message);
   }
-
+  
 }
