@@ -258,17 +258,16 @@ public class BoneMesh implements AckListener {
     Node node = nodeMap.getNodeByLabel(target);
     if(node == null) { // try the next best thing if the first try didn't work
       node = nodeMap.getNextBestNode(target);
-      if(node == null) {
-        System.err.println("Third round, failed.");
-        return false;
-      } else System.err.println("Second round, found " + node.getLabel());
-    } else System.err.println("First round, found " + node.getLabel());
-    GenericMessage message = new GenericMessage(instanceLabel, node.getLabel(), datum);
+      if(node == null) return false;
+    }
+    GenericMessage message = new GenericMessage(instanceLabel, target, datum);
     List<AckListener> ackListenerArray = new ArrayList<>();
     ackListenerArray.add(this);
     if(ackListeners != null)
       for(AckListener listener : ackListeners)
         ackListenerArray.add(listener);
+    System.err.println();
+    System.err.println("??????????????????? Assigning node " + node.getLabel() + " for " + message.getTo());
     Payload payload = new Payload(message, node.getLabel(), ackListenerArray, retryOnFailure);
     socketClient.queuePayload(payload);
     return true;
@@ -285,13 +284,12 @@ public class BoneMesh implements AckListener {
     Node node = nodeMap.getNodeByLabel(message.getTo());
     if(node == null) {
       node = nodeMap.getNextBestNode(message.getTo());
-      if(node == null) {
-        System.err.println("Third round, failed.");
-        return false;
-      } else System.err.println("Second round, found " + node.getLabel());
-    } else System.err.println("First round, found " + node.getLabel());
+      if(node == null) return false;
+    }
     List<AckListener> ackListenerArray = new ArrayList<>();
     ackListenerArray.add(this);
+    System.err.println();
+    System.err.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!! Assigning node " + node.getLabel() + " for " + message.getTo());
     Payload payload = new Payload(message, node.getLabel(), ackListenerArray, false);
     socketClient.queuePayload(payload);
     return true;
@@ -414,7 +412,7 @@ public class BoneMesh implements AckListener {
     @Override public void run() {
       try {
         for(;;) {
-          Thread.sleep(10000L);
+          Thread.sleep(5000L);
           Map<String, Long> nodes = nodeMap.getKnownNodes();
           nodeMap.bumpDiscoveryTime();
           for(Node node : nodeMap.getDirectNodes()) {

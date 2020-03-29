@@ -106,6 +106,7 @@ public class IncomingSocketHandler implements Runnable {
           
         } else {
           GenericMessage message = new GenericMessage(json); // attempt to deserialize message
+          System.out.println("!!!!!!!!!!!! " + message.getTo() + " -> " + boneMesh.getInstanceLabel());
           if(boneMesh.getInstanceLabel().equalsIgnoreCase(message.getTo())) // intended for us?
             server.dispatchToListeners(json); // yes, dispatch to listeners
           else boneMesh.sendDatum(message.getTo(), json, false); // no, send to appropriate location
