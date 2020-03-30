@@ -32,7 +32,8 @@ signing {
 archivesBaseName = theName
 group = theGroup
 version = theVersion
-sourceCompatibility = theSourceCompatibility
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
 
 dependencies {
   api 'org.json:json:20190722'
