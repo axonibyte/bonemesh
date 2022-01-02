@@ -2,8 +2,12 @@ image: openjdk:11
 
 doMirror: &doMirror
   name: Mirror repository
+  clone:
+    enabled: false
   script:
-    - git push --mirror git@github.com:axonibyte/bonemesh.git
+    - git clone --mirror git@bitbucket.org:${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
+    - cd ${BITBUCKET_REPO_SLUG}.git
+    - git push --mirror git@github.com:${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
 
 doBuild: &doBuild
   name: Build and test artifact
