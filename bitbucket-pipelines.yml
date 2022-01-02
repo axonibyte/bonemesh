@@ -1,18 +1,45 @@
 image: openjdk:11
 
+doMirror: &doMirror
+  name: Mirror repository
+  script:
+    - git push --mirror git@github.com:axonibyte/bonemesh.git
+
+doBuild: &doBuild
+  name: Build and test artifact
+  caches:
+    - gradle
+  script:
+    - bash ./gradlew clean test shadowJar --info
+  artifacts:
+    - build/libs/BoneMesh-2.0.1-SNAPSHOT.jar
+
+doDeploy: &doDeploy
+  name: Deploy artifact
+  clone:
+    enabled: false
+  script:
+    - >-
+      for f in build/libs/*.jar; do
+        sha256sum $f | awk '{ print $1 }' > ${f}.sha256
+        curl -v -X POST "https://${BB_PUB_USER}:${BB_PUB_SECRET}@api.bitbucket.org/2.0/repositories/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}/downloads" \
+            --form files=@"${f}" --form files=@"${f}.sha256"
+      done
+
 pipelines:
   branches:
-    master:
+    main:
       - step:
-          caches:
-            - gradle
-          script:
-            - echo "Running pipeline for master branch."
-            - bash ./gradlew clean test shadowJar
+          <<: *doMirror
+      - step:
+          <<: *doBuild
+      - step:
+          <<: *doDeploy
     dev:
       - step:
-          caches:
-            - gradle
-          script:
-            - echo "Running pipeline for dev branch."
-            - bash ./gradlew clean test shadowJar
+          <<: *doMirror
+      - step:
+          <<: *doBuild
+    '**':
+      - step:
+          <<: *doMirror
