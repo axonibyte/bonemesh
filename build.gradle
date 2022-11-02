@@ -1,11 +1,9 @@
 plugins {
-  id "com.github.johnrengelman.shadow" version "5.1.0"
+  id "com.github.johnrengelman.shadow" version "7.1.2"
 }
 
 apply plugin: 'java-library'
 apply plugin: 'eclipse'
-apply plugin: 'maven'
-apply plugin: 'signing'
 
 repositories {
   jcenter()
@@ -25,19 +23,15 @@ artifacts {
   archives javadocJar, sourcesJar
 }
 
-signing {
-  sign configurations.archives
-}
-
-archivesBaseName = theName
-group = theGroup
-version = theVersion
-sourceCompatibility = 1.8
-targetCompatibility = 1.8
+archivesBaseName = prjName
+group = prjGroup
+version = prjVersion
+sourceCompatibility = prjCompat
+targetCompatibility = prjCompat
 
 dependencies {
-  api 'org.json:json:20190722'
-  implementation 'commons-cli:commons-cli:1.4'
+  api 'org.json:json:20220924'
+  implementation 'commons-cli:commons-cli:1.5.0'
   testImplementation 'junit:junit:4.12'
 }
 
@@ -50,58 +44,14 @@ eclipse {
 
 jar {
   manifest {
-    attributes 'Main-Class': theGroup + "." + theName
-  }
-}
-
-uploadArchives {
-  repositories {
-    mavenDeployer {
-      beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
-      
-      repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
-        authentication(userName: project.findProperty('nexusUsername') ?: null, password: project.findProperty('nexusPassword') ?: null)
-      }
-      
-      snapshotRepository(url: "https://oss.sonatype.org/content/repositories/snapshots/") {
-        authentication(userName: project.findProperty('nexusUsername') ?: null, password: project.findProperty('nexusPassword') ?: null)
-      }
-      
-      pom.project {
-        name theName
-        packaging 'jar'
-        description 'BoneMesh high-level fully-connected network.'
-        url 'https://bonemesh.axonibyte.com'
-        
-        scm {
-          connection 'scm:https://bitbucket.org/axonibyte/bonemesh.git'
-          developerConnection 'scm:git://bitbucket.org/axonibyte/bonemesh.git'
-          url 'https://bitbucket.org/axonibyte/bonemesh'
-        }
-        
-        licenses {
-          license {
-            name 'The Apache License, Version 2.0'
-            url 'https://www.apache.org/licenses/LICENSE-2.0.txt'
-          }
-        }
-        
-        developers {
-          developer {
-            id 'cpower'
-            name 'Caleb L. Power'
-            email 'caleb.power@axonibyte.com'
-          }
-        }
-      }
-    }
+    attributes 'Main-Class': prjGroup + "." + prjName
   }
 }
 
 shadowJar {
   shadowJar {
-    baseName = theName
+    baseName = prjName
     classifier = null
-    version = theVersion
+    version = prjVersion
   }
 }

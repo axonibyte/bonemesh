@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Axonibyte Innovations, LLC. All rights reserved.
+ * Copyright (c) 2019-2022 Axonibyte Innovations, LLC. All rights reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -106,6 +106,8 @@ public class SocketClient implements Runnable {
                 listener.receiveAck(payload);
           } catch(JSONException e) {
             logger.logError("CLIENT", e.getMessage());
+          } catch(NullPointerException e) {
+            logger.logError("CLIENT", "Client disconnected before sending data.");
           }
           
           inputStream.close();
