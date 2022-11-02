@@ -1,4 +1,4 @@
-image: openjdk:17
+image: atlassian/default-image:3
 
 doMirror: &doMirror
   name: Mirror repository
@@ -11,12 +11,13 @@ doMirror: &doMirror
 
 doBuild: &doBuild
   name: Build and test artifact
+  image: openjdk:17
   caches:
     - gradle
   script:
     - bash ./gradlew clean test shadowJar --info
   artifacts:
-    - build/libs/BoneMesh-2.0.1-SNAPSHOT.jar
+    - build/libs/BoneMesh-2.0.2.jar
 
 doDeploy: &doDeploy
   name: Deploy artifact
