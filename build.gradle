@@ -30,9 +30,9 @@ sourceCompatibility = prjCompat
 targetCompatibility = prjCompat
 
 dependencies {
-  api 'org.json:json:20220924'
+  implementation 'org.bouncycastle:bcprov-jdk18on:1.72'
+  implementation 'org.json:json:20230227'
   implementation 'commons-cli:commons-cli:1.5.0'
-  testImplementation 'junit:junit:4.12'
 }
 
 eclipse {
