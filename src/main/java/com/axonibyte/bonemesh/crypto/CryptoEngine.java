@@ -25,14 +25,22 @@ import java.security.SecureRandom;
 import java.security.Security;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
+import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 import org.bouncycastle.jcajce.SecretKeyWithEncapsulation;
 import org.bouncycastle.jcajce.spec.KEMExtractSpec;
 import org.bouncycastle.jcajce.spec.KEMGenerateSpec;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.pqc.jcajce.provider.BouncyCastlePQCProvider;
 import org.bouncycastle.pqc.jcajce.spec.KyberParameterSpec;
+import org.bouncycastle.util.encoders.Base64;
+import org.json.JSONObject;
 
 /**
  * Manages BoneMesh cryptographic functionality.
@@ -43,6 +51,7 @@ public class CryptoEngine {
 
   private PrivateKey privkey = null;
   private PublicKey pubkey = null;
+  private Map<String, byte[]> symKeys = new ConcurrentHashMap<>();
 
   /**
    * Initiates the cryptographic engine with a new keypair.
@@ -52,6 +61,8 @@ public class CryptoEngine {
    */
   public CryptoEngine() throws CryptoException {
     try {
+      if(null == Security.getProvider("BC"))
+        Security.addProvider(new BouncyCastleProvider());
       if(null == Security.getProvider("BCPQC"))
         Security.addProvider(new BouncyCastlePQCProvider());
       KeyPairGenerator kpg = KeyPairGenerator.getInstance("KYBER", "BCPQC");
@@ -74,6 +85,8 @@ public class CryptoEngine {
    */
   public CryptoEngine(byte[] privkey, byte[] pubkey) throws CryptoException {
     try {
+      if(null == Security.getProvider("BC"))
+        Security.addProvider(new BouncyCastleProvider());
       if(null == Security.getProvider("BCPQC"))
         Security.addProvider(new BouncyCastlePQCProvider());
       PKCS8EncodedKeySpec pkcs8EKS = new PKCS8EncodedKeySpec(privkey);
@@ -106,23 +119,25 @@ public class CryptoEngine {
 
   /**
    * Encapsulates a new symmetrical key, derived from the
-   * current asymmetrical keypair.
+   * current asymmetrical keypair, and maps the symmetrical
+   * to the node for future use.
    *
-   * @return a double byte array, where element 0 describes the encoded
-   *         (secret) key and element 1 describes the encapsulated
-   *         (shared) key
+   * @param node the name of the node for which the key is to be generated
+   * @return a byte array representing the newly-generated symmetrical key
    * @throws CryptoException if the symmetrical and encapsulated keys failed
    *         to be generated properly
    */
-  public byte[][] encapsulate() throws CryptoException {
+  public byte[] encapsulate(String node) throws CryptoException {
     try {
-      byte[][] keys = new byte[2][];
+      byte[] key = null;
       final KeyGenerator keygen = KeyGenerator.getInstance("KYBER", "BCPQC");
       keygen.init(new KEMGenerateSpec(pubkey, "AES"), new SecureRandom());
       SecretKeyWithEncapsulation skwe = (SecretKeyWithEncapsulation)keygen.generateKey();
-      keys[0] = skwe.getEncoded();
-      keys[1] = skwe.getEncapsulation();
-      return keys;
+      if(symKeys.containsKey(node))
+        symKeys.replace(node, skwe.getEncoded());
+      else symKeys.put(node, skwe.getEncoded());
+      key = skwe.getEncapsulation();
+      return key;
     } catch(Exception e) {
       throw new CryptoException(e);
     }
@@ -131,16 +146,94 @@ public class CryptoEngine {
   /**
    * Decapsulates a symmetrical key from some encapsulated key.
    *
-   * @return a byte array representing a secret symmetrical key
+   * @param node the name of the node for which the key is to be decapsulated
+   * @param encapsulated the encapsulated key
    * @throws CryptoException if the symmetrical key failed to be decapsulated
    */
-  public byte[] decapsulate(byte[] encapsulated) throws CryptoException {
+  public void decapsulate(String node, byte[] encapsulated) throws CryptoException {
     try {
-      byte[] key = null;
       final KeyGenerator keygen = KeyGenerator.getInstance("KYBER", "BCPQC");
       keygen.init(new KEMExtractSpec(privkey, encapsulated, "AES"), new SecureRandom());
-      key = ((SecretKeyWithEncapsulation)keygen.generateKey()).getEncoded();
-      return key;
+      byte[] key = ((SecretKeyWithEncapsulation)keygen.generateKey()).getEncoded();
+      if(symKeys.containsKey(node))
+        symKeys.replace(node, key);
+      else symKeys.put(node, key);
+    } catch(Exception e) {
+      throw new CryptoException(e);
+    }
+  }
+
+  /**
+   * Determines whether or not the node in question is ready to support
+   * cryptographic operations e.g. message encryption and decryption.
+   *
+   * @param node the name of the node in question
+   * @return {@code true} iff a symmetrical key corresponding to this
+   *                      node is known
+   */
+  public boolean supportsCrypto(String node) {
+    return symKeys.containsKey(node);
+  }
+
+  /**
+   * Encrypts a JSON payload using the node's symmetrical key.
+   *
+   * @param node the name of the node that the message is destined for
+   * @param message the cleartext message to be encrypted
+   * @return a Base64 representation of the ciphertext with IV appended
+   * @throws CryptoException if the node was not ready for cryptographic
+   *         operation or if the cleartext could not be encrypted
+   */
+  public String encrypt(String node, JSONObject message) throws CryptoException {
+    byte[] key = symKeys.get(node);
+    if(null == key) throw new CryptoException("missing symmetric key");
+    
+    try {
+      byte[] iv = new byte[12];
+      final var csprng = new SecureRandom();
+      csprng.nextBytes(iv);
+      
+      final Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding", "BC");
+      cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(iv));
+      byte[] ciphertext = cipher.doFinal(message.toString().getBytes());
+      byte[] payload = new byte[ciphertext.length + iv.length];
+      System.arraycopy(ciphertext, 0, payload, 0, ciphertext.length);
+      System.arraycopy(iv, 0, payload, ciphertext.length, iv.length);
+
+      return new String(Base64.encode(payload));
+      
+    } catch(Exception e) {
+      throw new CryptoException(e);
+    }
+  }
+
+  /**
+   * Decrypts a payload using the node's symmetrical key.
+   *
+   * @param node the name of the node responsible for sending the message
+   * @param message the ciphertext payload with IV appended
+   * @return a JSON respresentation of the message in cleartext
+   * @throws CryptoException if the node was not ready for cryptographic
+   *         operation or if the ciphertext could not be properly decrypted
+   *         to some JSON object representation
+   */
+  public JSONObject decrypt(String node, String message) throws CryptoException {
+    byte[] key = symKeys.get(node);
+    if(null == key) throw new CryptoException("missing symmetric key");
+
+    try {
+      byte[] payload = Base64.decode(message.getBytes());
+      byte[] iv = new byte[12];
+      if(payload.length <= iv.length)
+        throw new CryptoException("ciphertext too short");
+      byte[] ciphertext = new byte[payload.length - iv.length];
+      System.arraycopy(payload, 0, ciphertext, 0, payload.length - iv.length);
+      System.arraycopy(payload, payload.length - iv.length, iv, 0, iv.length);
+
+      final Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding", "BC");
+      cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(iv));
+      
+      return new JSONObject(new String(cipher.doFinal()));
     } catch(Exception e) {
       throw new CryptoException(e);
     }
@@ -153,8 +246,16 @@ public class CryptoEngine {
    * @author Caleb L. Power <cpower@axonibyte.com>
    */
   public class CryptoException extends Exception {
-    CryptoException(Throwable cause) {
+    private CryptoException(Throwable cause) {
       super(cause);
+    }
+
+    private CryptoException(String message) {
+      super(message);
+    }
+
+    private CryptoException(String message, Throwable cause) {
+      super(message, cause);
     }
   }
   
