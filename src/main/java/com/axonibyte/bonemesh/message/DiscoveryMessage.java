@@ -17,6 +17,8 @@
 package com.axonibyte.bonemesh.message;
 
 import java.util.Map;
+import java.util.AbstractMap.SimpleEntry;
+import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.json.JSONArray;
@@ -38,12 +40,13 @@ public class DiscoveryMessage extends GenericMessage {
    * @param knownNodes directly connected nodes and their latencies
    * @param port the BoneMesh listening port
    */
-  public DiscoveryMessage(String from, String to, Map<String, Long> knownNodes, int port) {
+  public DiscoveryMessage(String from, String to, String pubkey, Map<String, Long> knownNodes, int port) {
     super(from, to, "hello", null);
     JSONArray nodes = new JSONArray();
     for(String node : knownNodes.keySet())
       nodes.put(new JSONObject()
           .put("node", node)
+          .put("pubkey", pubkey)
           .put("latency", knownNodes.get(node)));
     getJSONObject("payload")
         .put("nodes", nodes)
@@ -74,16 +77,20 @@ public class DiscoveryMessage extends GenericMessage {
   }
   
   /**
-   * Retrieves a map of neighbors and their latencies.
+   * Retrieves a map of neighbors, their pubkeys, and their latencies.
    * 
-   * @return map of node neighbors and their latencies
+   * @return map of node neighbors and entries, keyed with the corresponding
+   *         pubkey and valued with the corresponding latency
    */
-  public Map<String, Long> getNodes() {
-    Map<String, Long> latencies = new ConcurrentHashMap<>();
+  public Map<String, Entry<String, Long>> getNodes() {
+    Map<String, Entry<String, Long>> latencies = new ConcurrentHashMap<>();
     JSONArray nodes = getJSONObject("payload").getJSONArray("nodes");
     for(int i = 0; i < nodes.length(); i++) {
-      latencies.put(nodes.getJSONObject(i).getString("node"),
-          nodes.getJSONObject(i).getLong("latency"));
+      latencies.put(
+          nodes.getJSONObject(i).getString("node"),
+          new SimpleEntry<>(
+              nodes.getJSONObject(i).getString("pubkey"),
+              nodes.getJSONObject(i).getLong("latency")));
     }
     return latencies;
   }

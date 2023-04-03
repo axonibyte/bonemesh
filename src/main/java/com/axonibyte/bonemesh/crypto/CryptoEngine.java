@@ -245,7 +245,7 @@ public class CryptoEngine {
    *
    * @author Caleb L. Power <cpower@axonibyte.com>
    */
-  public class CryptoException extends Exception {
+  public class CryptoException extends RuntimeException {
     private CryptoException(Throwable cause) {
       super(cause);
     }

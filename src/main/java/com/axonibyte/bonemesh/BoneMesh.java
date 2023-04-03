@@ -26,9 +26,12 @@ import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
+import org.bouncycastle.util.encoders.Base64;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import com.axonibyte.bonemesh.crypto.CryptoEngine;
+import com.axonibyte.bonemesh.crypto.CryptoEngine.CryptoException;
 import com.axonibyte.bonemesh.listener.AckListener;
 import com.axonibyte.bonemesh.listener.DataListener;
 import com.axonibyte.bonemesh.listener.LogListener;
@@ -48,7 +51,8 @@ import com.axonibyte.bonemesh.socket.SocketServer;
  * @author Caleb L. Power
  */
 public class BoneMesh implements AckListener {
-  
+
+  private CryptoEngine cryptoEngine = null;
   private Logger logger = null;
   private NodeMap nodeMap = null;
   private SocketClient socketClient = null;
@@ -59,21 +63,37 @@ public class BoneMesh implements AckListener {
   private BoneMesh(String label) {
     this.logger = new Logger();
     this.instanceLabel = label;
-    this.nodeMap = new NodeMap(label);
+    this.nodeMap = new NodeMap();
     Heartbeat heartbeat = new Heartbeat();
     heartbeatThread = new Thread(heartbeat);
     heartbeatThread.setDaemon(true);
   }
     
   /**
-   * Builds a BoneMesh instance
+   * Builds a BoneMesh instance.
    * 
    * @param label the name of this instance
    * @param port the port to listen to
    * @return BoneMesh the new BoneMesh instance
+   * @throws {@link CryptoException} if a new keypair could not be computed
    */
-  public static BoneMesh build(String label, int port) {
+  public static BoneMesh build(String label, int port) throws CryptoException {
+    return build(label, port, null, null);
+  }
+
+  /**
+   * Builds a BoneMesh instance.
+   *
+   * @param label the name of this instance
+   * @param port the port to listen to
+   * @param privkey the bytes corresponding to the node's private key
+   * @param pubkey the bytes corresponding to the node's public key
+   * @return BoneMesh the new BoneMesh instance
+   * @throws {@link CryptoException} if the provided keypair could not be loaded
+   */
+  public static BoneMesh build(String label, int port, byte[] privkey, byte[] pubkey) throws CryptoException {
     BoneMesh boneMesh = new BoneMesh(label);
+    boneMesh.cryptoEngine = (null == privkey || null == pubkey) ? new CryptoEngine() : new CryptoEngine(privkey, pubkey);  
     boneMesh.socketClient = SocketClient.build(boneMesh, boneMesh.logger);
     boneMesh.socketServer = SocketServer.build(boneMesh, boneMesh.logger, port);
     boneMesh.heartbeatThread.start();
@@ -163,8 +183,10 @@ public class BoneMesh implements AckListener {
     int port = Integer.parseInt(splitAddress[1]);
     Node node = new Node(label, splitAddress[0], port);
     nodeMap.addOrReplaceNode(node, false);
-    DiscoveryMessage message = new DiscoveryMessage(instanceLabel,
+    DiscoveryMessage message = new DiscoveryMessage(
+        instanceLabel,
         label,
+        new String(Base64.encode(cryptoEngine.getPubkey())),
         nodeMap.getKnownNodes(),
         socketServer.getPort());
     Payload payload = new Payload(message, node.getLabel(), this, false);
@@ -250,8 +272,8 @@ public class BoneMesh implements AckListener {
    * @param datum the datum to be sent
    * @param ackListeners additional listeners
    * @param retryOnFailure repeat the request if there is a network failure
-   * @return <code>true</code> if the payload was queued;
-   *         <code>false</code> is not an indicator of message reception
+   * @return {@code true} if the payload was queued;
+   *         {@code false} is not an indicator of message reception
    */
   public boolean sendDatum(String target, JSONObject datum, boolean retryOnFailure, AckListener... ackListeners) {
     Node node = nodeMap.getNodeByLabel(target);
@@ -259,7 +281,7 @@ public class BoneMesh implements AckListener {
       node = nodeMap.getNextBestNode(target);
       if(node == null) return false;
     }
-    GenericMessage message = new GenericMessage(instanceLabel, target, datum);
+    GenericMessage message = GenericMessage.build(this, instanceLabel, target, datum);
     List<AckListener> ackListenerArray = new ArrayList<>();
     ackListenerArray.add(this);
     if(ackListeners != null)
@@ -355,10 +377,19 @@ public class BoneMesh implements AckListener {
   /**
    * Retrieves the node map.
    * 
-   * @return the NodeMap instance
+   * @return the {@link NodeMap} instance
    */
   public NodeMap getNodeMap() {
     return nodeMap;
+  }
+
+  /**
+   * Retrieves this node's cryptography engine.
+   *
+   * @return the {@link CryptoEngine} instance
+   */
+  public CryptoEngine getCryptoEngine() {
+    return cryptoEngine;
   }
   
   /**
@@ -387,13 +418,16 @@ public class BoneMesh implements AckListener {
   private class Heartbeat implements Runnable {
     @Override public void run() {
       try {
+        final String pubkey = new String(Base64.encode(cryptoEngine.getPubkey()));
         for(;;) {
           Thread.sleep(5000L);
           Map<String, Long> nodes = nodeMap.getKnownNodes();
           nodeMap.bumpDiscoveryTime();
           for(Node node : nodeMap.getDirectNodes()) {
-            DiscoveryMessage message = new DiscoveryMessage(instanceLabel,
+            DiscoveryMessage message = new DiscoveryMessage(
+                instanceLabel,
                 node.getLabel(),
+                pubkey,
                 nodes,
                 socketServer.getPort());
             Payload payload = new Payload(message, node.getLabel(), BoneMesh.this, false);

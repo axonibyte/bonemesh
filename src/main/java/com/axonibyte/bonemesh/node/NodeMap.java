@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Axonibyte Innovations, LLC. All rights reserved.
+ * Copyright (c) 2019-2023 Axonibyte Innovations, LLC. All rights reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -29,24 +29,14 @@ import java.util.concurrent.atomic.AtomicLong;
  * A container for a list of all nodes.
  * Maintains the statuses of these nodes.
  * 
- * @author Caleb L. Power
+ * @author Caleb L. Power <cpower@axonibyte.com>
  */
 public class NodeMap {
   
-  private AtomicLong discoveryTimestamp = null; // system time at last discovery ping
-  private Map<Node, Long> nodes = null; // all known nodes and their last discovery response
-  private Map<String, Entry<Node, Long>> routes = null; // the best nodes with which to reach an indirect node
-  
-  /**
-   * Overloaded constructor.
-   * 
-   * @param label the label of this BoneMesh instance 
-   */
-  public NodeMap(String label) {
-    this.discoveryTimestamp = new AtomicLong();
-    this.nodes = new ConcurrentHashMap<>();
-    this.routes = new ConcurrentHashMap<>();
-  }
+  private AtomicLong discoveryTimestamp = new AtomicLong(); // system time at last discovery ping
+  private Map<Node, Long> nodes = new ConcurrentHashMap<>(); // all known nodes and their last discovery response
+  private Map<String, Entry<Node, Long>> routes = new ConcurrentHashMap<>(); // the best nodes with which to reach an indirect node
+  private Map<String, Entry<String, Boolean>> pubkeys = new ConcurrentHashMap<>(); // pubkeys and a confirmation indicator
   
   /**
    * Adds or replaces a node in the map.
@@ -57,15 +47,6 @@ public class NodeMap {
   public void addOrReplaceNode(Node node, boolean alive) {
     removeNode(node);
     nodes.put(node, alive ? System.currentTimeMillis() - discoveryTimestamp.get() : Long.MAX_VALUE);
-/*
- *       if(routes.containsKey(knownNode)) {
-        if(routes.get(knownNode).getValue() > knownNodes.get(knownNode))
-          routes.replace(knownNode, new SimpleEntry<>(node, knownNodes.get(knownNode)));
-      } else if(getNodeByLabel(knownNode) == null) {
-        routes.put(knownNode, new SimpleEntry<>(node, knownNodes.get(knownNode)));
-      }
- */
-    //if(routes.containsKey(key))
   }
   
   /**
@@ -114,7 +95,7 @@ public class NodeMap {
    * @param label the name of the node
    * @param knownNodes the targets that the node knows about
    */
-  public void setNodeNeighbors(String label, Map<String, Long> knownNodes) {
+  public void setNodeNeighbors(String label, Map<String, Entry<String, Long>> knownNodes) {
     Node node = getNodeByLabel(label);
     if(node == null) {
       return;
@@ -127,14 +108,25 @@ public class NodeMap {
           deadRoutes.add(route);
       for(String route : deadRoutes) routes.remove(route); // if so, remove it
     } else {
-      for(String knownNode : knownNodes.keySet()) { // for each known nodes
-        if(routes.containsKey(knownNode) // if we know about the route
-            && (routes.get(knownNode).getKey().getLabel().equalsIgnoreCase(label) // if the last best route was through this node
-              || routes.get(knownNode).getValue() > knownNodes.get(knownNode) + nodes.get(node))) // or it's a better value
-            routes.replace(knownNode, new SimpleEntry<>(node, // replace the route
-                knownNodes.get(knownNode) + nodes.get(node)));
-        else if(!routes.containsKey(knownNode)) // if we didn't know about the route
-          routes.put(knownNode, new SimpleEntry<>(node, knownNodes.get(knownNode))); // save it
+      for(var knownNode : knownNodes.entrySet()) { // for each known nodes
+        String knLabel = knownNode.getKey();
+        String knPubkey = knownNode.getValue().getKey();
+        Long knLatency = knownNode.getValue().getValue();
+        if(routes.containsKey(knLabel) // if we know about the route
+            && (routes.get(knLabel).getKey().getLabel().equalsIgnoreCase(label) // if the last best route was through this node
+              || routes.get(knLabel).getValue() > knLatency + nodes.get(node))) // or it's a better value
+          routes.replace( // replace the route
+              knLabel,
+              new SimpleEntry<>( // replace the route
+                  node,
+                  knLatency + nodes.get(node)));
+        else if(!routes.containsKey(knLabel)) // if we didn't know about the route
+          routes.put(knLabel, new SimpleEntry<>(node, knLatency)); // save it
+
+        if(!pubkeys.containsKey(knLabel)) // save pubkey if we don't know about it
+          pubkeys.put(knLabel, new SimpleEntry<>(knPubkey, false));
+        else if(!pubkeys.get(knLabel).getKey().equals(knPubkey)) // or update it if it changed
+          pubkeys.replace(knLabel, new SimpleEntry<>(knPubkey, false));
       }
     }
   }
