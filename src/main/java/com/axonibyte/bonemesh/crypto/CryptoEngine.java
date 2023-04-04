@@ -230,6 +230,18 @@ public class CryptoEngine {
       System.err.println("XXX ENC PAYLOAD    = " + Hex.toHexString(payload));
       System.err.println("XXX ENC BASE64     = " + Hex.toHexString(Base64.encode(payload)));
 
+      /*
+      try {
+        cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(iv));
+        byte[] decrypted = cipher.doFinal();
+
+        System.err.println("XXX DECRYPT TEST SUCCESSFUL");
+      } catch(Exception e) {
+        System.err.println("XXX DECRYPT TEST UNSUCCESSFUL: " + e.getMessage());
+        e.printStackTrace();
+      }
+      */
+
       return new String(Base64.encode(payload));
       
     } catch(Exception e) {
@@ -269,7 +281,7 @@ public class CryptoEngine {
       System.err.println("XXX DEC CIPHERTEXT = " + Hex.toHexString(ciphertext));
       System.err.println("XXX DEC IV         = " + Hex.toHexString(iv));
       
-      return new JSONObject(new String(cipher.doFinal()));
+      return new JSONObject(new String(cipher.doFinal(ciphertext)));
     } catch(Exception e) {
       throw new CryptoException(e);
     }
