@@ -50,8 +50,8 @@ jar {
 
 shadowJar {
   shadowJar {
-    baseName = prjName
+    baseName = prjArtifact
     classifier = null
-    version = prjVersion
+    version = null
   }
 }

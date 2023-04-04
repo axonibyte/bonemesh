@@ -8,3 +8,6 @@ Copyright (c) 2019-2023 [Axonibyte Innovations, LLC](https://axonibyte.com).
 Released under the [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 
 Authored and maintained primarily by [Caleb L. Power](https://calebpower.com).
+
+This repository lives on [Bitbucket](https://bitbucket.org/axonibyte/bonemesh).
+Other remote repository hosting providers (e.g. GitHub) serve as mirrors.

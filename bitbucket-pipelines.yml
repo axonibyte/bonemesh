@@ -17,7 +17,7 @@ doBuild: &doBuild
   script:
     - bash ./gradlew clean test shadowJar --info
   artifacts:
-    - build/libs/BoneMesh-2.0.2.jar
+    - build/libs/bonemesh.jar
 
 doDeploy: &doDeploy
   name: Deploy artifact
