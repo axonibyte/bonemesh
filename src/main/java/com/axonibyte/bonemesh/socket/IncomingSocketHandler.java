@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Axonibyte Innovations, LLC. All rights reserved.
+ * Copyright (c) 2019-2023 Axonibyte Innovations, LLC. All rights reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ import com.axonibyte.bonemesh.node.Node;
 /**
  * Handles incoming data.
  * 
- * @author Caleb L. Power
+ * @author Caleb L. Power <cpower@axonibyte.com>
  */
 public class IncomingSocketHandler implements Runnable {
   
@@ -103,8 +103,11 @@ public class IncomingSocketHandler implements Runnable {
             node = new Node(message.getFrom(),
                 socket.getInetAddress().toString(),
                 message.getPort());
-            boneMesh.getNodeMap().addOrReplaceNode(node, true);
+            boneMesh.getNodeMap().setNode(node, true);
           } else node.setIP(socket.getInetAddress().toString()).setPort(message.getPort());
+          ack.setPubkey(
+              new String(
+                  Base64.encode(boneMesh.getCryptoEngine().getPubkey())));
         } else {
           GenericMessage message = new GenericMessage(json); // attempt to deserialize message
           if(boneMesh.getInstanceLabel().equalsIgnoreCase(message.getTo())) { // intended for us?
@@ -126,6 +129,7 @@ public class IncomingSocketHandler implements Runnable {
       }
     } catch(CryptoException | JSONException | IOException e) {
       logger.logError("HANDLER", e.getMessage());
+      e.printStackTrace();
     }
     server.killHandler(this);
   }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Axonibyte Innovations, LLC. All rights reserved.
+ * Copyright (c) 2019-2023 Axonibyte Innovations, LLC. All rights reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ import org.json.JSONObject;
 /**
  * A generic message to be sent in a payload.
  * 
- * @author Caleb L. power
+ * @author Caleb L. Power <cpower@axonibyte.com>
  */
 public class GenericMessage extends JSONObject {
 
@@ -47,7 +47,11 @@ public class GenericMessage extends JSONObject {
     GenericMessage message = new GenericMessage();
     CryptoEngine cryptoEngine = boneMesh.getCryptoEngine();
     if(!cryptoEngine.supportsCrypto(to)) {
-      String encapsulated = new String(Base64.encode(cryptoEngine.encapsulate(to)));
+      String encapsulated = new String(
+          Base64.encode(
+              cryptoEngine.encapsulate(
+                  to,
+                  boneMesh.getNodeMap().getPubkey(to))));
       message.put("kex", encapsulated);
     }
     message.put("payload", cryptoEngine.encrypt(to, payload));

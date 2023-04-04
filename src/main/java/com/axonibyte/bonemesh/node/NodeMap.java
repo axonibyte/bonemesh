@@ -25,6 +25,10 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import com.axonibyte.bonemesh.BoneMesh;
+
+import org.bouncycastle.util.encoders.Base64;
+
 /**
  * A container for a list of all nodes.
  * Maintains the statuses of these nodes.
@@ -32,20 +36,40 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author Caleb L. Power <cpower@axonibyte.com>
  */
 public class NodeMap {
-  
+
   private AtomicLong discoveryTimestamp = new AtomicLong(); // system time at last discovery ping
   private Map<Node, Long> nodes = new ConcurrentHashMap<>(); // all known nodes and their last discovery response
   private Map<String, Entry<Node, Long>> routes = new ConcurrentHashMap<>(); // the best nodes with which to reach an indirect node
-  private Map<String, Entry<String, Boolean>> pubkeys = new ConcurrentHashMap<>(); // pubkeys and a confirmation indicator
-  
+  private Map<String, String> pubkeys = new ConcurrentHashMap<>(); // pubkeys and a confirmation indicator
+
   /**
-   * Adds or replaces a node in the map.
-   * 
-   * @param node the node to be added
-   * @param alive <code>true</code> iff the node is alive
+   * Instantiates this {@link NodeMap} object.
+   *
+   * @param boneMesh the active {@link BoneMesh} object
    */
-  public void addOrReplaceNode(Node node, boolean alive) {
-    removeNode(node);
+  public NodeMap(BoneMesh boneMesh) {
+    /*
+    nodes.put(
+        new Node(
+            boneMesh.getInstanceLabel(),
+            "127.0.0.1",
+            boneMesh.getSocketServer().getPort()),
+        0L);
+    */
+    pubkeys.put(
+        boneMesh.getInstanceLabel(),
+        new String(
+            Base64.encode(
+                boneMesh.getCryptoEngine().getPubkey())));
+  }
+
+  /**
+   * Sets a nodes status in the node map.
+   *
+   * @param node the node to be added or updated
+   * @param alive {@code true} iff the node is alive
+   */
+  public void setNode(Node node, boolean alive) {
     nodes.put(node, alive ? System.currentTimeMillis() - discoveryTimestamp.get() : Long.MAX_VALUE);
   }
   
@@ -56,20 +80,7 @@ public class NodeMap {
    * @param node the node to be removed
    */
   public void removeNode(Node node) {
-    if(nodes.containsKey(node)) nodes.remove(node);
-  }
-  
-  /**
-   * Sets a node as alive or dead.
-   * If the node doesn't exist in the map, it gets added.
-   * 
-   * @param node the node
-   * @param alive <code>true</code> if the node is alive
-   */
-  public void setNodeAlive(Node node, boolean alive) {
-    if(nodes.containsKey(node)) {
-      nodes.replace(node, alive ? System.currentTimeMillis() - discoveryTimestamp.get() : Long.MAX_VALUE);
-    } else addOrReplaceNode(node, alive);
+    nodes.remove(node);
   }
   
   /**
@@ -114,19 +125,19 @@ public class NodeMap {
         Long knLatency = knownNode.getValue().getValue();
         if(routes.containsKey(knLabel) // if we know about the route
             && (routes.get(knLabel).getKey().getLabel().equalsIgnoreCase(label) // if the last best route was through this node
-              || routes.get(knLabel).getValue() > knLatency + nodes.get(node))) // or it's a better value
+                || routes.get(knLabel).getValue() > knLatency + nodes.get(node))) // or it's a better value
           routes.replace( // replace the route
               knLabel,
               new SimpleEntry<>( // replace the route
                   node,
                   knLatency + nodes.get(node)));
         else if(!routes.containsKey(knLabel)) // if we didn't know about the route
-          routes.put(knLabel, new SimpleEntry<>(node, knLatency)); // save it
-
+          routes.put(knLabel, new SimpleEntry<>(node, knLatency + nodes.get(node))); // save it
+        
         if(!pubkeys.containsKey(knLabel)) // save pubkey if we don't know about it
-          pubkeys.put(knLabel, new SimpleEntry<>(knPubkey, false));
-        else if(!pubkeys.get(knLabel).getKey().equals(knPubkey)) // or update it if it changed
-          pubkeys.replace(knLabel, new SimpleEntry<>(knPubkey, false));
+          pubkeys.put(knLabel, knPubkey);
+        else if(!pubkeys.get(knLabel).equals(knPubkey) && !knPubkey.isBlank()) // or update it if it changed
+          pubkeys.replace(knLabel, knPubkey);
       }
     }
   }
@@ -142,6 +153,17 @@ public class NodeMap {
       if(node.getLabel().equalsIgnoreCase(label))
         return node;
     return null;
+  }
+
+  /**
+   * Retrieves the public key associated with a {@link BoneMesh} node.
+   *
+   * @param label the name of the node
+   * @return a String representation of the pubkey, or {@code null}
+   *         if no pubkey was found to be associated with the node
+   */
+  public String getPubkey(String label) {
+    return pubkeys.get(label);
   }
   
   /**
@@ -207,6 +229,16 @@ public class NodeMap {
    */
   public void bumpDiscoveryTime() {
     discoveryTimestamp.set(System.currentTimeMillis());
+  }
+
+  /**
+   * Updates the pubkey associated with a node.
+   *
+   * @param node the node associated with the pubkey
+   * @param pubkey the Base64-encoded String representatio of the pubkey
+   */
+  public void setPubkey(String node, String pubkey) {
+    pubkeys.put(node, pubkey);
   }
   
   /**

@@ -17,9 +17,12 @@
 package com.axonibyte.bonemesh;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
+import java.util.AbstractMap.SimpleEntry;
+import java.util.Map.Entry;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
@@ -37,6 +40,7 @@ import com.axonibyte.bonemesh.listener.DataListener;
 import com.axonibyte.bonemesh.listener.LogListener;
 import com.axonibyte.bonemesh.listener.cheap.CheapDataListener;
 import com.axonibyte.bonemesh.listener.cheap.CheapLogListener;
+import com.axonibyte.bonemesh.message.AckMessage;
 import com.axonibyte.bonemesh.message.DiscoveryMessage;
 import com.axonibyte.bonemesh.message.GenericMessage;
 import com.axonibyte.bonemesh.node.Node;
@@ -63,10 +67,6 @@ public class BoneMesh implements AckListener {
   private BoneMesh(String label) {
     this.logger = new Logger();
     this.instanceLabel = label;
-    this.nodeMap = new NodeMap();
-    Heartbeat heartbeat = new Heartbeat();
-    heartbeatThread = new Thread(heartbeat);
-    heartbeatThread.setDaemon(true);
   }
     
   /**
@@ -96,6 +96,12 @@ public class BoneMesh implements AckListener {
     boneMesh.cryptoEngine = (null == privkey || null == pubkey) ? new CryptoEngine() : new CryptoEngine(privkey, pubkey);  
     boneMesh.socketClient = SocketClient.build(boneMesh, boneMesh.logger);
     boneMesh.socketServer = SocketServer.build(boneMesh, boneMesh.logger, port);
+
+    boneMesh.nodeMap = new NodeMap(boneMesh);
+    Heartbeat heartbeat = boneMesh.new Heartbeat();
+    boneMesh.heartbeatThread = new Thread(heartbeat);
+    boneMesh.heartbeatThread.setDaemon(true);
+    
     boneMesh.heartbeatThread.start();
     return boneMesh;
   }
@@ -132,8 +138,9 @@ public class BoneMesh implements AckListener {
       BoneMesh boneMesh = BoneMesh.build(
           cmd.getOptionValue("node_label"),
           Integer.parseInt(cmd.getOptionValue("listening_port")));
-      
+
       boneMesh.logger.addListener(new CheapLogListener());
+      boneMesh.logger.logInfo("BONEMESH", "My pubkey is " + new String(Base64.encode(boneMesh.getCryptoEngine().getPubkey())));
       
       if(cmd.hasOption("target_nodes")) {
         String[] targetNodes = cmd.getOptionValues("target_nodes");
@@ -182,15 +189,8 @@ public class BoneMesh implements AckListener {
     if(splitAddress.length != 2) throw new Exception("Invalid node address.");
     int port = Integer.parseInt(splitAddress[1]);
     Node node = new Node(label, splitAddress[0], port);
-    nodeMap.addOrReplaceNode(node, false);
-    DiscoveryMessage message = new DiscoveryMessage(
-        instanceLabel,
-        label,
-        new String(Base64.encode(cryptoEngine.getPubkey())),
-        nodeMap.getKnownNodes(),
-        socketServer.getPort());
-    Payload payload = new Payload(message, node.getLabel(), this, false);
-    socketClient.queuePayload(payload);
+    nodeMap.setNode(node, false);
+    broadcastDiscoveryMessage();
   }
   
   /**
@@ -319,7 +319,7 @@ public class BoneMesh implements AckListener {
       boolean wasAlive = false;
       if(node != null) {
         wasAlive = nodeMap.isAlive(node);
-        nodeMap.setNodeAlive(node, alive);
+        nodeMap.setNode(node, alive);
       }
       String message = String.format("Node %1$s is %2$s!", target, alive ? "ALIVE" : "DEAD");
       if(!wasAlive && alive) logger.logInfo("BONEMESH", message);
@@ -391,6 +391,15 @@ public class BoneMesh implements AckListener {
   public CryptoEngine getCryptoEngine() {
     return cryptoEngine;
   }
+
+  /**
+   * Retrieves the socket server.
+   *
+   * @return the {@link SocketServer} instance
+   */
+  public SocketServer getSocketServer() {
+    return socketServer;
+  }
   
   /**
    * Kills this BoneMesh node.
@@ -405,6 +414,9 @@ public class BoneMesh implements AckListener {
    * {@inheritDoc}
    */
   @Override public void receiveAck(Payload payload) {
+    AckMessage ack = new AckMessage(payload.getData(), false);
+    if(ack.hasPubkey())
+      nodeMap.setPubkey(payload.getData().getString("to"), ack.getPubkey());
     setNodeStatus(payload, true);
   }
 
@@ -414,25 +426,34 @@ public class BoneMesh implements AckListener {
   @Override public void receiveNak(Payload payload) {
     setNodeStatus(payload, false);
   }
+
+  private void broadcastDiscoveryMessage() {
+    Map<String, Entry<String, Long>> nodes = new HashMap<>();
+    for(var node : nodeMap.getKnownNodes().entrySet())
+      nodes.put(
+          node.getKey(),
+          new SimpleEntry<>(
+              nodeMap.getPubkey(node.getKey()),
+              node.getValue()));
+    nodeMap.bumpDiscoveryTime();
+    for(Node node : nodeMap.getDirectNodes()) {
+      DiscoveryMessage message = new DiscoveryMessage(
+          instanceLabel,
+          node.getLabel(),
+          nodes,
+          socketServer.getPort());
+      System.err.println("XXX " + message.toString());
+      Payload payload = new Payload(message, node.getLabel(), this, false);
+      socketClient.queuePayload(payload);
+    }
+  }
   
   private class Heartbeat implements Runnable {
     @Override public void run() {
       try {
-        final String pubkey = new String(Base64.encode(cryptoEngine.getPubkey()));
         for(;;) {
           Thread.sleep(5000L);
-          Map<String, Long> nodes = nodeMap.getKnownNodes();
-          nodeMap.bumpDiscoveryTime();
-          for(Node node : nodeMap.getDirectNodes()) {
-            DiscoveryMessage message = new DiscoveryMessage(
-                instanceLabel,
-                node.getLabel(),
-                pubkey,
-                nodes,
-                socketServer.getPort());
-            Payload payload = new Payload(message, node.getLabel(), BoneMesh.this, false);
-            socketClient.queuePayload(payload);
-          }
+          broadcastDiscoveryMessage();
         }
       } catch(InterruptedException e) { }
     }

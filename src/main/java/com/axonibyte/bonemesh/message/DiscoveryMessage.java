@@ -37,17 +37,17 @@ public class DiscoveryMessage extends GenericMessage {
    * 
    * @param from the node from which the message is sent
    * @param to the recipient node
-   * @param knownNodes directly connected nodes and their latencies
+   * @param knownNodes directly connected nodes and their public keys and latencies
    * @param port the BoneMesh listening port
    */
-  public DiscoveryMessage(String from, String to, String pubkey, Map<String, Long> knownNodes, int port) {
+  public DiscoveryMessage(String from, String to, Map<String, Entry<String, Long>> knownNodes, int port) {
     super(from, to, "hello", null);
     JSONArray nodes = new JSONArray();
-    for(String node : knownNodes.keySet())
+    for(var node : knownNodes.entrySet())
       nodes.put(new JSONObject()
-          .put("node", node)
-          .put("pubkey", pubkey)
-          .put("latency", knownNodes.get(node)));
+          .put("node", node.getKey())
+          .put("pubkey", node.getValue().getKey())
+          .put("latency", node.getValue().getValue()));
     getJSONObject("payload")
         .put("nodes", nodes)
         .put("port", port);
@@ -86,11 +86,12 @@ public class DiscoveryMessage extends GenericMessage {
     Map<String, Entry<String, Long>> latencies = new ConcurrentHashMap<>();
     JSONArray nodes = getJSONObject("payload").getJSONArray("nodes");
     for(int i = 0; i < nodes.length(); i++) {
+      JSONObject obj = nodes.getJSONObject(i);
       latencies.put(
-          nodes.getJSONObject(i).getString("node"),
+          obj.getString("node"),
           new SimpleEntry<>(
-              nodes.getJSONObject(i).getString("pubkey"),
-              nodes.getJSONObject(i).getLong("latency")));
+              obj.optString("pubkey"),
+              obj.getLong("latency")));
     }
     return latencies;
   }
