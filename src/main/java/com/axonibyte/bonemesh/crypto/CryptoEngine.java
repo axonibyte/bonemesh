@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Axonibyte Innovations, LLC. All rights reserved.
+ * Copyright (c) 2019-2023 Axonibyte Innovations, LLC. All rights reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -19,13 +19,10 @@ package com.axonibyte.bonemesh.crypto;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
-import java.security.NoSuchAlgorithmException;
-import java.security.NoSuchProviderException;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Security;
-import java.security.spec.InvalidKeySpecException;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Map;
@@ -43,7 +40,6 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.pqc.jcajce.provider.BouncyCastlePQCProvider;
 import org.bouncycastle.pqc.jcajce.spec.KyberParameterSpec;
 import org.bouncycastle.util.encoders.Base64;
-import org.bouncycastle.util.encoders.Hex;
 import org.json.JSONObject;
 
 /**
@@ -149,11 +145,6 @@ public class CryptoEngine {
         symKeys.replace(node, skwe.getEncoded());
       else symKeys.put(node, skwe.getEncoded());
       key = skwe.getEncapsulation();
-
-      System.err.println("XXX KEX BEGIN NODE         = " + node);
-      System.err.println("XXX KEX BEGIN NODE PUBKEY  = " + Hex.toHexString(Base64.decode(pubkey)));
-      System.err.println("XXX KEX BEGIN ENCODED      = " + Hex.toHexString(skwe.getEncoded()));
-      System.err.println("XXX KEX BEGIN ENCAPSULATED = " + Hex.toHexString(key));
       
       return key;
     } catch(Exception e) {
@@ -177,11 +168,6 @@ public class CryptoEngine {
         symKeys.replace(node, key);
       else symKeys.put(node, key);
 
-      System.err.println("XXX KEX END NODE         = " + node);
-      System.err.println("XXX KEX MY PUBKEY        = " + Hex.toHexString(pubkey.getEncoded()));
-      System.err.println("XXX KEX END ENCAPSULATED = " + Hex.toHexString(encapsulated));
-      System.err.println("XXX KEX END ENCODED      = " + Hex.toHexString(key));
-      
     } catch(Exception e) {
       throw new CryptoException(e);
     }
@@ -223,25 +209,6 @@ public class CryptoEngine {
       byte[] payload = new byte[ciphertext.length + iv.length];
       System.arraycopy(ciphertext, 0, payload, 0, ciphertext.length);
       System.arraycopy(iv, 0, payload, ciphertext.length, iv.length);
-
-      System.err.println("XXX ENC KEY        = " + Hex.toHexString(key));
-      System.err.println("XXX ENC CIPHERTEXT = " + Hex.toHexString(ciphertext));
-      System.err.println("XXX ENC IV         = " + Hex.toHexString(iv));
-      System.err.println("XXX ENC PAYLOAD    = " + Hex.toHexString(payload));
-      System.err.println("XXX ENC BASE64     = " + Hex.toHexString(Base64.encode(payload)));
-
-      /*
-      try {
-        cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(iv));
-        byte[] decrypted = cipher.doFinal();
-
-        System.err.println("XXX DECRYPT TEST SUCCESSFUL");
-      } catch(Exception e) {
-        System.err.println("XXX DECRYPT TEST UNSUCCESSFUL: " + e.getMessage());
-        e.printStackTrace();
-      }
-      */
-
       return new String(Base64.encode(payload));
       
     } catch(Exception e) {
@@ -274,12 +241,6 @@ public class CryptoEngine {
 
       final Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding", "BC");
       cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(iv));
-
-      System.err.println("XXX DEC KEY        = " + Hex.toHexString(key));
-      System.err.println("XXX DEC BASE64     = " + Hex.toHexString(message.getBytes()));
-      System.err.println("XXX DEC PAYLOAD    = " + Hex.toHexString(Base64.decode(message.getBytes())));
-      System.err.println("XXX DEC CIPHERTEXT = " + Hex.toHexString(ciphertext));
-      System.err.println("XXX DEC IV         = " + Hex.toHexString(iv));
       
       return new JSONObject(new String(cipher.doFinal(ciphertext)));
     } catch(Exception e) {

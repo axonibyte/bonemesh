@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Axonibyte Innovations, LLC. All rights reserved.
+ * Copyright (c) 2019-2023 Axonibyte Innovations, LLC. All rights reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -52,7 +52,7 @@ import com.axonibyte.bonemesh.socket.SocketServer;
 /**
  * Virtual point-to-point mesh network driver for Java.
  * 
- * @author Caleb L. Power
+ * @author Caleb L. Power <cpower@axonibyte.com>
  */
 public class BoneMesh implements AckListener {
 
@@ -442,7 +442,6 @@ public class BoneMesh implements AckListener {
           node.getLabel(),
           nodes,
           socketServer.getPort());
-      System.err.println("XXX " + message.toString());
       Payload payload = new Payload(message, node.getLabel(), this, false);
       socketClient.queuePayload(payload);
     }
