@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Axonibyte Innovations, LLC. All rights reserved.
+ * Copyright (c) 2019-2023 Axonibyte Innovations, LLC. All rights reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -17,6 +17,8 @@
 package com.axonibyte.bonemesh.message;
 
 import java.util.Map;
+import java.util.AbstractMap.SimpleEntry;
+import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.json.JSONArray;
@@ -26,7 +28,7 @@ import org.json.JSONObject;
 /**
  * A heartbeat message intended to check if a node is alive.
  * 
- * @author Caleb L. Power
+ * @author Caleb L. Power <cpower@axonibyte.com>
  */
 public class DiscoveryMessage extends GenericMessage {
   
@@ -35,16 +37,17 @@ public class DiscoveryMessage extends GenericMessage {
    * 
    * @param from the node from which the message is sent
    * @param to the recipient node
-   * @param knownNodes directly connected nodes and their latencies
+   * @param knownNodes directly connected nodes and their public keys and latencies
    * @param port the BoneMesh listening port
    */
-  public DiscoveryMessage(String from, String to, Map<String, Long> knownNodes, int port) {
+  public DiscoveryMessage(String from, String to, Map<String, Entry<String, Long>> knownNodes, int port) {
     super(from, to, "hello", null);
     JSONArray nodes = new JSONArray();
-    for(String node : knownNodes.keySet())
+    for(var node : knownNodes.entrySet())
       nodes.put(new JSONObject()
-          .put("node", node)
-          .put("latency", knownNodes.get(node)));
+          .put("node", node.getKey())
+          .put("pubkey", node.getValue().getKey())
+          .put("latency", node.getValue().getValue()));
     getJSONObject("payload")
         .put("nodes", nodes)
         .put("port", port);
@@ -74,16 +77,21 @@ public class DiscoveryMessage extends GenericMessage {
   }
   
   /**
-   * Retrieves a map of neighbors and their latencies.
+   * Retrieves a map of neighbors, their pubkeys, and their latencies.
    * 
-   * @return map of node neighbors and their latencies
+   * @return map of node neighbors and entries, keyed with the corresponding
+   *         pubkey and valued with the corresponding latency
    */
-  public Map<String, Long> getNodes() {
-    Map<String, Long> latencies = new ConcurrentHashMap<>();
+  public Map<String, Entry<String, Long>> getNodes() {
+    Map<String, Entry<String, Long>> latencies = new ConcurrentHashMap<>();
     JSONArray nodes = getJSONObject("payload").getJSONArray("nodes");
     for(int i = 0; i < nodes.length(); i++) {
-      latencies.put(nodes.getJSONObject(i).getString("node"),
-          nodes.getJSONObject(i).getLong("latency"));
+      JSONObject obj = nodes.getJSONObject(i);
+      latencies.put(
+          obj.getString("node"),
+          new SimpleEntry<>(
+              obj.optString("pubkey"),
+              obj.getLong("latency")));
     }
     return latencies;
   }

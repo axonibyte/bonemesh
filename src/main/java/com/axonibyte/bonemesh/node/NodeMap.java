@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Axonibyte Innovations, LLC. All rights reserved.
+ * Copyright (c) 2019-2023 Axonibyte Innovations, LLC. All rights reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -25,47 +25,52 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import com.axonibyte.bonemesh.BoneMesh;
+
+import org.bouncycastle.util.encoders.Base64;
+
 /**
  * A container for a list of all nodes.
  * Maintains the statuses of these nodes.
  * 
- * @author Caleb L. Power
+ * @author Caleb L. Power <cpower@axonibyte.com>
  */
 public class NodeMap {
-  
-  private AtomicLong discoveryTimestamp = null; // system time at last discovery ping
-  private Map<Node, Long> nodes = null; // all known nodes and their last discovery response
-  private Map<String, Entry<Node, Long>> routes = null; // the best nodes with which to reach an indirect node
-  
+
+  private AtomicLong discoveryTimestamp = new AtomicLong(); // system time at last discovery ping
+  private Map<Node, Long> nodes = new ConcurrentHashMap<>(); // all known nodes and their last discovery response
+  private Map<String, Entry<Node, Long>> routes = new ConcurrentHashMap<>(); // the best nodes with which to reach an indirect node
+  private Map<String, String> pubkeys = new ConcurrentHashMap<>(); // pubkeys and a confirmation indicator
+
   /**
-   * Overloaded constructor.
-   * 
-   * @param label the label of this BoneMesh instance 
+   * Instantiates this {@link NodeMap} object.
+   *
+   * @param boneMesh the active {@link BoneMesh} object
    */
-  public NodeMap(String label) {
-    this.discoveryTimestamp = new AtomicLong();
-    this.nodes = new ConcurrentHashMap<>();
-    this.routes = new ConcurrentHashMap<>();
+  public NodeMap(BoneMesh boneMesh) {
+    /*
+    nodes.put(
+        new Node(
+            boneMesh.getInstanceLabel(),
+            "127.0.0.1",
+            boneMesh.getSocketServer().getPort()),
+        0L);
+    */
+    pubkeys.put(
+        boneMesh.getInstanceLabel(),
+        new String(
+            Base64.encode(
+                boneMesh.getCryptoEngine().getPubkey())));
   }
-  
+
   /**
-   * Adds or replaces a node in the map.
-   * 
-   * @param node the node to be added
-   * @param alive <code>true</code> iff the node is alive
+   * Sets a nodes status in the node map.
+   *
+   * @param node the node to be added or updated
+   * @param alive {@code true} iff the node is alive
    */
-  public void addOrReplaceNode(Node node, boolean alive) {
-    removeNode(node);
+  public void setNode(Node node, boolean alive) {
     nodes.put(node, alive ? System.currentTimeMillis() - discoveryTimestamp.get() : Long.MAX_VALUE);
-/*
- *       if(routes.containsKey(knownNode)) {
-        if(routes.get(knownNode).getValue() > knownNodes.get(knownNode))
-          routes.replace(knownNode, new SimpleEntry<>(node, knownNodes.get(knownNode)));
-      } else if(getNodeByLabel(knownNode) == null) {
-        routes.put(knownNode, new SimpleEntry<>(node, knownNodes.get(knownNode)));
-      }
- */
-    //if(routes.containsKey(key))
   }
   
   /**
@@ -75,20 +80,7 @@ public class NodeMap {
    * @param node the node to be removed
    */
   public void removeNode(Node node) {
-    if(nodes.containsKey(node)) nodes.remove(node);
-  }
-  
-  /**
-   * Sets a node as alive or dead.
-   * If the node doesn't exist in the map, it gets added.
-   * 
-   * @param node the node
-   * @param alive <code>true</code> if the node is alive
-   */
-  public void setNodeAlive(Node node, boolean alive) {
-    if(nodes.containsKey(node)) {
-      nodes.replace(node, alive ? System.currentTimeMillis() - discoveryTimestamp.get() : Long.MAX_VALUE);
-    } else addOrReplaceNode(node, alive);
+    nodes.remove(node);
   }
   
   /**
@@ -114,7 +106,7 @@ public class NodeMap {
    * @param label the name of the node
    * @param knownNodes the targets that the node knows about
    */
-  public void setNodeNeighbors(String label, Map<String, Long> knownNodes) {
+  public void setNodeNeighbors(String label, Map<String, Entry<String, Long>> knownNodes) {
     Node node = getNodeByLabel(label);
     if(node == null) {
       return;
@@ -127,14 +119,25 @@ public class NodeMap {
           deadRoutes.add(route);
       for(String route : deadRoutes) routes.remove(route); // if so, remove it
     } else {
-      for(String knownNode : knownNodes.keySet()) { // for each known nodes
-        if(routes.containsKey(knownNode) // if we know about the route
-            && (routes.get(knownNode).getKey().getLabel().equalsIgnoreCase(label) // if the last best route was through this node
-              || routes.get(knownNode).getValue() > knownNodes.get(knownNode) + nodes.get(node))) // or it's a better value
-            routes.replace(knownNode, new SimpleEntry<>(node, // replace the route
-                knownNodes.get(knownNode) + nodes.get(node)));
-        else if(!routes.containsKey(knownNode)) // if we didn't know about the route
-          routes.put(knownNode, new SimpleEntry<>(node, knownNodes.get(knownNode))); // save it
+      for(var knownNode : knownNodes.entrySet()) { // for each known nodes
+        String knLabel = knownNode.getKey();
+        String knPubkey = knownNode.getValue().getKey();
+        Long knLatency = knownNode.getValue().getValue();
+        if(routes.containsKey(knLabel) // if we know about the route
+            && (routes.get(knLabel).getKey().getLabel().equalsIgnoreCase(label) // if the last best route was through this node
+                || routes.get(knLabel).getValue() > knLatency + nodes.get(node))) // or it's a better value
+          routes.replace( // replace the route
+              knLabel,
+              new SimpleEntry<>( // replace the route
+                  node,
+                  knLatency + nodes.get(node)));
+        else if(!routes.containsKey(knLabel)) // if we didn't know about the route
+          routes.put(knLabel, new SimpleEntry<>(node, knLatency + nodes.get(node))); // save it
+        
+        if(!pubkeys.containsKey(knLabel)) // save pubkey if we don't know about it
+          pubkeys.put(knLabel, knPubkey);
+        else if(!pubkeys.get(knLabel).equals(knPubkey) && !knPubkey.isBlank()) // or update it if it changed
+          pubkeys.replace(knLabel, knPubkey);
       }
     }
   }
@@ -150,6 +153,17 @@ public class NodeMap {
       if(node.getLabel().equalsIgnoreCase(label))
         return node;
     return null;
+  }
+
+  /**
+   * Retrieves the public key associated with a {@link BoneMesh} node.
+   *
+   * @param label the name of the node
+   * @return a String representation of the pubkey, or {@code null}
+   *         if no pubkey was found to be associated with the node
+   */
+  public String getPubkey(String label) {
+    return pubkeys.get(label);
   }
   
   /**
@@ -215,6 +229,16 @@ public class NodeMap {
    */
   public void bumpDiscoveryTime() {
     discoveryTimestamp.set(System.currentTimeMillis());
+  }
+
+  /**
+   * Updates the pubkey associated with a node.
+   *
+   * @param node the node associated with the pubkey
+   * @param pubkey the Base64-encoded String representatio of the pubkey
+   */
+  public void setPubkey(String node, String pubkey) {
+    pubkeys.put(node, pubkey);
   }
   
   /**

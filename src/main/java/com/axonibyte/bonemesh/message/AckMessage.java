@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Axonibyte Innovations, LLC. All rights reserved.
+ * Copyright (c) 2019-2023 Axonibyte Innovations, LLC. All rights reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -22,18 +22,29 @@ import org.json.JSONObject;
 /**
  * A heartbeat message intended to respond to incoming messages.
  * 
- * @author Caleb L. power
+ * @author Caleb L. Power <cpower@axonibyte.com>
  */
 public class AckMessage extends GenericMessage {
   
   /**
-   * Overloaded constructor.
+   * Instantiates an ACK message.
    * 
    * @param from the node from which the message is sent
    * @param to the recipient node
    */
   public AckMessage(String from, String to) {
     super(from, to, "ack", null);
+  }
+
+  /**
+   * Instantiates an ACK message with a pubkey attached.
+   *
+   * @param from the node from which the message is sent
+   * @param to the recipient node
+   * @param pubkey the pubkey associated with the sender
+   */
+  public AckMessage(String from, String to, String pubkey) {
+    super(from, to, "ack", new JSONObject("pubkey", pubkey));
   }
   
   /**
@@ -48,6 +59,34 @@ public class AckMessage extends GenericMessage {
   public AckMessage(JSONObject json, boolean flip) throws JSONException {
     this(json.getString(flip ? "to" : "from"),
         json.getString(flip ? "from" : "to"));
+    // if(json.has("payload")) put("payload", json.getJSONObject("payload"));
+  }
+
+  /**
+   * Determines whether or not the ACK has a pubkey attached.
+   *
+   * @return {@code true} iff a pubkey is attached
+   */
+  public boolean hasPubkey() {
+    return getJSONObject("payload").has("pubkey");
+  }
+
+  /**
+   * Retrieves the pubkey attached to the ACK if one exists.
+   *
+   * @return the Base64-encoded String representation of the pubkey
+   */
+  public String getPubkey() {
+    return getJSONObject("payload").getString("pubkey");
+  }
+
+  /**
+   * Sets the pubkey attached to the ACK.
+   *
+   * @param pubkey the Base64-encoded String representation of the pubkey
+   */
+  public void setPubkey(String pubkey) {
+    getJSONObject("payload").put("pubkey", pubkey);
   }
   
   /**

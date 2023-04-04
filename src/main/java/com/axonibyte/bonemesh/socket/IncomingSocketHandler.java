@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Axonibyte Innovations, LLC. All rights reserved.
+ * Copyright (c) 2019-2023 Axonibyte Innovations, LLC. All rights reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -24,11 +24,13 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Socket;
 
+import org.bouncycastle.util.encoders.Base64;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import com.axonibyte.bonemesh.BoneMesh;
 import com.axonibyte.bonemesh.Logger;
+import com.axonibyte.bonemesh.crypto.CryptoEngine.CryptoException;
 import com.axonibyte.bonemesh.message.AckMessage;
 import com.axonibyte.bonemesh.message.DiscoveryMessage;
 import com.axonibyte.bonemesh.message.GenericMessage;
@@ -37,7 +39,7 @@ import com.axonibyte.bonemesh.node.Node;
 /**
  * Handles incoming data.
  * 
- * @author Caleb L. Power
+ * @author Caleb L. Power <cpower@axonibyte.com>
  */
 public class IncomingSocketHandler implements Runnable {
   
@@ -101,21 +103,33 @@ public class IncomingSocketHandler implements Runnable {
             node = new Node(message.getFrom(),
                 socket.getInetAddress().toString(),
                 message.getPort());
-            boneMesh.getNodeMap().addOrReplaceNode(node, true);
+            boneMesh.getNodeMap().setNode(node, true);
           } else node.setIP(socket.getInetAddress().toString()).setPort(message.getPort());
+          ack.setPubkey(
+              new String(
+                  Base64.encode(boneMesh.getCryptoEngine().getPubkey())));
         } else {
           GenericMessage message = new GenericMessage(json); // attempt to deserialize message
-          if(boneMesh.getInstanceLabel().equalsIgnoreCase(message.getTo())) // intended for us?
-            server.dispatchToListeners(json); // yes, dispatch to listeners
-          else boneMesh.sendDatum(message); // no, send to appropriate location
+          if(boneMesh.getInstanceLabel().equalsIgnoreCase(message.getTo())) { // intended for us?
+            // if so, decrypt if necessary and dispatch to listeners
+            if(message.hasKEX())
+              boneMesh.getCryptoEngine().decapsulate(
+                  message.getFrom(),
+                  Base64.decode(message.getKEX()));
+            if(message.isEncrypted()
+                && !message.decryptPayload(boneMesh.getCryptoEngine()))
+              logger.logError("HANDLER", String.format("Failed to decrypt message from %1$s", message.getFrom()));
+            server.dispatchToListeners(message);
+          } else boneMesh.sendDatum(message); // if not, send to appropriate location
         }
         PrintWriter out = new PrintWriter(outputStream);
         logger.logDebug("HANDLER", String.format("Sending data: %1$s", ack.toString()));
         out.println(ack);
         out.flush();
       }
-    } catch(JSONException | IOException e) {
+    } catch(CryptoException | JSONException | IOException e) {
       logger.logError("HANDLER", e.getMessage());
+      e.printStackTrace();
     }
     server.killHandler(this);
   }
