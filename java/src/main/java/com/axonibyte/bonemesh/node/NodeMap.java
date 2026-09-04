@@ -130,16 +130,16 @@ public class NodeMap {
         String knLabel = knownNode.getKey();
         String knPubkey = knownNode.getValue().getKey();
         Long knLatency = knownNode.getValue().getValue();
+        if(knLabel.equalsIgnoreCase(selfLabel)) continue; // neighbors advertise us back; we are not a route
+        long viaLatency = saturatingSum(knLatency, nodes.get(node));
         if(routes.containsKey(knLabel) // if we know about the route
             && (routes.get(knLabel).getKey().getLabel().equalsIgnoreCase(label) // if the last best route was through this node
-                || routes.get(knLabel).getValue() > knLatency + nodes.get(node))) // or it's a better value
+                || routes.get(knLabel).getValue() > viaLatency)) // or it's a better value
           routes.replace( // replace the route
               knLabel,
-              new SimpleEntry<>( // replace the route
-                  node,
-                  knLatency + nodes.get(node)));
+              new SimpleEntry<>(node, viaLatency));
         else if(!routes.containsKey(knLabel)) // if we didn't know about the route
-          routes.put(knLabel, new SimpleEntry<>(node, knLatency + nodes.get(node))); // save it
+          routes.put(knLabel, new SimpleEntry<>(node, viaLatency)); // save it
         
         if(!pubkeys.containsKey(knLabel)) // save pubkey if we don't know about it
           pubkeys.put(knLabel, knPubkey);
@@ -149,6 +149,17 @@ public class NodeMap {
     }
   }
   
+  /**
+   * Sums two latencies, saturating at {@link Long#MAX_VALUE} -- the dead-node
+   * sentinel must never overflow into a negative "best" route. The real fix
+   * for latency accounting is the v3 spec (defect D3); this guard only keeps
+   * the arithmetic honest until then.
+   */
+  private static long saturatingSum(long a, long b) {
+    long sum = a + b;
+    return ((a ^ sum) & (b ^ sum)) < 0 ? Long.MAX_VALUE : sum;
+  }
+
   /**
    * Retrieves a node by its label, if it exists.
    * 
@@ -188,13 +199,12 @@ public class NodeMap {
    * @return a set of all known node labels
    */
   public Set<String> getAllKnownNodeLabels() {
-    Set<String> nodes = new HashSet<>();
-    synchronized(routes) {
-      for(String node : routes.keySet())
-        nodes.add(node);
-    }
-    
-    return nodes;
+    Set<String> labels = new HashSet<>();
+    for(Node node : nodes.keySet())
+      labels.add(node.getLabel());
+    labels.addAll(routes.keySet());
+    labels.removeIf(label -> label.equalsIgnoreCase(selfLabel));
+    return labels;
   }
   
   /**

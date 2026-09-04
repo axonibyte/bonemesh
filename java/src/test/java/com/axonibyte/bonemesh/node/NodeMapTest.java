@@ -18,9 +18,13 @@ package com.axonibyte.bonemesh.node;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.AbstractMap.SimpleEntry;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -112,5 +116,51 @@ public class NodeMapTest {
     map.setNode(new Node("Peer", "10.0.0.1", 40000), true);
     map.setNode(new Node("pEEr", "10.0.0.2", 40001), true);
     assertEquals(1, map.getDirectNodes().size());
+  }
+
+  // Defect D5: a direct neighbor that no advertisement has mentioned yet must
+  // still be a broadcast target.
+  @Test void directNodesAppearInAllKnownLabels() {
+    map.setNode(new Node("direct", "10.0.0.1", 40000), true);
+    assertTrue(map.getAllKnownNodeLabels().contains("direct"));
+  }
+
+  @Test void routedNodesAppearInAllKnownLabels() {
+    Node via = new Node("via", "10.0.0.1", 40000);
+    map.setNode(via, true);
+    map.setNodeNeighbors("via", Map.of("far", new SimpleEntry<>("far-pubkey", 5L)));
+    assertTrue(map.getAllKnownNodeLabels().contains("far"));
+  }
+
+  // Defect D5: neighbors advertise us back to ourselves; our own label must
+  // never become a broadcast target or a route.
+  @Test void ownLabelNeverAppearsInAllKnownLabels() {
+    Node via = new Node("via", "10.0.0.1", 40000);
+    map.setNode(via, true);
+    map.setNodeNeighbors("via", Map.of(
+        "self", new SimpleEntry<>("self-pubkey", 5L),
+        "far", new SimpleEntry<>("far-pubkey", 5L)));
+    assertFalse(map.getAllKnownNodeLabels().contains("self"));
+    assertNull(map.getNextBestNode("self"));
+  }
+
+  // Defect D3 (guard only; the real fix is the v3 latency scheme): a dead
+  // next hop has latency Long.MAX_VALUE, and adding an advertised latency to
+  // it must saturate rather than overflow to a "best" negative route.
+  @Test void routeLatencyThroughDeadNodeSaturatesInsteadOfOverflowing() {
+    Node dead = new Node("deadvia", "10.0.0.1", 40000);
+    map.setNode(dead, false);
+    map.setNodeNeighbors("deadvia", Map.of("far", new SimpleEntry<>("far-pubkey", 5L)));
+    Long advertised = map.getKnownNodes().get("far");
+    assertNotNull(advertised);
+    assertTrue(advertised >= 0L, "route latency overflowed to " + advertised);
+  }
+
+  @Test void nullNeighborsDropRoutesThroughThatNode() {
+    Node via = new Node("via", "10.0.0.1", 40000);
+    map.setNode(via, true);
+    map.setNodeNeighbors("via", Map.of("far", new SimpleEntry<>("far-pubkey", 5L)));
+    map.setNodeNeighbors("via", null);
+    assertNull(map.getNextBestNode("far"));
   }
 }
