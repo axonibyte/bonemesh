@@ -76,6 +76,7 @@ public class NodeMap {
    * @param alive {@code true} iff the node is alive
    */
   public void setNode(Node node, boolean alive) {
+    nodes.remove(node); // drop any equal-labeled entry so this key replaces it
     nodes.put(node, alive ? System.currentTimeMillis() - discoveryTimestamp.get() : Long.MAX_VALUE);
   }
   

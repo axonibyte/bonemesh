@@ -16,6 +16,7 @@
 
 package com.axonibyte.bonemesh.node;
 
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -94,7 +95,7 @@ public class Node {
   
   /**
    * Sets the node's listening port number.
-   * 
+   *
    * @param port the port number
    * @return this Node object
    */
@@ -102,5 +103,27 @@ public class Node {
     this.port.set(port);
     return this;
   }
-  
+
+  /**
+   * A node's identity is its label, case-insensitively; address and port are
+   * mutable attributes. Note that {@link #setLabel(String)} therefore changes
+   * identity: never call it on a node that is currently a map key.
+   *
+   * @param o the object against which this node is compared
+   * @return <code>true</code> iff the other object is a node with this
+   *         node's label, ignoring case
+   */
+  @Override public boolean equals(Object o) {
+    if(this == o) return true;
+    if(!(o instanceof Node)) return false;
+    return label.get().equalsIgnoreCase(((Node)o).label.get());
+  }
+
+  /**
+   * {@inheritDoc}
+   */
+  @Override public int hashCode() {
+    return label.get().toLowerCase(Locale.ROOT).hashCode();
+  }
+
 }

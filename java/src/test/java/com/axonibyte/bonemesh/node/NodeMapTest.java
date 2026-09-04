@@ -97,4 +97,20 @@ public class NodeMapTest {
   @Test void selfPubkeyIsRecordedAtConstruction() {
     assertEquals("self-pubkey", map.getPubkey("self"));
   }
+
+  // Defect D2: re-adding a label must replace the entry, not accumulate a
+  // duplicate. The replacement's address wins.
+  @Test void reAddingALabelReplacesTheEntry() {
+    map.setNode(new Node("peer", "10.0.0.1", 40000), true);
+    map.setNode(new Node("peer", "10.0.0.2", 40001), true);
+    assertEquals(1, map.getDirectNodes().size());
+    assertEquals("10.0.0.2", map.getNodeByLabel("peer").getIP());
+    assertEquals(40001, map.getNodeByLabel("peer").getPort());
+  }
+
+  @Test void reAddingALabelWithDifferentCaseReplacesTheEntry() {
+    map.setNode(new Node("Peer", "10.0.0.1", 40000), true);
+    map.setNode(new Node("pEEr", "10.0.0.2", 40001), true);
+    assertEquals(1, map.getDirectNodes().size());
+  }
 }
