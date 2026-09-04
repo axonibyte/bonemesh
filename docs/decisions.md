@@ -15,7 +15,10 @@ bottom. Revisiting a decision gets a new entry that names the one it replaces.
 | 8 | 2026-09-04 | Baseline is the former `dev` branch (d807d83); `main` fast-forwarded to it. | dev was strictly ahead (Java 17, NPE fix #3, crypto prototype). The prototype is replaced, not extended (see #4). |
 | 9 | 2026-09-04 | Port order after Java: Elixir, Rust, Go, JS, PHP. | Elixir is the most different runtime and stress-tests the spec earliest; PHP is the hardest port and benefits most from a mature spec and conformance suite. |
 | 10 | 2026-09-04 | Java targets the latest LTS (25), via Gradle toolchains; pipeline image is eclipse-temurin:25-jdk. | Owner call. Library consumers need Java 25+ from the next release. |
+| 11 | 2026-09-04 | v3 membership: a per-mesh root ML-DSA keypair signs each node's identity into a membership certificate; a node proves membership by presenting a cert that verifies against the pinned root key. | Owner call among allowlist / root-signed / TOFU. Strongest of the three; CA-like trust without X.509; supports expiry and revocation. Resolves PLAN §8.1. |
+| 12 | 2026-09-04 | The conformance runner and interop harnesses are written in Go. | Owner call (Go vs Rust). ML-KEM/X25519 in the stdlib, single static binaries, easy in reaper guests. Resolves PLAN §8.3. |
+| 13 | 2026-09-04 | v3 relay trust is hop-by-hop: neighbors hold authenticated sessions and a relaying member decrypts and re-encrypts to the next hop. Mesh members trust each other; end-to-end payload protection against untrusted relays is deferred (format reserves room). | Follows from the members-trust-each-other model; keeps v3 tractable across six languages. Resolves PLAN §8.5 for v3. |
 
-Open questions (undecided, tracked in [PLAN.md](PLAN.md) §8): v3 trust/membership
-model; reaper guest strategy; conformance-runner language; publishing cadence;
-end-to-end payload protection against untrusted relays (deferred).
+Open questions (undecided, tracked in [PLAN.md](PLAN.md) §8): reaper guest
+strategy; publishing cadence. (Trust model, conformance-runner language, and
+relay trust resolved above as #11-#13.)
