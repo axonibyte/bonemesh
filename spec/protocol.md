@@ -12,6 +12,32 @@ document is largely a delta against it.
 
 ---
 
+## 0. Pinned constants (deterministic wire contract)
+
+These are **frozen** and enforced by the conformance corpus + runner. They do
+not depend on a two-party handshake, so they are testable and pinned now.
+
+| Constant | Value |
+|---|---|
+| Protocol version (`v`) | `3` |
+| Frame encoding | one UTF-8 JSON object per line, `\n`-terminated, no interior `\n` |
+| Binary-in-JSON encoding | RFC 4648 **standard** Base64, **with** padding, **no** line breaks |
+| Handshake frame max | 16384 bytes (including the terminating `\n`) |
+| Transport frame max (default) | 65536 bytes; configurable up to an implementation ceiling ≥ 65536 |
+| `mid` (message id) | 128-bit value, lowercase hex, 32 chars |
+| `ttl` default | 16; range 1–255; decremented per relay hop |
+| AEAD nonce | per-direction 96-bit counter, **big-endian**, starts at 0, +1 per frame, never reused |
+| Simultaneous-dial tiebreak | keep the session whose **initiator label is lexicographically lower** (byte-wise on the lowercased UTF-8 label) |
+| Retry backoff | 500 ms, doubling, capped at 30 s, per destination (from M1) |
+
+Operational tunables (defaults; may vary per deployment without breaking
+interop): probe interval 5 s, latency EWMA α = 0.2, probe timeout 15 s, dedup
+window 4096 recent `mid`s per peer, session idle timeout 120 s. These affect
+behavior, not the wire contract, so two nodes with different values still
+interoperate.
+
+---
+
 ## 1. What changes from v2, in one breath
 
 v2 opened one TCP connection per message, framed by a bare newline, unencrypted

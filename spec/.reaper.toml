@@ -1,0 +1,29 @@
+# Reaper tenant for the spec's Go conformance runner. Syncs all of spec/ (so
+# both the corpus and the Go module travel together) and runs the corpus-driven
+# suites in a digest-pinned Go container on the generic Ubuntu guest.
+
+schema = 1
+project = "bonemesh-spec"
+
+guests = ["ubuntu-26.04"]
+exec = "container"
+
+[build]
+# golang:1.25-bookworm, pinned by manifest-list digest. GOTOOLCHAIN=local keeps
+# the build hermetic (no toolchain download); the module targets go 1.25.
+image = "docker.io/library/golang@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437"
+cmd = "cd conformance && GOTOOLCHAIN=local GOCACHE=\"$REAPER_CACHE_GO\" go build ./..."
+cache = ["go"]
+
+[run]
+# No pipe into tee: /bin/sh may be dash (no pipefail, no PIPESTATUS), and the
+# suite's exit status is the whole point. Redirect to a file, capture the real
+# status, echo the log for the live view, then re-raise the status.
+cmd = "cd conformance && GOTOOLCHAIN=local GOCACHE=\"$REAPER_CACHE_GO\" go test ./... > \"$REAPER_OUT\"/gotest.log 2>&1; s=$?; cat \"$REAPER_OUT\"/gotest.log; exit $s"
+
+[sync]
+exclude = ["/conformance/bin/"]
+
+[resources]
+cores = 4
+ram_gb = 8

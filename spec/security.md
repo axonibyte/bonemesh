@@ -12,6 +12,16 @@ Companion document: [`protocol.md`](protocol.md) (framing, connections,
 routing). This document owns identity, membership, the handshake, and the
 threat model.
 
+**Two tiers of constant.** *Deterministic* values (algorithm identifiers,
+encodings, the certificate structure and its canonicalization) are **frozen
+now** and enforced by the corpus — §11. *Handshake key-schedule* values (HKDF
+labels, the mix order, the key-log text format) are **provisional**: the spec
+below states the intended values so the design is complete and implementable,
+but they are marked and are only *verified interoperable* once the Java
+reference and the Go runner first complete a handshake (M4), at which point a
+transcript vector freezes them. This document never claims a crypto constant is
+interop-verified before a handshake has exercised it.
+
 ---
 
 ## 1. Cryptographic primitives
@@ -253,6 +263,44 @@ from a node in any language.
    private key.
 4. Rotation: re-issue certificates before expiry; distribute a revocation list
    (§3) to drop a node early.
+
+## 11. Pinned deterministic constants
+
+Frozen now; enforced by the corpus. (Handshake key-schedule labels remain
+provisional per the note at the top and §5.)
+
+| Constant | Value |
+|---|---|
+| Node identity signature | ML-DSA-65 (FIPS 204) |
+| Root signature | ML-DSA-87 (FIPS 204) |
+| Ephemeral KEM | ML-KEM-768 (FIPS 203) |
+| Ephemeral DH | X25519 (RFC 7748) |
+| AEAD | ChaCha20-Poly1305 (RFC 8439), 256-bit key, 96-bit nonce |
+| Hash / KDF | SHA-256 / HKDF-SHA-256 (RFC 5869) |
+| Key/signature/ciphertext encoding in JSON | RFC 4648 standard Base64, with padding, no line breaks |
+| Certificate version (`v`) | `3` |
+
+### 11.1 Certificate canonicalization (for the root signature)
+
+The root signs `CANON(certificate without "sig")`. Because a certificate
+contains **only JSON strings and non-negative integers** — never floats, arrays,
+nested objects, or booleans — canonicalization is a restricted, easy-to-match-
+exactly profile (a strict subset of RFC 8785 JCS):
+
+1. Remove the `sig` member.
+2. Emit a JSON object with members ordered by **ascending UTF-16 code unit** of
+   the member name (for the ASCII names here, plain byte order): `exp`, `idk`,
+   `label`, `mesh`, `nbf`, `v`.
+3. No whitespace anywhere.
+4. Strings use minimal escaping: only `"` `\` and control chars `< 0x20` are
+   escaped, the latter as `\uXXXX` lowercase-hex except the short forms
+   `\b \t \n \f \r`. Non-ASCII is emitted as raw UTF-8, not `\u`-escaped.
+5. Integers are emitted in shortest decimal form, no leading zeros, no `+`, no
+   exponent.
+
+The resulting UTF-8 byte string is the ML-DSA-87 signing input. This profile is
+pinned and has corpus vectors; a port that reproduces the exact bytes for the
+vectors is interoperable for certificate verification.
 
 ---
 

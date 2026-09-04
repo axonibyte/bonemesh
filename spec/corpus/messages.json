@@ -1,0 +1,46 @@
+{
+  "description": "Message schema validation (protocol.md section 4, security.md section 4). Each case names the 'schema' the 'frame' object is validated against and whether it is 'valid' or 'invalid' (with a 'reason'). Schemas: 'bmx1' (handshake message 1), 'envelope' (transport carrier), 'data'/'ack' (inner plaintext types). A conforming validator must agree on every verdict.",
+  "cases": [
+    { "name": "bmx1-ok", "schema": "bmx1", "expect": "valid",
+      "frame": { "t": "bmx1", "v": 3, "mesh": "acme", "e": "AAAA", "k": "BBBB", "n": "CCCC" } },
+    { "name": "bmx1-wrong-version", "schema": "bmx1", "expect": "invalid", "reason": "version",
+      "frame": { "t": "bmx1", "v": 2, "mesh": "acme", "e": "AAAA", "k": "BBBB", "n": "CCCC" } },
+    { "name": "bmx1-missing-kem-key", "schema": "bmx1", "expect": "invalid", "reason": "missing-field",
+      "frame": { "t": "bmx1", "v": 3, "mesh": "acme", "e": "AAAA", "n": "CCCC" } },
+    { "name": "bmx1-empty-mesh", "schema": "bmx1", "expect": "invalid", "reason": "empty-mesh",
+      "frame": { "t": "bmx1", "v": 3, "mesh": "", "e": "AAAA", "k": "BBBB", "n": "CCCC" } },
+    { "name": "bmx1-non-base64-ephemeral", "schema": "bmx1", "expect": "invalid", "reason": "not-base64",
+      "frame": { "t": "bmx1", "v": 3, "mesh": "acme", "e": "not base64!", "k": "BBBB", "n": "CCCC" } },
+    { "name": "bmx1-wrong-type-tag", "schema": "bmx1", "expect": "invalid", "reason": "type",
+      "frame": { "t": "bmx2", "v": 3, "mesh": "acme", "e": "AAAA", "k": "BBBB", "n": "CCCC" } },
+
+    { "name": "envelope-ok", "schema": "envelope", "expect": "valid",
+      "frame": { "seq": 0, "ct": "3q2+7w==" } },
+    { "name": "envelope-negative-seq", "schema": "envelope", "expect": "invalid", "reason": "seq-range",
+      "frame": { "seq": -1, "ct": "3q2+7w==" } },
+    { "name": "envelope-ct-not-base64", "schema": "envelope", "expect": "invalid", "reason": "not-base64",
+      "frame": { "seq": 5, "ct": "@@@@" } },
+    { "name": "envelope-missing-ct", "schema": "envelope", "expect": "invalid", "reason": "missing-field",
+      "frame": { "seq": 5 } },
+
+    { "name": "data-ok", "schema": "data", "expect": "valid",
+      "frame": { "type": "data", "mid": "0123456789abcdef0123456789abcdef", "to": "gamma", "from": "alpha", "ttl": 16, "payload": { "line": "hi" } } },
+    { "name": "data-ok-chunked", "schema": "data", "expect": "valid",
+      "frame": { "type": "data", "mid": "0123456789abcdef0123456789abcdef", "to": "g", "from": "a", "ttl": 8, "chunk": { "i": 1, "n": 3 }, "payload": { "part": "x" } } },
+    { "name": "data-mid-too-short", "schema": "data", "expect": "invalid", "reason": "mid-format",
+      "frame": { "type": "data", "mid": "0123", "to": "g", "from": "a", "ttl": 16, "payload": {} } },
+    { "name": "data-mid-uppercase", "schema": "data", "expect": "invalid", "reason": "mid-format",
+      "frame": { "type": "data", "mid": "0123456789ABCDEF0123456789ABCDEF", "to": "g", "from": "a", "ttl": 16, "payload": {} } },
+    { "name": "data-ttl-zero", "schema": "data", "expect": "invalid", "reason": "ttl-range",
+      "frame": { "type": "data", "mid": "0123456789abcdef0123456789abcdef", "to": "g", "from": "a", "ttl": 0, "payload": {} } },
+    { "name": "data-ttl-too-large", "schema": "data", "expect": "invalid", "reason": "ttl-range",
+      "frame": { "type": "data", "mid": "0123456789abcdef0123456789abcdef", "to": "g", "from": "a", "ttl": 256, "payload": {} } },
+    { "name": "data-missing-payload", "schema": "data", "expect": "invalid", "reason": "missing-field",
+      "frame": { "type": "data", "mid": "0123456789abcdef0123456789abcdef", "to": "g", "from": "a", "ttl": 16 } },
+
+    { "name": "ack-ok", "schema": "ack", "expect": "valid",
+      "frame": { "type": "ack", "mid": "0123456789abcdef0123456789abcdef" } },
+    { "name": "ack-wrong-type", "schema": "ack", "expect": "invalid", "reason": "type",
+      "frame": { "type": "data", "mid": "0123456789abcdef0123456789abcdef" } }
+  ]
+}

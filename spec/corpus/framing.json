@@ -1,0 +1,65 @@
+{
+  "cases": [
+    {
+      "name": "simple-object",
+      "kind": "transport",
+      "bytes_b64": "eyJhIjoxfQo=",
+      "expect": "accept"
+    },
+    {
+      "name": "missing-trailing-newline",
+      "kind": "transport",
+      "bytes_b64": "eyJhIjoxfQ==",
+      "expect": "reject",
+      "reason": "no-newline"
+    },
+    {
+      "name": "empty-line",
+      "kind": "transport",
+      "bytes_b64": "Cg==",
+      "expect": "reject",
+      "reason": "empty"
+    },
+    {
+      "name": "not-json",
+      "kind": "transport",
+      "bytes_b64": "bm90IGpzb24K",
+      "expect": "reject",
+      "reason": "invalid-json"
+    },
+    {
+      "name": "json-array-not-object",
+      "kind": "transport",
+      "bytes_b64": "WzEsMiwzXQo=",
+      "expect": "reject",
+      "reason": "not-an-object"
+    },
+    {
+      "name": "interior-newline-splits-frame",
+      "kind": "transport",
+      "bytes_b64": "eyJhIjoKMX0K",
+      "expect": "reject",
+      "reason": "invalid-json"
+    },
+    {
+      "name": "invalid-utf8",
+      "kind": "transport",
+      "bytes_b64": "eyJhIjoi/yJ9Cg==",
+      "expect": "reject",
+      "reason": "invalid-utf8"
+    },
+    {
+      "name": "trailing-garbage-after-object",
+      "kind": "transport",
+      "bytes_b64": "eyJhIjoxfSBYCg==",
+      "expect": "reject",
+      "reason": "trailing-data"
+    }
+  ],
+  "description": "Frame acceptance/rejection (protocol.md section 2). Each case gives 'bytes_b64' (RFC 4648 base64 of the raw wire bytes), the frame 'kind' ('handshake' cap 16384, 'transport' cap 65536), and 'expect' ('accept'|'reject') with a 'reason' tag. A frame reader must reach the same verdict. 'accept' = exactly one newline-terminated JSON object within the cap.",
+  "size_cases": {
+    "description": "The runner also generates frames exactly at the cap (accept) and one byte over (reject, reason 'oversize') from these caps.",
+    "handshake_cap": 16384,
+    "transport_cap": 65536
+  }
+}

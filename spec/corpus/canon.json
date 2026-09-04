@@ -1,0 +1,25 @@
+{
+  "description": "Certificate canonicalization vectors for the root signature (security.md 11.1). 'cert' is the certificate object as authored; 'canonical' is the exact UTF-8 byte string that must be produced after removing 'sig' and applying the restricted-JCS profile (security.md 11.1). A conforming canonicalizer must emit 'canonical' byte-for-byte. Control-character escaping is additionally covered by an in-code vector in canon_test.go, since raw control characters cannot appear in JSON source.",
+  "vectors": [
+    {
+      "name": "basic-sorted-keys",
+      "cert": {"v": 3, "mesh": "acme-prod", "label": "alpha", "idk": "YWJj", "nbf": 1788500000, "exp": 1790000000},
+      "canonical": "{\"exp\":1790000000,\"idk\":\"YWJj\",\"label\":\"alpha\",\"mesh\":\"acme-prod\",\"nbf\":1788500000,\"v\":3}"
+    },
+    {
+      "name": "sig-field-is-stripped",
+      "cert": {"v": 3, "mesh": "m", "label": "alpha", "idk": "AA==", "nbf": 0, "exp": 1, "sig": "SHOULD-BE-IGNORED"},
+      "canonical": "{\"exp\":1,\"idk\":\"AA==\",\"label\":\"alpha\",\"mesh\":\"m\",\"nbf\":0,\"v\":3}"
+    },
+    {
+      "name": "non-ascii-emitted-raw-utf8",
+      "cert": {"v": 3, "mesh": "m", "label": "café", "idk": "AA==", "nbf": 0, "exp": 1},
+      "canonical": "{\"exp\":1,\"idk\":\"AA==\",\"label\":\"café\",\"mesh\":\"m\",\"nbf\":0,\"v\":3}"
+    },
+    {
+      "name": "string-escaping-quote-backslash",
+      "cert": {"v": 3, "mesh": "m", "label": "a\"b\\c", "idk": "AA==", "nbf": 0, "exp": 1},
+      "canonical": "{\"exp\":1,\"idk\":\"AA==\",\"label\":\"a\\\"b\\\\c\",\"mesh\":\"m\",\"nbf\":0,\"v\":3}"
+    }
+  ]
+}
