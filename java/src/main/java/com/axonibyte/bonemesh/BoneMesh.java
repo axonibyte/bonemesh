@@ -414,9 +414,14 @@ public class BoneMesh implements AckListener {
    * {@inheritDoc}
    */
   @Override public void receiveAck(Payload payload) {
-    AckMessage ack = new AckMessage(payload.getData(), false);
-    if(ack.hasPubkey())
-      nodeMap.setPubkey(payload.getData().getString("to"), ack.getPubkey());
+    // Read the responder's ack, not the request we sent (defect D9): the
+    // pubkey rides the response, keyed by the responder's own label.
+    JSONObject response = payload.getAckResponse();
+    if(null != response) {
+      AckMessage ack = new AckMessage(response, false);
+      if(ack.hasPubkey())
+        nodeMap.setPubkey(response.getString("from"), ack.getPubkey());
+    }
     setNodeStatus(payload, true);
   }
 

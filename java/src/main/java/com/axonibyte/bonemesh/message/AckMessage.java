@@ -44,13 +44,15 @@ public class AckMessage extends GenericMessage {
    * @param pubkey the pubkey associated with the sender
    */
   public AckMessage(String from, String to, String pubkey) {
-    super(from, to, "ack", new JSONObject("pubkey", pubkey));
+    super(from, to, "ack", new JSONObject().put("pubkey", pubkey));
   }
-  
+
   /**
    * Generates an ACK message from incoming data.
    * Intentionally flips the "to" and "from" values.
-   * 
+   * A pubkey riding the incoming data is carried over -- and nothing else is,
+   * so a relayed ack keeps its key exchange without nesting whole payloads.
+   *
    * @param json the incoming data
    * @param flip <code>true</code> to receive the ACK,
    *        or <code>false</code> to pass it on
@@ -59,7 +61,9 @@ public class AckMessage extends GenericMessage {
   public AckMessage(JSONObject json, boolean flip) throws JSONException {
     this(json.getString(flip ? "to" : "from"),
         json.getString(flip ? "from" : "to"));
-    // if(json.has("payload")) put("payload", json.getJSONObject("payload"));
+    JSONObject payload = json.optJSONObject("payload");
+    if(null != payload && payload.has("pubkey"))
+      setPubkey(payload.getString("pubkey"));
   }
 
   /**

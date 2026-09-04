@@ -18,6 +18,9 @@ package com.axonibyte.bonemesh.socket;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Delayed;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.json.JSONObject;
 
@@ -25,12 +28,22 @@ import com.axonibyte.bonemesh.listener.AckListener;
 
 /**
  * Wrapper object to wrap user data before sending it.
- * Contains routing metadata.
- * 
+ * Contains routing metadata, and the delivery-retry schedule: a fresh payload
+ * is eligible immediately, and each recorded failure pushes the next attempt
+ * out exponentially (bounded), so a dead peer is retried patiently instead of
+ * busy-looped (defect D6).
+ *
  * @author Caleb L. Power
  */
-public class Payload {
-  
+public class Payload implements Delayed {
+
+  private static final long INITIAL_RETRY_DELAY_MILLIS = 500L;
+  private static final long MAX_RETRY_DELAY_MILLIS = 30_000L;
+
+  private final AtomicInteger failures = new AtomicInteger();
+  private volatile long notBeforeMillis = 0L;
+  private volatile JSONObject ackResponse = null;
+
   private boolean requeueOnFailure;
   private List<AckListener> ackListeners = null;
   private JSONObject data = null;
@@ -154,11 +167,61 @@ public class Payload {
   
   /**
    * Retrieves the label of the target node.
-   * 
+   *
    * @return the target node's label
    */
   public String getTarget() {
     return target;
   }
-  
+
+  /**
+   * Attaches the response that acknowledged this payload, so ack listeners
+   * can read what the responder actually said (defect D9: the response used
+   * to be discarded, taking the responder's pubkey with it).
+   *
+   * @param ackResponse the raw response received for this payload
+   */
+  public void setAckResponse(JSONObject ackResponse) {
+    this.ackResponse = ackResponse;
+  }
+
+  /**
+   * Retrieves the response that acknowledged this payload, if any.
+   *
+   * @return the raw response, or <code>null</code> before acknowledgement
+   */
+  public JSONObject getAckResponse() {
+    return ackResponse;
+  }
+
+  /**
+   * Records a delivery failure, pushing this payload's next eligible attempt
+   * out by an exponentially growing, bounded delay.
+   */
+  public void recordFailure() {
+    int failureCount = failures.incrementAndGet();
+    long delay = Math.min(
+        MAX_RETRY_DELAY_MILLIS,
+        INITIAL_RETRY_DELAY_MILLIS << Math.min(failureCount - 1, 20));
+    notBeforeMillis = System.currentTimeMillis() + delay;
+  }
+
+  /**
+   * {@inheritDoc}
+   */
+  @Override public long getDelay(TimeUnit unit) {
+    return unit.convert(
+        notBeforeMillis - System.currentTimeMillis(),
+        TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * {@inheritDoc}
+   */
+  @Override public int compareTo(Delayed other) {
+    return Long.compare(
+        getDelay(TimeUnit.MILLISECONDS),
+        other.getDelay(TimeUnit.MILLISECONDS));
+  }
+
 }

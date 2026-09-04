@@ -37,8 +37,8 @@ import org.bouncycastle.jcajce.SecretKeyWithEncapsulation;
 import org.bouncycastle.jcajce.spec.KEMExtractSpec;
 import org.bouncycastle.jcajce.spec.KEMGenerateSpec;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import org.bouncycastle.pqc.jcajce.provider.BouncyCastlePQCProvider;
-import org.bouncycastle.pqc.jcajce.spec.KyberParameterSpec;
+
+import org.bouncycastle.jcajce.spec.MLKEMParameterSpec;
 import org.bouncycastle.util.encoders.Base64;
 import org.json.JSONObject;
 
@@ -57,16 +57,14 @@ public class CryptoEngine {
    * Initiates the cryptographic engine with a new keypair.
    *
    * @throws CryptoException if crypto engine failed to be
-   *         instantiated with a new Crystal-Kyber keypair
+   *         instantiated with a new ML-KEM keypair
    */
   public CryptoEngine() throws CryptoException {
     try {
       if(null == Security.getProvider("BC"))
         Security.addProvider(new BouncyCastleProvider());
-      if(null == Security.getProvider("BCPQC"))
-        Security.addProvider(new BouncyCastlePQCProvider());
-      KeyPairGenerator kpg = KeyPairGenerator.getInstance("KYBER", "BCPQC");
-      kpg.initialize(KyberParameterSpec.kyber1024, new SecureRandom());
+      KeyPairGenerator kpg = KeyPairGenerator.getInstance("ML-KEM", "BC");
+      kpg.initialize(MLKEMParameterSpec.ml_kem_1024, new SecureRandom());
       KeyPair kp = kpg.generateKeyPair();
       this.privkey = kp.getPrivate();
       this.pubkey = kp.getPublic();
@@ -81,17 +79,15 @@ public class CryptoEngine {
    * @param privkey a byte array representing the private key
    * @param pubkey a byte array representing the public key
    * @throws CryptoException if crypto engine failed to be
-   *         instantiated with ane xisting Crystal-Kyber keypair
+   *         instantiated with an existing ML-KEM keypair
    */
   public CryptoEngine(byte[] privkey, byte[] pubkey) throws CryptoException {
     try {
       if(null == Security.getProvider("BC"))
         Security.addProvider(new BouncyCastleProvider());
-      if(null == Security.getProvider("BCPQC"))
-        Security.addProvider(new BouncyCastlePQCProvider());
       PKCS8EncodedKeySpec pkcs8EKS = new PKCS8EncodedKeySpec(privkey);
       X509EncodedKeySpec x509EKS = new X509EncodedKeySpec(pubkey);
-      KeyFactory kf = KeyFactory.getInstance("KYBER", "BCPQC");
+      KeyFactory kf = KeyFactory.getInstance("ML-KEM", "BC");
       this.privkey = kf.generatePrivate(pkcs8EKS);
       this.pubkey = kf.generatePublic(x509EKS);
     } catch(Exception e) {
@@ -131,8 +127,8 @@ public class CryptoEngine {
   public byte[] encapsulate(String node, String pubkey) throws CryptoException {
     try {
       byte[] key = null;
-      final KeyGenerator keygen = KeyGenerator.getInstance("KYBER", "BCPQC");
-      final KeyFactory keyfac = KeyFactory.getInstance("KYBER", "BCPQC");
+      final KeyGenerator keygen = KeyGenerator.getInstance("ML-KEM", "BC");
+      final KeyFactory keyfac = KeyFactory.getInstance("ML-KEM", "BC");
       keygen.init(
           new KEMGenerateSpec(
               keyfac.generatePublic(
@@ -161,7 +157,7 @@ public class CryptoEngine {
    */
   public void decapsulate(String node, byte[] encapsulated) throws CryptoException {
     try {
-      final KeyGenerator keygen = KeyGenerator.getInstance("KYBER", "BCPQC");
+      final KeyGenerator keygen = KeyGenerator.getInstance("ML-KEM", "BC");
       keygen.init(new KEMExtractSpec(privkey, encapsulated, "AES"), new SecureRandom());
       byte[] key = ((SecretKeyWithEncapsulation)keygen.generateKey()).getEncoded();
       if(symKeys.containsKey(node))

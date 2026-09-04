@@ -22,9 +22,9 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.util.LinkedList;
-import java.util.List;
+import java.util.concurrent.DelayQueue;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -42,15 +42,17 @@ import com.axonibyte.bonemesh.node.Node;
  */
 public class SocketClient implements Runnable {
 
+  private static final int CONNECT_TIMEOUT_MILLIS = 5_000;
+
   private BoneMesh boneMesh = null;
-  private List<Payload> payloadQueue = null;
+  private DelayQueue<Payload> payloadQueue = null;
   private Logger logger = null;
   private Thread thread = null;
-  
+
   private SocketClient(BoneMesh boneMesh, Logger logger) {
     this.boneMesh = boneMesh;
     this.logger = logger;
-    this.payloadQueue = new LinkedList<>();
+    this.payloadQueue = new DelayQueue<>();
   }
   
   /**
@@ -74,20 +76,16 @@ public class SocketClient implements Runnable {
   @Override public void run() {
     try {
       for(;;) {
-        Payload payload = null;
-        synchronized(payloadQueue) {
-          if(payloadQueue.size() == 0) {
-            payloadQueue.wait();
-            continue; // allow for multithreading on the same instance in the future
-          }
-          payload = payloadQueue.remove(0);
-        }
-        
+        Payload payload = payloadQueue.take(); // blocks until a payload is eligible
+
         DataInputStream inputStream = null;
         DataOutputStream outputStream = null;
         Node node = boneMesh.getNodeMap().getNodeByLabel(payload.getTarget());
-        
-        if(node != null) try(Socket socket = new Socket(node.getIP(), node.getPort())) {
+
+        if(node != null) try(Socket socket = new Socket()) {
+          socket.connect(
+              new InetSocketAddress(node.getIP(), node.getPort()),
+              CONNECT_TIMEOUT_MILLIS);
           inputStream = new DataInputStream(socket.getInputStream());
           outputStream = new DataOutputStream(socket.getOutputStream());
           
@@ -101,9 +99,11 @@ public class SocketClient implements Runnable {
             JSONObject json = new JSONObject(in.readLine());
             logger.logDebug("CLIENT", String.format("Received data: %1$s", json.toString()));
             if(payload.getAckListeners() != null
-                && AckMessage.isImplementedBy(json))
+                && AckMessage.isImplementedBy(json)) {
+              payload.setAckResponse(json); // listeners read the response, not just the request
               for(AckListener listener : payload.getAckListeners())
                 listener.receiveAck(payload);
+            }
           } catch(JSONException e) {
             logger.logError("CLIENT", e.getMessage());
           } catch(NullPointerException e) {
@@ -117,23 +117,23 @@ public class SocketClient implements Runnable {
           if(payload.getAckListeners() != null)
             for(AckListener listener : payload.getAckListeners())
               listener.receiveNak(payload);
-          if(payload.doRequeueOnFailure()) queuePayload(payload); // try again later
+          if(payload.doRequeueOnFailure()) {
+            payload.recordFailure(); // backs the next attempt off; see Payload
+            queuePayload(payload);
+          }
         }
-        
+
       }
     } catch(InterruptedException e) { }
   }
-  
+
   /**
    * Queues up a payload for delivery
-   * 
+   *
    * @param payload the payload with wrapped data
    */
-  public synchronized void queuePayload(Payload payload) {
-    synchronized(payloadQueue) {
-      payloadQueue.add(payload);
-      payloadQueue.notifyAll();
-    }
+  public void queuePayload(Payload payload) {
+    payloadQueue.add(payload);
   }
   
   /**
