@@ -9,17 +9,18 @@ guests = ["ubuntu-26.04"]
 exec = "container"
 
 [build]
-# golang:1.25-bookworm, pinned by manifest-list digest. GOTOOLCHAIN=local keeps
-# the build hermetic (no toolchain download); the module targets go 1.25.
-image = "docker.io/library/golang@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437"
-cmd = "cd conformance && GOTOOLCHAIN=local GOCACHE=\"$REAPER_CACHE_GO\" go build ./..."
+# golang:1.26-bookworm, pinned by manifest-list digest. GOTOOLCHAIN=local keeps
+# the build hermetic; GOFLAGS=-mod=vendor builds from the committed vendor/ tree
+# so no module download is needed in the sandbox.
+image = "docker.io/library/golang@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81"
+cmd = "cd conformance && GOTOOLCHAIN=local GOFLAGS=-mod=vendor GOCACHE=\"$REAPER_CACHE_GO\" go build ./..."
 cache = ["go"]
 
 [run]
 # No pipe into tee: /bin/sh may be dash (no pipefail, no PIPESTATUS), and the
 # suite's exit status is the whole point. Redirect to a file, capture the real
 # status, echo the log for the live view, then re-raise the status.
-cmd = "cd conformance && GOTOOLCHAIN=local GOCACHE=\"$REAPER_CACHE_GO\" go test ./... > \"$REAPER_OUT\"/gotest.log 2>&1; s=$?; cat \"$REAPER_OUT\"/gotest.log; exit $s"
+cmd = "cd conformance && GOTOOLCHAIN=local GOFLAGS=-mod=vendor GOCACHE=\"$REAPER_CACHE_GO\" go test ./... > \"$REAPER_OUT\"/gotest.log 2>&1; s=$?; cat \"$REAPER_OUT\"/gotest.log; exit $s"
 
 [sync]
 exclude = ["/conformance/bin/"]

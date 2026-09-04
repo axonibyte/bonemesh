@@ -12,15 +12,17 @@ Companion document: [`protocol.md`](protocol.md) (framing, connections,
 routing). This document owns identity, membership, the handshake, and the
 threat model.
 
-**Two tiers of constant.** *Deterministic* values (algorithm identifiers,
-encodings, the certificate structure and its canonicalization) are **frozen
-now** and enforced by the corpus — §11. *Handshake key-schedule* values (HKDF
-labels, the mix order, the key-log text format) are **provisional**: the spec
-below states the intended values so the design is complete and implementable,
-but they are marked and are only *verified interoperable* once the Java
-reference and the Go runner first complete a handshake (M4), at which point a
-transcript vector freezes them. This document never claims a crypto constant is
-interop-verified before a handshake has exercised it.
+**Constant status.** *Deterministic* values (algorithm identifiers, encodings,
+the certificate structure and its canonicalization) are **frozen** and enforced
+by the corpus — §11. The *key-schedule* values (protocol name, mix order, nonce
+construction, HKDF usage, split) are now **frozen too**: the shared vector
+`spec/corpus/transcripts/keyschedule.json` pins them, and the Java reference and
+the independent Go conformance implementation both reproduce it (M4 sub-unit 3a).
+The only still-provisional item is the **key-log text format** (§8), pinned when
+the transport lands. The *full handshake transcript* (the ML-KEM/ML-DSA message
+bytes end to end) freezes with a transcript vector when both implementations
+complete a live BMX handshake (M4 sub-unit 3b). This document never claims a
+crypto constant is interop-verified before code has exercised it.
 
 ---
 
@@ -174,23 +176,27 @@ peer's identity private key, or breaking both X25519 and ML-KEM.
 
 ## 5. Key schedule
 
-A Noise-style symmetric state carries `(ck, h)`. `[PIN]` HKDF labels and the
-exact `MixKey`/`MixHash` sequence freeze with the corpus; the structure:
+A Noise-style symmetric state carries `(ck, h)`. **Frozen** by
+`spec/corpus/transcripts/keyschedule.json` (reproduced by both the Java
+reference and the Go runner); the structure:
 
 - `MixHash(data)`: `h ← SHA-256(h ‖ data)`. Every handshake message's raw wire
   bytes are absorbed in order, so both sides compute an identical transcript
   from the bytes they actually sent/received (no JSON canonicalization needed
   for the transcript — only certificates, which are signed separately, use JCS).
-- `MixKey(ikm)`: `(ck, k) ← HKDF-SHA-256(salt=ck, ikm)`, giving a new chaining
-  key and a fresh AEAD key.
-- Order: initialize `ck`/`h` from a protocol-label constant and message 1; after
-  message 2's ephemerals, `MixKey(ss_dh)` then `MixKey(ss_kem)` — **DH first,
-  then KEM** `[PIN]`; handshake encryption uses the resulting key.
+- `MixKey(ikm)`: `(ck, k) ← HKDF-SHA-256(salt=ck, ikm, info="", 64)`, the first
+  32 bytes the new chaining key and the next 32 the fresh AEAD key; the AEAD
+  nonce counter resets to 0.
+- Order: `h`/`ck` seed from `SHA-256("BoneMesh_BMX_v3_X25519MLKEM768_ChaChaPoly_SHA256")`;
+  after message 2's ephemerals, `MixKey(ss_dh)` then `MixKey(ss_kem)` — **DH
+  first, then KEM**; handshake encryption uses the resulting key.
 - **Transport keys**: after message 3, `Split()` derives two directional keys
   (initiator→responder, responder→initiator) via HKDF from the final `ck`, so
   the two directions never share a key/nonce space.
-- **Nonces**: each direction has a 96-bit counter starting at 0, incremented per
-  message, never reused. A counter approaching exhaustion forces a rekey (§6).
+- **Nonces**: the 96-bit AEAD nonce is 4 zero bytes followed by the 64-bit
+  little-endian counter; the counter starts at 0 per key, increments per
+  message, and is never reused. A counter approaching exhaustion forces a
+  rekey (§6).
 
 ## 6. Session lifetime, rekeying, forward secrecy
 
