@@ -27,7 +27,7 @@ import org.json.JSONObject;
 /**
  * A generic message to be sent in a payload.
  * 
- * @author Caleb L. Power <cpower@axonibyte.com>
+ * @author Caleb L. Power &lt;cpower@axonibyte.com&gt;
  */
 public class GenericMessage extends JSONObject {
 
@@ -40,7 +40,7 @@ public class GenericMessage extends JSONObject {
    * @param action the action associated with this message
    * @param payload the payload
    * @return a {@link GenericMessage} object
-   * @throws {@link CryptoException} if cryptographic operations failed
+   * @throws CryptoException if cryptographic operations failed
    */
   public static GenericMessage build(BoneMesh boneMesh, String from, String to, String action, JSONObject payload)
       throws CryptoException {
@@ -69,7 +69,7 @@ public class GenericMessage extends JSONObject {
    * @param to the recipient node
    * @param payload the payload
    * @return a {@link GenericMessage} object
-   * @throws {@link CryptoException} if cryptographic operations failed
+   * @throws CryptoException if cryptographic operations failed
    */
   public static GenericMessage build(BoneMesh boneMesh, String from, String to, JSONObject payload)
       throws CryptoException {
@@ -165,7 +165,7 @@ public class GenericMessage extends JSONObject {
   /**
    * Decrypts this message's payload.
    *
-   * @param CryptoEngine the cryptography engine to be used to
+   * @param cryptoEngine the cryptography engine to be used to
    *        perform the decryption operation
    * @return {@code true} iff decryption was successful
    */

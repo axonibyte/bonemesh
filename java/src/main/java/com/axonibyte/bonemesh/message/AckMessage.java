@@ -22,7 +22,7 @@ import org.json.JSONObject;
 /**
  * A heartbeat message intended to respond to incoming messages.
  * 
- * @author Caleb L. Power <cpower@axonibyte.com>
+ * @author Caleb L. Power &lt;cpower@axonibyte.com&gt;
  */
 public class AckMessage extends GenericMessage {
   

@@ -14,6 +14,7 @@ bottom. Revisiting a decision gets a new entry that names the one it replaces.
 | 7 | 2026-09-04 | Testing follows reaper's testing-methodology.md: per-language reaper tenants own tiers 1-4; a root interop tenant owns tiers 5-9, written once, language-agnostic. | Verified reaper resolves the synced tree from the manifest's directory, so subdirectory tenants need no reaper changes. Black-box harnesses over TCP don't care about implementation language. |
 | 8 | 2026-09-04 | Baseline is the former `dev` branch (d807d83); `main` fast-forwarded to it. | dev was strictly ahead (Java 17, NPE fix #3, crypto prototype). The prototype is replaced, not extended (see #4). |
 | 9 | 2026-09-04 | Port order after Java: Elixir, Rust, Go, JS, PHP. | Elixir is the most different runtime and stress-tests the spec earliest; PHP is the hardest port and benefits most from a mature spec and conformance suite. |
+| 10 | 2026-09-04 | Java targets the latest LTS (25), via Gradle toolchains; pipeline image is eclipse-temurin:25-jdk. | Owner call. Library consumers need Java 25+ from the next release. |
 
 Open questions (undecided, tracked in [PLAN.md](PLAN.md) §8): v3 trust/membership
 model; reaper guest strategy; conformance-runner language; publishing cadence;

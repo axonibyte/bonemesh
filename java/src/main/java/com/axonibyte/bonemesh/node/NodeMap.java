@@ -33,7 +33,7 @@ import org.bouncycastle.util.encoders.Base64;
  * A container for a list of all nodes.
  * Maintains the statuses of these nodes.
  * 
- * @author Caleb L. Power <cpower@axonibyte.com>
+ * @author Caleb L. Power &lt;cpower@axonibyte.com&gt;
  */
 public class NodeMap {
 

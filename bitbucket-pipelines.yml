@@ -11,7 +11,7 @@ doMirror: &doMirror
 
 doBuild: &doBuild
   name: Build and test artifact
-  image: openjdk:17
+  image: eclipse-temurin:25-jdk
   caches:
     - gradle
   script:

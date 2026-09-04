@@ -45,7 +45,7 @@ import org.json.JSONObject;
 /**
  * Manages BoneMesh cryptographic functionality.
  *
- * @author Caleb L. Power <cpower@axonibyte.com>
+ * @author Caleb L. Power &lt;cpower@axonibyte.com&gt;
  */
 public class CryptoEngine {
 
@@ -252,7 +252,7 @@ public class CryptoEngine {
    * An exception to be thrown in the event of a cryptographical failure
    * or a failure in its dependencies.
    *
-   * @author Caleb L. Power <cpower@axonibyte.com>
+   * @author Caleb L. Power &lt;cpower@axonibyte.com&gt;
    */
   public class CryptoException extends RuntimeException {
     private CryptoException(Throwable cause) {

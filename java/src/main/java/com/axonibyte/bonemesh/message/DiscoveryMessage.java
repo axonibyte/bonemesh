@@ -28,7 +28,7 @@ import org.json.JSONObject;
 /**
  * A heartbeat message intended to check if a node is alive.
  * 
- * @author Caleb L. Power <cpower@axonibyte.com>
+ * @author Caleb L. Power &lt;cpower@axonibyte.com&gt;
  */
 public class DiscoveryMessage extends GenericMessage {
   

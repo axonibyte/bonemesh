@@ -52,7 +52,7 @@ import com.axonibyte.bonemesh.socket.SocketServer;
 /**
  * Virtual point-to-point mesh network driver for Java.
  * 
- * @author Caleb L. Power <cpower@axonibyte.com>
+ * @author Caleb L. Power &lt;cpower@axonibyte.com&gt;
  */
 public class BoneMesh implements AckListener {
 
@@ -75,7 +75,7 @@ public class BoneMesh implements AckListener {
    * @param label the name of this instance
    * @param port the port to listen to
    * @return BoneMesh the new BoneMesh instance
-   * @throws {@link CryptoException} if a new keypair could not be computed
+   * @throws CryptoException if a new keypair could not be computed
    */
   public static BoneMesh build(String label, int port) throws CryptoException {
     return build(label, port, null, null);
@@ -89,7 +89,7 @@ public class BoneMesh implements AckListener {
    * @param privkey the bytes corresponding to the node's private key
    * @param pubkey the bytes corresponding to the node's public key
    * @return BoneMesh the new BoneMesh instance
-   * @throws {@link CryptoException} if the provided keypair could not be loaded
+   * @throws CryptoException if the provided keypair could not be loaded
    */
   public static BoneMesh build(String label, int port, byte[] privkey, byte[] pubkey) throws CryptoException {
     BoneMesh boneMesh = new BoneMesh(label);

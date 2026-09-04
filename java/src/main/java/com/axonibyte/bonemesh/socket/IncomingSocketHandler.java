@@ -39,7 +39,7 @@ import com.axonibyte.bonemesh.node.Node;
 /**
  * Handles incoming data.
  * 
- * @author Caleb L. Power <cpower@axonibyte.com>
+ * @author Caleb L. Power &lt;cpower@axonibyte.com&gt;
  */
 public class IncomingSocketHandler implements Runnable {
   

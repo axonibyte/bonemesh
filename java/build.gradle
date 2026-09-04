@@ -1,57 +1,55 @@
 plugins {
-  id "com.github.johnrengelman.shadow" version "7.1.2"
+  id 'java-library'
+  id 'eclipse'
+  id 'com.gradleup.shadow' version '9.6.1'
 }
-
-apply plugin: 'java-library'
-apply plugin: 'eclipse'
 
 repositories {
-  jcenter()
+  mavenCentral()
 }
 
-task javadocJar(type: Jar) {
-  classifier = 'javadoc'
-  from javadoc
-}
-
-task sourcesJar(type: Jar) {
-  classifier = 'sources'
-  from sourceSets.main.allSource
-}
-
-artifacts {
-  archives javadocJar, sourcesJar
-}
-
-archivesBaseName = prjName
 group = prjGroup
 version = prjVersion
-sourceCompatibility = prjCompat
-targetCompatibility = prjCompat
+
+base {
+  archivesName = prjArtifact
+}
+
+java {
+  toolchain {
+    languageVersion = JavaLanguageVersion.of(prjCompat.toInteger())
+  }
+  withJavadocJar()
+  withSourcesJar()
+}
 
 dependencies {
-  implementation 'org.bouncycastle:bcprov-jdk18on:1.72'
-  implementation 'org.json:json:20230227'
-  implementation 'commons-cli:commons-cli:1.5.0'
+  implementation "org.bouncycastle:bcprov-jdk18on:${bcVersion}"
+  api "org.json:json:20250517" // org.json types appear in the public API
+  implementation 'commons-cli:commons-cli:1.11.0'
+  testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+  testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+  useJUnitPlatform()
 }
 
 eclipse {
   classpath {
-    downloadJavadoc = true //download javadocs
-    downloadSources = true //download sources
+    downloadJavadoc = true
+    downloadSources = true
   }
 }
 
 jar {
   manifest {
-    attributes 'Main-Class': prjGroup + "." + prjName
+    attributes 'Main-Class': prjGroup + '.' + prjName
   }
 }
 
 shadowJar {
-  shadowJar {
-    baseName = prjArtifact
-    classifier = null
-    version = null
-  }
+  archiveBaseName = prjArtifact
+  archiveClassifier = ''
+  archiveVersion = ''
 }
