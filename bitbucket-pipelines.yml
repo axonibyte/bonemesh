@@ -15,9 +15,10 @@ doBuild: &doBuild
   caches:
     - gradle
   script:
+    - cd java
     - bash ./gradlew clean test shadowJar --info
   artifacts:
-    - build/libs/bonemesh.jar
+    - java/build/libs/bonemesh.jar
 
 doDeploy: &doDeploy
   name: Deploy artifact
@@ -25,7 +26,7 @@ doDeploy: &doDeploy
     enabled: false
   script:
     - >-
-      for f in build/libs/*.jar; do
+      for f in java/build/libs/*.jar; do
         sha256sum $f | awk '{ print $1 }' > ${f}.sha256
         curl -v -X POST "https://${BB_PUB_USER}:${BB_PUB_SECRET}@api.bitbucket.org/2.0/repositories/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}/downloads" \
             --form files=@"${f}" --form files=@"${f}.sha256"
