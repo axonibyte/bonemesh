@@ -42,25 +42,31 @@ public class NodeMap {
   private Map<String, Entry<Node, Long>> routes = new ConcurrentHashMap<>(); // the best nodes with which to reach an indirect node
   private Map<String, String> pubkeys = new ConcurrentHashMap<>(); // pubkeys and a confirmation indicator
 
+  private final String selfLabel;
+
   /**
    * Instantiates this {@link NodeMap} object.
    *
    * @param boneMesh the active {@link BoneMesh} object
    */
   public NodeMap(BoneMesh boneMesh) {
-    /*
-    nodes.put(
-        new Node(
-            boneMesh.getInstanceLabel(),
-            "127.0.0.1",
-            boneMesh.getSocketServer().getPort()),
-        0L);
-    */
-    pubkeys.put(
+    this(
         boneMesh.getInstanceLabel(),
         new String(
             Base64.encode(
                 boneMesh.getCryptoEngine().getPubkey())));
+  }
+
+  /**
+   * Instantiates this {@link NodeMap} object without a backing
+   * {@link BoneMesh} instance.
+   *
+   * @param selfLabel the label of the owning instance
+   * @param selfPubkey the Base64-encoded public key of the owning instance
+   */
+  public NodeMap(String selfLabel, String selfPubkey) {
+    this.selfLabel = selfLabel;
+    pubkeys.put(selfLabel, selfPubkey);
   }
 
   /**
@@ -221,7 +227,8 @@ public class NodeMap {
    * @return <code>true</code> if the node is in the map and is alive
    */
   public boolean isAlive(Node node) {
-    return nodes.containsKey(node) && nodes.get(node) > -1L;
+    Long latency = nodes.get(node);
+    return latency != null && latency != Long.MAX_VALUE;
   }
   
   /**

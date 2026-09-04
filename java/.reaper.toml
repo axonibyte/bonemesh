@@ -1,0 +1,29 @@
+# Reaper tenant for the Java implementation. Unit and (soon) integration
+# tests run in a digest-pinned Temurin container on the generic Ubuntu guest;
+# the template carries no toolchain. See docs/PLAN.md and reaper's
+# docs/tenants.md.
+
+schema = 1
+project = "bonemesh-java"
+
+guests = ["ubuntu-26.04"]
+exec = "container"
+
+[build]
+# eclipse-temurin:25-jdk, pinned by manifest-list digest.
+image = "docker.io/library/eclipse-temurin@sha256:e787e08ef76f4c16866108cd7f9fcd96a68eef3ac6cc76866897d4d02d5a2262"
+cmd = "GRADLE_USER_HOME=\"$REAPER_CACHE_GRADLE\" ./gradlew --no-daemon testClasses"
+cache = ["gradle"]
+
+[run]
+# No pipes: /bin/sh may be dash (no pipefail), and the suite's exit status is
+# the whole point. Reports are copied out even on failure, then the status is
+# re-raised.
+cmd = "GRADLE_USER_HOME=\"$REAPER_CACHE_GRADLE\" ./gradlew --no-daemon test; s=$?; cp -R build/reports \"$REAPER_OUT\"/ 2>/dev/null; exit $s"
+
+[sync]
+exclude = ["/build/", "/.gradle/", "/out/"]
+
+[resources]
+cores = 4
+ram_gb = 8
