@@ -78,6 +78,16 @@ defmodule Bonemesh.Handshake do
 
   @doc "Responder: consumes message 1, produces message 2."
   def read_message1_write_message2(%__MODULE__{initiator: false} = s, msg1) do
+    # Malformed peer input (bad JSON, bad base64, wrong shape) is rejected
+    # gracefully rather than crashing the connection process.
+    try do
+      do_read_message1_write_message2(s, msg1)
+    rescue
+      _ -> {:error, "malformed handshake message"}
+    end
+  end
+
+  defp do_read_message1_write_message2(s, msg1) do
     m = decode(msg1)
 
     cond do
@@ -110,6 +120,14 @@ defmodule Bonemesh.Handshake do
 
   @doc "Initiator: consumes message 2 (verifying the responder), produces message 3."
   def read_message2_write_message3(%__MODULE__{initiator: true} = s, msg2) do
+    try do
+      do_read_message2_write_message3(s, msg2)
+    rescue
+      _ -> {:error, "malformed handshake message"}
+    end
+  end
+
+  defp do_read_message2_write_message3(s, msg2) do
     m = decode(msg2)
     er_pub = Base.decode64!(m["e"])
     ct = Base.decode64!(m["ct"])
@@ -137,6 +155,14 @@ defmodule Bonemesh.Handshake do
 
   @doc "Responder: consumes message 3, completing the handshake."
   def read_message3(%__MODULE__{initiator: false} = s, msg3) do
+    try do
+      do_read_message3(s, msg3)
+    rescue
+      _ -> {:error, "malformed handshake message"}
+    end
+  end
+
+  defp do_read_message3(s, msg3) do
     m = decode(msg3)
     auth = Base.decode64!(m["auth"])
 

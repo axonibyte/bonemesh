@@ -80,4 +80,31 @@ defmodule Bonemesh.HandshakeTest do
     assert {:error, reason} = Handshake.read_message2_write_message3(a1, m2)
     assert reason =~ "signature"
   end
+
+  # Malformed peer input must be rejected as {:error, _}, not raised — a raise
+  # crashes the connection process and logs an error (interop tier 5 surfaced
+  # this on the garbage-bmx3 fault). Mirrors the graceful rejection the Go, JS,
+  # PHP, Rust, and Java nodes give.
+  test "responder rejects a non-JSON bmx1 gracefully", ctx do
+    {bc, bpub, bpriv} = identity(ctx, "beta")
+    b0 = Handshake.responder(@mesh, ctx.root_pub, @now, bc, bpub, bpriv)
+    assert {:error, _} = Handshake.read_message1_write_message2(b0, "not json at all\n")
+  end
+
+  test "responder rejects a garbage bmx3 gracefully", ctx do
+    {ac, apub, apriv} = identity(ctx, "alpha")
+    {bc, bpub, bpriv} = identity(ctx, "beta")
+    a0 = Handshake.initiator(@mesh, ctx.root_pub, @now, ac, apub, apriv)
+    b0 = Handshake.responder(@mesh, ctx.root_pub, @now, bc, bpub, bpriv)
+    {m1, _a1} = Handshake.write_message1(a0)
+    {:ok, _m2, b1} = Handshake.read_message1_write_message2(b0, m1)
+    assert {:error, _} = Handshake.read_message3(b1, "not-a-valid-bmx3\n")
+  end
+
+  test "initiator rejects a garbage bmx2 gracefully", ctx do
+    {ac, apub, apriv} = identity(ctx, "alpha")
+    a0 = Handshake.initiator(@mesh, ctx.root_pub, @now, ac, apub, apriv)
+    {_m1, a1} = Handshake.write_message1(a0)
+    assert {:error, _} = Handshake.read_message2_write_message3(a1, "{bad json\n")
+  end
 end
