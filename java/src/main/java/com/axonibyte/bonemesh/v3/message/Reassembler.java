@@ -31,7 +31,7 @@ import org.json.JSONObject;
  * message id arrives, or empty while a message id is still incomplete. An
  * unchunked message completes immediately.
  *
- * <p>Not thread-safe; the owning node serializes access per peer.</p>
+ * <p>Thread-safe: offer is synchronized, since a node reassembles across multiple neighbor links on separate threads.</p>
  *
  * @author Caleb L. Power
  */
@@ -45,7 +45,7 @@ public final class Reassembler {
    * @param dataMessage an inbound data message
    * @return the reassembled application payload when complete, else empty
    */
-  public Optional<JSONObject> offer(JSONObject dataMessage) {
+  public synchronized Optional<JSONObject> offer(JSONObject dataMessage) {
     JSONObject chunk = dataMessage.optJSONObject("chunk");
     if(chunk == null || chunk.getInt("n") == 1) {
       return Optional.of(dataMessage.getJSONObject("payload")); // unchunked

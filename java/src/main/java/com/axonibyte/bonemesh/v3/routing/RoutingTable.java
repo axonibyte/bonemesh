@@ -29,7 +29,9 @@ import java.util.Set;
  * sentinel, the node's own label is never a route, and advertisements apply
  * split-horizon with poisoned reverse to bound count-to-infinity.
  *
- * <p>Not thread-safe; the owning node serializes access.</p>
+ * <p>Thread-safe: every public method is synchronized, because the node drives
+ * one table concurrently from a heartbeat thread and one reader thread per
+ * neighbor.</p>
  *
  * @author Caleb L. Power
  */
@@ -55,7 +57,7 @@ public final class RoutingTable {
    * @param label the neighbor's label
    * @param rttSampleMillis a measured round-trip-time sample
    */
-  public void observeNeighbor(String label, long rttSampleMillis) {
+  public synchronized void observeNeighbor(String label, long rttSampleMillis) {
     neighbors.computeIfAbsent(label, k -> new LatencyTracker()).update(rttSampleMillis);
   }
 
@@ -65,19 +67,19 @@ public final class RoutingTable {
    *
    * @param label the neighbor's label
    */
-  public void removeNeighbor(String label) {
+  public synchronized void removeNeighbor(String label) {
     neighbors.remove(label);
     routes.entrySet().removeIf(e -> e.getValue().via.equalsIgnoreCase(label));
   }
 
   /** @return the measured latency to a direct neighbor, or MAX_VALUE if unknown */
-  public long neighborLatency(String label) {
+  public synchronized long neighborLatency(String label) {
     LatencyTracker t = neighbors.get(label);
     return t == null ? UNREACHABLE : t.latencyMillis();
   }
 
   /** @return whether the label is a direct neighbor */
-  public boolean isNeighbor(String label) {
+  public synchronized boolean isNeighbor(String label) {
     return neighbors.containsKey(label);
   }
 
@@ -90,7 +92,7 @@ public final class RoutingTable {
    * @param viaNeighbor the advertising direct neighbor
    * @param advertisedCost the neighbor's advertised path cost to dest
    */
-  public void learnRoute(String dest, String viaNeighbor, long advertisedCost) {
+  public synchronized void learnRoute(String dest, String viaNeighbor, long advertisedCost) {
     if(dest.equalsIgnoreCase(selfLabel)) return;         // never route to ourselves
     if(dest.equalsIgnoreCase(viaNeighbor)) return;       // that is just the neighbor itself
     if(!neighbors.containsKey(viaNeighbor)) return;      // only learn via known neighbors
@@ -112,7 +114,7 @@ public final class RoutingTable {
    * @param dest the destination label
    * @return the next-hop neighbor label, or {@code null} if unreachable
    */
-  public String nextHop(String dest) {
+  public synchronized String nextHop(String dest) {
     if(neighbors.containsKey(dest)) return dest;
     for(var e : neighbors.entrySet())
       if(e.getKey().equalsIgnoreCase(dest)) return e.getKey();
@@ -131,7 +133,7 @@ public final class RoutingTable {
    * @param toNeighbor the neighbor the advertisement is for
    * @return a map of destination label to advertised cost
    */
-  public Map<String, Long> advertiseTo(String toNeighbor) {
+  public synchronized Map<String, Long> advertiseTo(String toNeighbor) {
     Map<String, Long> advert = new HashMap<>();
     for(var e : neighbors.entrySet()) {
       if(e.getKey().equalsIgnoreCase(toNeighbor)) continue; // no need to tell them about themselves
@@ -166,7 +168,7 @@ public final class RoutingTable {
   }
 
   /** @return an unmodifiable snapshot of known destination labels (routes only) */
-  public Set<String> knownRouteDestinations() {
+  public synchronized Set<String> knownRouteDestinations() {
     return new HashSet<>(routes.keySet());
   }
 }

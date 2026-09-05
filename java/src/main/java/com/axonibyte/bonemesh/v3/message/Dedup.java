@@ -25,7 +25,7 @@ import java.util.Map;
  * lets a retried or re-relayed message be dropped once. Eldest ids fall out
  * when the window is full.
  *
- * <p>Not thread-safe; callers serialize access per peer.</p>
+ * <p>Thread-safe: access is synchronized, since a node handles multiple neighbor links on separate threads.</p>
  *
  * @author Caleb L. Power
  */
@@ -54,7 +54,7 @@ public final class Dedup {
    * @return <code>true</code> if this id was already in the window (a
    *         duplicate); <code>false</code> if it is new (and now recorded)
    */
-  public boolean seenBefore(String mid) {
+  public synchronized boolean seenBefore(String mid) {
     if(seen.containsKey(mid)) return true;
     seen.put(mid, Boolean.TRUE);
     return false;
@@ -63,7 +63,7 @@ public final class Dedup {
   /**
    * @return the number of ids currently remembered
    */
-  public int size() {
+  public synchronized int size() {
     return seen.size();
   }
 }
