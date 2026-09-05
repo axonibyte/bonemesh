@@ -123,6 +123,20 @@ public final class Node {
   }
 
   /**
+   * A snapshot of the distance-vector routing table: each learned destination
+   * mapped to the next-hop neighbor it is reached through. Used by the interop
+   * convergence tier to assert no route runs through a downed node.
+   *
+   * @return an immutable-enough copy of destination to next-hop
+   */
+  public java.util.Map<String, String> routeTable() {
+    java.util.Map<String, String> table = new java.util.LinkedHashMap<>();
+    for(String dest : routing.knownRouteDestinations())
+      table.put(dest, routing.nextHop(dest));
+    return table;
+  }
+
+  /**
    * Registers a listener for application payloads delivered to this node.
    *
    * @param listener the listener

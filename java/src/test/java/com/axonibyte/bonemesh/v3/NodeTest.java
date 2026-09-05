@@ -16,6 +16,7 @@
 
 package com.axonibyte.bonemesh.v3;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.security.SecureRandom;
@@ -134,5 +135,10 @@ public class NodeTest {
     }
     assertTrue(routed, "alpha never learned a route to gamma");
     assertTrue(await(gammaGot, 5000), "gamma never received the relayed message");
+
+    // The route to the non-neighbor gamma is via the middle hop beta — the
+    // accessor the interop convergence tier reads.
+    assertEquals("beta", alpha.routeTable().get("gamma"),
+        "alpha's route to gamma should be via beta");
   }
 }

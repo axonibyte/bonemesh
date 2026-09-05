@@ -79,6 +79,15 @@ initiator, cross and same) interoperate.
   tier 5. This tier found and drove fixes for two robustness defects: the Go node
   panicked (crashing the process) on malformed handshake input, and the PHP node
   emitted warnings on a bmx1 missing a field — both now reject cleanly.
+- **`tier8.sh`** — methodology tier 8, concurrency/convergence. Only Java and
+  Elixir route (the others do direct delivery), so this tier is scoped to them
+  and needs both — it runs on the driver and skips loudly where either is
+  missing. It builds a diamond (Java endpoints, Elixir relays) with two disjoint
+  paths, drives continuous sends, then kills the relay the sender is using, and
+  asserts convergence with two oracles: no live node keeps a route through the
+  dead relay (via the nodes' new route-table accessors) and delivery heals over
+  the alternate path. The convergence oracle is self-tested first against a
+  known-bad routing dump.
 
 The runners **discover drivers and health-probe each one**, keeping only the
 implementations whose toolchain is present and logging every skip. So the same
@@ -99,6 +108,6 @@ interop is covered by the six-language matrix on the driver (which has OTP 28).
 ## Status and future work
 
 Runs on the driver (six languages) and as the `bonemesh-interop` reaper tenant
-(five languages under netem). Remaining methodology tiers: 8
-(concurrency/convergence — needs multi-hop routing, which only Java and Elixir
-have today) and 9 (simulated meshes).
+(five languages under netem; tier 8 needs both Java and Elixir, so it runs on
+the driver and skips on the guest). Remaining methodology tier: 9 (simulated
+meshes).

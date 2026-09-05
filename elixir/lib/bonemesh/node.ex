@@ -38,6 +38,9 @@ defmodule Bonemesh.Node do
   @doc "Sends an application payload toward `to`. Returns true if routed."
   def send(node, to, payload), do: GenServer.call(node, {:send, to, payload})
 
+  @doc "A snapshot of the routing table: destination => next-hop label."
+  def routes(node), do: GenServer.call(node, :routes)
+
   @doc "Stops the node."
   def stop(node), do: GenServer.stop(node)
 
@@ -74,6 +77,11 @@ defmodule Bonemesh.Node do
 
   @impl true
   def handle_call(:port, _from, s), do: {:reply, s.port, s}
+
+  def handle_call(:routes, _from, s) do
+    table = for dest <- Map.keys(s.routing.routes), into: %{}, do: {dest, Routing.next_hop(s.routing, dest)}
+    {:reply, table, s}
+  end
 
   def handle_call({:connect, host, port}, _from, s) do
     case dial(host, port, s) do

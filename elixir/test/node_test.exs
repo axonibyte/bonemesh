@@ -67,6 +67,10 @@ defmodule Bonemesh.NodeTest do
     routed = wait_route(alpha, deadline)
     assert routed, "alpha never learned a route to gamma"
     assert :ok == await_data(&(&1["m"] == "relayed"), 5000)
+
+    # The route to the non-neighbor gamma is via the middle hop beta — the
+    # accessor the interop convergence tier reads.
+    assert Node.routes(alpha)["gamma"] == "beta"
   end
 
   defp wait_route(alpha, deadline) do

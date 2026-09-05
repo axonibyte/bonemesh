@@ -38,6 +38,34 @@ defmodule InteropNode do
         payload = f["message"] |> File.read!() |> JSON.decode!()
         send_until(node, f["to"], payload, System.monotonic_time(:millisecond) + seconds * 1000)
         Process.sleep(1500)
+
+      # A multi-link node for the convergence tier: dials several peers
+      # (--peers host:port,host:port), optionally records delivered payloads
+      # (--out), repeatedly sends toward a routed destination (--send-to with
+      # --message), and periodically dumps its routing table (--routes). Stays
+      # up for --seconds. Relay nodes need no special mode — a plain listener
+      # already forwards.
+      "mesh" ->
+        {:ok, node} = Bonemesh.Node.start_link([{:port, String.to_integer(Map.get(f, "port", "0"))} | opts])
+        if f["out"], do: Bonemesh.Node.add_listener(node, spawn(fn -> collect(f["out"]) end))
+
+        for peer <- String.split(Map.get(f, "peers", ""), ",", trim: true) do
+          [host, port] = String.split(peer, ":", parts: 2)
+          {:ok, _} = Bonemesh.Node.connect(node, host, String.to_integer(port))
+        end
+
+        payload = if f["message"], do: f["message"] |> File.read!() |> JSON.decode!(), else: nil
+        mesh_loop(node, f["send-to"], payload, f["routes"], System.monotonic_time(:millisecond) + seconds * 1000)
+    end
+  end
+
+  defp mesh_loop(node, send_to, payload, routes_file, deadline) do
+    if send_to && payload, do: Bonemesh.Node.send(node, send_to, payload)
+    if routes_file, do: File.write!(routes_file, JSON.encode!(Bonemesh.Node.routes(node)))
+
+    if System.monotonic_time(:millisecond) < deadline do
+      Process.sleep(500)
+      mesh_loop(node, send_to, payload, routes_file, deadline)
     end
   end
 

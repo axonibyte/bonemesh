@@ -93,6 +93,38 @@ public final class InteropNode {
         node.kill();
         break;
       }
+      // A multi-link node for the convergence tier: dials several peers
+      // (--peers host:port,host:port), optionally records delivered payloads
+      // (--out), repeatedly sends toward a routed destination (--send-to with
+      // --message), and periodically dumps its routing table (--routes). Stays
+      // up for --seconds. Relay nodes need no special mode — a plain listener
+      // already forwards.
+      case "mesh": {
+        Node node = Node.start(label, mesh, rootPub, cert, identity,
+            Integer.parseInt(f.getOrDefault("port", "0")));
+        if(f.containsKey("out")) {
+          java.nio.file.Path out = Paths.get(f.get("out"));
+          node.addDataListener(payload -> appendLine(out, payload.toString()));
+        }
+        for(String peer : f.getOrDefault("peers", "").split(",")) {
+          if(peer.isBlank()) continue;
+          int c = peer.lastIndexOf(':');
+          node.connect(peer.substring(0, c), Integer.parseInt(peer.substring(c + 1)));
+        }
+        JSONObject payload = f.containsKey("message")
+            ? new JSONObject(readString(f.get("message"))) : null;
+        String sendTo = f.get("send-to");
+        java.nio.file.Path routes = f.containsKey("routes") ? Paths.get(f.get("routes")) : null;
+        long deadline = System.currentTimeMillis() + seconds * 1000L;
+        while(System.currentTimeMillis() < deadline) {
+          if(sendTo != null && payload != null) node.send(sendTo, payload);
+          if(routes != null)
+            Files.writeString(routes, new JSONObject(node.routeTable()).toString());
+          Thread.sleep(500);
+        }
+        node.kill();
+        break;
+      }
       default:
         System.err.println("unknown mode: " + args[0]);
         System.exit(2);
