@@ -49,6 +49,7 @@ dependencies = [
  "ml-dsa",
  "ml-kem",
  "rand_core 0.6.4",
+ "serde",
  "serde_json",
  "sha2",
  "x25519-dalek",
