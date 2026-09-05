@@ -2,3 +2,4 @@
 .DS_Store
 # reaper collects run results into <tenant-tree>/out/
 out/
+erl_crash.dump
