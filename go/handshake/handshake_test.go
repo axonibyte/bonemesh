@@ -168,4 +168,47 @@ func TestTamperedAuthRejected(t *testing.T) {
 	}
 }
 
+// Malformed peer input must be rejected as an error, never panic the node — the
+// crypto primitives panic on bad-length keys, and an unrecovered goroutine panic
+// crashes the process. Interop tier 7's seeded fuzzing surfaced this on the Go
+// node. These mirror the Elixir port's graceful-rejection tests.
+func TestReadMessage1RejectsMalformedKeys(t *testing.T) {
+	root, rootPriv := newRoot(t)
+	rCert, rPriv := issue(t, rootPriv, "responder")
+	resp := handshake.Responder(mesh, root, now, rCert, rPriv)
+	// Right shape and mesh, but "k" decodes to a too-short ML-KEM key — which
+	// would panic MLKEM768Encapsulate without the handshake's recover.
+	bad := frame.Encode(map[string]any{
+		"t": "bmx1", "v": 3, "mesh": mesh,
+		"e": b64(make([]byte, 32)), "k": b64([]byte("short")), "n": b64(make([]byte, 32)),
+	})
+	if _, err := resp.ReadMessage1WriteMessage2(bad); err == nil {
+		t.Fatal("expected a malformed bmx1 to be rejected")
+	}
+}
+
+func TestReadMessage3RejectsGarbage(t *testing.T) {
+	root, rootPriv := newRoot(t)
+	iCert, iPriv := issue(t, rootPriv, "initiator")
+	rCert, rPriv := issue(t, rootPriv, "responder")
+	init := handshake.Initiator(mesh, root, now, iCert, iPriv)
+	resp := handshake.Responder(mesh, root, now, rCert, rPriv)
+	if _, err := resp.ReadMessage1WriteMessage2(init.WriteMessage1()); err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.ReadMessage3([]byte("not-a-valid-bmx3\n")); err == nil {
+		t.Fatal("expected a garbage bmx3 to be rejected")
+	}
+}
+
+func TestReadMessage2RejectsGarbage(t *testing.T) {
+	root, rootPriv := newRoot(t)
+	iCert, iPriv := issue(t, rootPriv, "initiator")
+	init := handshake.Initiator(mesh, root, now, iCert, iPriv)
+	init.WriteMessage1()
+	if _, err := init.ReadMessage2WriteMessage3([]byte("{bad json\n")); err == nil {
+		t.Fatal("expected a garbage bmx2 to be rejected")
+	}
+}
+
 func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }

@@ -71,6 +71,14 @@ initiator, cross and same) interoperate.
   (connect fails and the output stays empty), then heals and asserts an identical
   send *does* deliver. Needs Linux `tc`/netem + iptables as root, so it runs on
   the interop guest; on any other host it no-ops loudly.
+- **`tier7.sh`** — methodology tier 7, seeded fuzzing. A Go fuzzer (`tier7/`)
+  drives each node's listener through many randomized, replayable mutation
+  strategies over frames, handshake messages, and transport payloads; the seed
+  is printed and accepted back via `BONEMESH_FUZZ_SEED` (`BONEMESH_FUZZ_ITERS`
+  sets the count), so a failure reproduces exactly. Same two-sided oracle as
+  tier 5. This tier found and drove fixes for two robustness defects: the Go node
+  panicked (crashing the process) on malformed handshake input, and the PHP node
+  emitted warnings on a bmx1 missing a field — both now reject cleanly.
 
 The runners **discover drivers and health-probe each one**, keeping only the
 implementations whose toolchain is present and logging every skip. So the same
@@ -84,13 +92,13 @@ on an `ubuntu-26.04` guest, syncing the whole repo. `interop/guest-setup.sh`
 provisions the toolchains — Java 25, Go 1.26, Rust, PHP 8.5, and Node 24 (from
 NodeSource; apt's Node 22 bundles an OpenSSL without ML-KEM/ML-DSA), all over the
 guest's system OpenSSL 3.5 — plus `tc`/netem and iptables. The run gates the
-matrix, tier 5, and tier 6. Elixir is not provisioned here: its node needs
+matrix, tiers 5, 6, and 7. Elixir is not provisioned here: its node needs
 Erlang/OTP 28 for the native PQC API, which ubuntu-26.04 does not package; its
 interop is covered by the six-language matrix on the driver (which has OTP 28).
 
 ## Status and future work
 
 Runs on the driver (six languages) and as the `bonemesh-interop` reaper tenant
-(five languages under netem). Remaining methodology tiers: 7 (seeded fuzzing),
-8 (concurrency/convergence — needs multi-hop routing, which only Java and Elixir
-have today), 9 (simulated meshes).
+(five languages under netem). Remaining methodology tiers: 8
+(concurrency/convergence — needs multi-hop routing, which only Java and Elixir
+have today) and 9 (simulated meshes).

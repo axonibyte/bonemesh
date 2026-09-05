@@ -73,11 +73,11 @@ final class Handshake
         if (($m['mesh'] ?? null) !== $this->mesh) {
             throw new \RuntimeException('mesh mismatch');
         }
-        $eiPub = base64_decode($m['e'], true);
-        $kiEk = base64_decode($m['k'], true);
+        $eiPub = self::b64Field($m, 'e');
+        $kiEk = self::b64Field($m, 'k');
         $this->ks->mixHash($eiPub);
         $this->ks->mixHash($kiEk);
-        $this->ks->mixHash(base64_decode($m['n'], true));
+        $this->ks->mixHash(self::b64Field($m, 'n'));
 
         $er = Crypto::x25519Generate();
         $this->ks->mixHash($er['pub']);
@@ -96,9 +96,9 @@ final class Handshake
 
     public function readMessage2WriteMessage3(array $m): string
     {
-        $erPub = base64_decode($m['e'], true);
-        $ct = base64_decode($m['ct'], true);
-        $auth = base64_decode($m['auth'], true);
+        $erPub = self::b64Field($m, 'e');
+        $ct = self::b64Field($m, 'ct');
+        $auth = self::b64Field($m, 'auth');
 
         $this->ks->mixHash($erPub);
         $this->ks->mixKey(Crypto::x25519Agree($this->ephDHPriv, $erPub));
@@ -119,7 +119,7 @@ final class Handshake
 
     public function readMessage3(array $m): void
     {
-        $peerCert = $this->openIdentity(base64_decode($m['auth'], true));
+        $peerCert = $this->openIdentity(self::b64Field($m, 'auth'));
         [$i2r, $r2i] = $this->ks->split();
         $this->session = ['sendKey' => $r2i, 'receiveKey' => $i2r, 'peerCert' => $peerCert];
     }
@@ -148,9 +148,25 @@ final class Handshake
             throw new \RuntimeException("peer certificate invalid: $reason");
         }
         $idk = Cert::identityKey($peerCert);
-        if (!Crypto::mldsa65Verify($idk, $hPre, base64_decode($payload['sig'], true))) {
+        if (!Crypto::mldsa65Verify($idk, $hPre, base64_decode((string) $payload['sig'], true))) {
             throw new \RuntimeException('peer transcript signature does not verify');
         }
         return $peerCert;
+    }
+
+    // Decodes a required base64 field, rejecting a missing, non-string, or
+    // non-base64 value cleanly — so malformed peer input throws (and the node
+    // closes the connection) instead of emitting undefined-key / null-argument
+    // warnings. Surfaced by interop tier 7's fuzzing.
+    private static function b64Field(array $m, string $key): string
+    {
+        if (!isset($m[$key]) || !is_string($m[$key])) {
+            throw new \RuntimeException("missing or non-string field: $key");
+        }
+        $v = base64_decode($m[$key], true);
+        if ($v === false) {
+            throw new \RuntimeException("field is not base64: $key");
+        }
+        return $v;
     }
 }

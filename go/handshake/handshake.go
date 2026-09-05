@@ -72,7 +72,15 @@ func (h *Handshake) WriteMessage1() []byte {
 }
 
 // ReadMessage1WriteMessage2 (responder) consumes msg1, produces msg2.
-func (h *Handshake) ReadMessage1WriteMessage2(msg1 []byte) ([]byte, error) {
+func (h *Handshake) ReadMessage1WriteMessage2(msg1 []byte) (out []byte, err error) {
+	// Malformed peer input can drive the crypto primitives (which panic on
+	// bad-length keys) off the rails; treat any such panic as a clean rejection
+	// so a fuzzed message closes the connection instead of crashing the node.
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = nil, errors.New("malformed handshake message")
+		}
+	}()
 	m, err := decode(msg1)
 	if err != nil {
 		return nil, err
@@ -106,7 +114,12 @@ func (h *Handshake) ReadMessage1WriteMessage2(msg1 []byte) ([]byte, error) {
 }
 
 // ReadMessage2WriteMessage3 (initiator) verifies the responder, produces msg3.
-func (h *Handshake) ReadMessage2WriteMessage3(msg2 []byte) ([]byte, error) {
+func (h *Handshake) ReadMessage2WriteMessage3(msg2 []byte) (out []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = nil, errors.New("malformed handshake message")
+		}
+	}()
 	m, err := decode(msg2)
 	if err != nil {
 		return nil, err
@@ -129,14 +142,19 @@ func (h *Handshake) ReadMessage2WriteMessage3(msg2 []byte) ([]byte, error) {
 		return nil, err
 	}
 	authI := h.sealIdentity()
-	out := line(map[string]any{"t": "bmx3", "auth": b64(authI)})
+	out = line(map[string]any{"t": "bmx3", "auth": b64(authI)})
 	i2r, r2i := h.ks.Split()
 	h.session = &Session{SendKey: i2r, ReceiveKey: r2i, PeerCert: peerCert}
 	return out, nil
 }
 
 // ReadMessage3 (responder) verifies the initiator, completing the handshake.
-func (h *Handshake) ReadMessage3(msg3 []byte) error {
+func (h *Handshake) ReadMessage3(msg3 []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = errors.New("malformed handshake message")
+		}
+	}()
 	m, err := decode(msg3)
 	if err != nil {
 		return err

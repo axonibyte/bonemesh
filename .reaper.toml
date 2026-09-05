@@ -16,7 +16,7 @@ cmd = "sh interop/guest-setup.sh"
 [run]
 # Validate the guest reproduces the live matrix and tier 5, then run tier 6
 # (netem). Redirect + re-raise so the real exit status survives a dash /bin/sh.
-cmd = "{ sh interop/run-matrix.sh && sh interop/tier5.sh && sh interop/tier6.sh; } > \"$REAPER_OUT\"/interop.log 2>&1; s=$?; cat \"$REAPER_OUT\"/interop.log; exit $s"
+cmd = "{ sh interop/run-matrix.sh && sh interop/tier5.sh && sh interop/tier6.sh && sh interop/tier7.sh; } > \"$REAPER_OUT\"/interop.log 2>&1; s=$?; cat \"$REAPER_OUT\"/interop.log; exit $s"
 
 [sync]
 # Never copy host-built, arch-specific artifacts onto the guest: a FreeBSD
@@ -27,6 +27,7 @@ cmd = "{ sh interop/run-matrix.sh && sh interop/tier5.sh && sh interop/tier6.sh;
 exclude = [
   "/go/interop_node",
   "/interop/tier5/faultpeer",
+  "/interop/tier7/fuzzer",
   "/rust/target/",
   "/java/build/",
   "/java/.gradle/",

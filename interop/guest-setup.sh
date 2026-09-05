@@ -61,6 +61,7 @@ log "building the Java jar (bonemesh-ca + node) once, up front"
 log "pre-building Go + Rust interop binaries and the tier-5 fault peer"
 (cd go && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o interop_node ./cmd/interop_node)
 (cd interop/tier5 && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o faultpeer .)
+(cd interop/tier7 && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o fuzzer .)
 (cd rust && cargo build --offline --quiet --bin interop_node)
 
 log "done"

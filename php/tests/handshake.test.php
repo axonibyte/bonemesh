@@ -88,3 +88,43 @@ test('tampered responder auth is rejected by the initiator', function () {
     $m2['auth'] = base64_encode($auth);
     assertThrows(fn () => $init->readMessage2WriteMessage3($m2));
 });
+
+// A bmx1 missing a field must be rejected cleanly, with no PHP warnings —
+// interop tier 7's fuzzing showed the responder emitting "Undefined array key"
+// and "base64_decode(null)" notices before rejecting. Records any warning via a
+// custom handler and asserts none fired.
+test('responder rejects a bmx1 with a missing field and emits no warnings', function () {
+    $root = ca_root();
+    $r = hs_issue($root, 'responder');
+    $resp = Handshake::responder(HS_MESH, $root['pubRaw'], HS_NOW, $r['cert'], $r['idPrivate']);
+
+    $warnings = [];
+    set_error_handler(function ($no, $str) use (&$warnings) {
+        $warnings[] = $str;
+        return true;
+    });
+    $threw = false;
+    try {
+        // valid e and k, but 'n' is absent
+        $resp->readMessage1WriteMessage2([
+            't' => 'bmx1', 'v' => 3, 'mesh' => HS_MESH,
+            'e' => base64_encode(str_repeat("\0", 32)),
+            'k' => base64_encode(str_repeat("\0", 1184)),
+        ]);
+    } catch (\Throwable $e) {
+        $threw = true;
+    }
+    restore_error_handler();
+
+    assertTrue($threw, 'expected the malformed bmx1 to be rejected');
+    assertEq(0, count($warnings), 'expected no PHP warnings, got: ' . implode('; ', $warnings));
+});
+
+test('responder rejects a bmx1 with a non-base64 field', function () {
+    $root = ca_root();
+    $r = hs_issue($root, 'responder');
+    $resp = Handshake::responder(HS_MESH, $root['pubRaw'], HS_NOW, $r['cert'], $r['idPrivate']);
+    assertThrows(fn () => $resp->readMessage1WriteMessage2([
+        't' => 'bmx1', 'v' => 3, 'mesh' => HS_MESH, 'e' => '!!!not-base64!!!', 'k' => 'AA==', 'n' => 'AA==',
+    ]));
+});
