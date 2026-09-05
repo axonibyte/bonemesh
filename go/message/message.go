@@ -154,3 +154,19 @@ func Ack(mid string) map[string]any {
 func Echo(token int64) map[string]any {
 	return map[string]any{"type": "echo", "token": token}
 }
+
+// Probe builds a liveness probe carrying the sender's send-time timestamp (ms),
+// which the peer echoes back so the sender can measure RTT.
+func Probe(token int64) map[string]any {
+	return map[string]any{"type": "probe", "token": token}
+}
+
+// Disco builds a route advertisement: a map of destination label to path cost
+// in milliseconds (routing.Unreachable for a poisoned route).
+func Disco(routes map[string]int64) map[string]any {
+	r := make(map[string]any, len(routes))
+	for k, v := range routes {
+		r[k] = v
+	}
+	return map[string]any{"type": "disco", "routes": r}
+}

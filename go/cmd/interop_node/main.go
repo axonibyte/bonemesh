@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/axonibyte/bonemesh/gonode/crypto"
@@ -29,9 +30,57 @@ func main() {
 		listen(f)
 	case "connect":
 		connect(f)
+	case "mesh":
+		mesh(f)
 	default:
 		os.Exit(2)
 	}
+}
+
+// mesh is the multi-link mode for the convergence tier: dial several --peers
+// (host:port,host:port), optionally log delivered payloads (--out), repeatedly
+// send toward a routed destination (--send-to with --message), and periodically
+// dump the routing table (--routes). Stays up for --seconds.
+func mesh(f map[string]string) {
+	port, _ := strconv.Atoi(f["port"])
+	n, err := node.Start(config(f), port)
+	must(err)
+	if out := f["out"]; out != "" {
+		ch := n.AddListener()
+		go func() {
+			for payload := range ch {
+				b, _ := json.Marshal(payload)
+				appendLine(out, b)
+			}
+		}()
+	}
+	for _, peer := range strings.Split(f["peers"], ",") {
+		if peer == "" {
+			continue
+		}
+		c := strings.LastIndex(peer, ":")
+		p, _ := strconv.Atoi(peer[c+1:])
+		if _, err := n.Connect(peer[:c], p); err != nil {
+			os.Stderr.WriteString("mesh connect: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+	}
+	var payload map[string]any
+	if f["message"] != "" {
+		payload = loadJSON(f["message"])
+	}
+	deadline := time.Now().Add(time.Duration(seconds(f)) * time.Second)
+	for time.Now().Before(deadline) {
+		if f["send-to"] != "" && payload != nil {
+			n.Send(f["send-to"], payload)
+		}
+		if routes := f["routes"]; routes != "" {
+			b, _ := json.Marshal(n.RouteTable())
+			must(os.WriteFile(routes, b, 0o644))
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	n.Kill()
 }
 
 func keygen(f map[string]string) {
