@@ -53,10 +53,23 @@ Current drivers: `drivers/java.sh`, `drivers/elixir.sh`, `drivers/rust.sh`,
 thirty-six pairs (each of the six implementations as both responder and
 initiator, cross and same) interoperate.
 
+## Tiers
+
+- **`run-matrix.sh`** — the N×N live handshake/transport/delivery matrix (above).
+- **`tier5.sh`** — methodology tier 5, node vs. fake peer. A Go fault peer
+  (`tier5/`, reusing the Go port's stack to craft genuinely valid messages it
+  then corrupts) drives every implementation's listener through a battery of
+  deterministic faults — non-JSON, oversize, and unterminated frames; wrong-mesh
+  bmx1; handshake aborted after bmx1; garbage and tampered bmx3; a corrupted
+  transport frame. Oracle, two-sided: after the battery nothing was delivered,
+  and a final valid send *does* deliver (self-testing that the oracle can see a
+  delivery, and that the node survived every fault). It proves passivity under
+  faults and survival — not the absence of per-connection error logging.
+
 ## Status and future work
 
 Run on the driver today (it has every toolchain). Making this a reaper tenant
 needs a guest carrying every implementation's runtime — the open "polyglot
-guest vs. per-language guests" question — and is the home of the methodology's
-tiers 5–9 (fault injection, containerized meshes, seeded fuzzing, convergence,
-simulated meshes) as more implementations land.
+guest vs. per-language guests" question. Remaining methodology tiers to land
+here: 6 (containerized meshes under netem), 7 (seeded fuzzing), 8
+(concurrency/convergence), 9 (simulated meshes).
