@@ -74,6 +74,14 @@ public final class Kem {
   }
 
   /**
+   * @return the raw decapsulation (private) key, for test vectors and
+   *         persistence
+   */
+  public byte[] decapsulationKey() {
+    return privateKey.getEncoded();
+  }
+
+  /**
    * Encapsulates a fresh shared secret to a peer's encapsulation key.
    *
    * @param peerEncapsulationKey the peer's raw encapsulation key

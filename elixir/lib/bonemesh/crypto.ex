@@ -57,4 +57,44 @@ defmodule Bonemesh.Crypto do
       plaintext -> {:ok, plaintext}
     end
   end
+
+  # --- Asymmetric primitives (raw FIPS/RFC encodings, matching Java/Go) ---
+
+  @doc "Generates an ephemeral X25519 key pair as `{public, private}`."
+  @spec x25519_generate() :: {binary(), binary()}
+  def x25519_generate, do: :crypto.generate_key(:ecdh, :x25519)
+
+  @doc "Computes the raw X25519 shared secret."
+  @spec x25519_agree(binary(), binary()) :: binary()
+  def x25519_agree(peer_public, my_private),
+    do: :crypto.compute_key(:ecdh, peer_public, my_private, :x25519)
+
+  @doc "Generates an ML-KEM-768 key pair as `{encapsulation_key, decapsulation_key}`."
+  @spec mlkem_generate() :: {binary(), binary()}
+  def mlkem_generate, do: :crypto.generate_key(:mlkem768, [])
+
+  @doc "Encapsulates to a peer's ML-KEM-768 key, returning `{shared_secret, ciphertext}`."
+  @spec mlkem_encapsulate(binary()) :: {binary(), binary()}
+  def mlkem_encapsulate(encapsulation_key),
+    do: :crypto.encapsulate_key(:mlkem768, encapsulation_key)
+
+  @doc "Recovers the ML-KEM-768 shared secret from a ciphertext."
+  @spec mlkem_decapsulate(binary(), binary()) :: binary()
+  def mlkem_decapsulate(decapsulation_key, ciphertext),
+    do: :crypto.decapsulate_key(:mlkem768, decapsulation_key, ciphertext)
+
+  @doc "Generates an ML-DSA key pair (`:mldsa65` or `:mldsa87`) as `{public, private}`."
+  @spec mldsa_generate(:mldsa65 | :mldsa87) :: {binary(), binary()}
+  def mldsa_generate(level) when level in [:mldsa65, :mldsa87],
+    do: :crypto.generate_key(level, [])
+
+  @doc "Signs a message with an ML-DSA private key."
+  @spec mldsa_sign(:mldsa65 | :mldsa87, binary(), binary()) :: binary()
+  def mldsa_sign(level, private, message),
+    do: :crypto.sign(level, :none, message, private)
+
+  @doc "Verifies an ML-DSA signature."
+  @spec mldsa_verify(:mldsa65 | :mldsa87, binary(), binary(), binary()) :: boolean()
+  def mldsa_verify(level, public, message, signature),
+    do: :crypto.verify(level, :none, message, signature, public)
 end
