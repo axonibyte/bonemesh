@@ -5,6 +5,13 @@
 # pairs it with any other driver without knowing which is which.
 
 defmodule InteropNode do
+  def main(["keygen" | rest]) do
+    f = flags(rest)
+    {public, private} = :crypto.generate_key(:mldsa65, [])
+    File.write!(f["id-pub"], Base.encode64(public))
+    File.write!(f["id-priv"], Base.encode64(private))
+  end
+
   def main([mode | rest]) do
     f = flags(rest)
 

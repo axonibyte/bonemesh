@@ -54,6 +54,15 @@ public final class InteropNode {
     }
     Map<String, String> f = flags(args);
 
+    // keygen needs no mesh/cert: generate an identity, write pub (standard raw)
+    // and priv (this implementation's own format). The private key never leaves.
+    if(args[0].equals("keygen")) {
+      Signer id = Signer.generate(Signer.Level.DSA65, new java.security.SecureRandom());
+      Files.writeString(Paths.get(f.get("id-pub")), Base64.getEncoder().encodeToString(id.publicKey()));
+      Files.writeString(Paths.get(f.get("id-priv")), Base64.getEncoder().encodeToString(id.privateKey()));
+      return;
+    }
+
     byte[] rootPub = readBase64(f.get("root-pub"));
     Certificate cert = Certificate.fromJSON(new JSONObject(readString(f.get("cert"))));
     Signer identity = Signer.fromKeys(Signer.Level.DSA65, readBase64(f.get("id-pub")), readBase64(f.get("id-priv")));
