@@ -1,0 +1,35 @@
+[package]
+name = "hybrid-array"
+version = "0.2.3"
+description = """
+Hybrid typenum-based and const generic array types designed to provide the
+flexibility of typenum-based expressions while also allowing interoperability
+and a transition path to const generics
+"""
+authors = ["RustCrypto Developers"]
+license = "MIT OR Apache-2.0"
+documentation = "https://docs.rs/hybrid-array"
+repository = "https://github.com/RustCrypto/hybrid-array"
+categories = ["no-std", "data-structures"]
+keywords = ["generic-array"]
+readme = "README.md"
+edition = "2021"
+rust-version = "1.81"
+
+[dependencies]
+typenum = { version = "1.17", features = ["const-generics"] }
+
+# optional dependencies
+bytemuck = { version = "1", optional = true, default-features = false }
+serde = { version = "1", optional = true, default-features = false }
+zeroize = { version = "1.8", optional = true, default-features = false }
+
+[dev-dependencies]
+bincode = "1"
+
+[features]
+extra-sizes = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
