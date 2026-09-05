@@ -88,6 +88,17 @@ initiator, cross and same) interoperate.
   dead relay (via the nodes' new route-table accessors) and delivery heals over
   the alternate path. The convergence oracle is self-tested first against a
   known-bad routing dump.
+- **`tier9.sh`** — methodology tier 9, simulated meshes. From a single seed
+  (printed, replayable via `BONEMESH_SIM_SEED`) it churns a fleet of listener
+  nodes — one per usable implementation — through a sequence of nemesis actions:
+  authenticated sends, intrusion attempts (a peer holding a certificate from a
+  different mesh root), kills, and stale-identity restarts. It then checks the
+  security-critical invariants that must hold regardless: authenticated-only
+  delivery (no intruder payload ever delivered), no fabrication (every delivered
+  tag was one the sim sent), delivery of every authenticated send to a live node,
+  and survival across the churn. The invariant checker is self-tested first
+  against synthetic logs. Dedup and routing convergence are routing-layer
+  properties covered by tier 8 and are not re-asserted here.
 
 The runners **discover drivers and health-probe each one**, keeping only the
 implementations whose toolchain is present and logging every skip. So the same
@@ -109,5 +120,6 @@ interop is covered by the six-language matrix on the driver (which has OTP 28).
 
 Runs on the driver (six languages) and as the `bonemesh-interop` reaper tenant
 (five languages under netem; tier 8 needs both Java and Elixir, so it runs on
-the driver and skips on the guest). Remaining methodology tier: 9 (simulated
-meshes).
+the driver and skips on the guest). Methodology tiers 5–9 are all implemented.
+Tiers 10–11 (long-horizon soak, human-reviewed transcripts) remain future work,
+as the plan states.
