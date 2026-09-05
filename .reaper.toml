@@ -1,0 +1,40 @@
+# Root interop tenant: the multiprotocol suite (methodology tiers 5–9), run on a
+# networked Linux guest with tc/netem. Host execution — commands run directly on
+# the VM as root — because the suite orchestrates many node processes and shapes
+# loopback traffic, which a single sandboxed container cannot. The manifest sits
+# at the repo root, so the whole tree (every language + spec/ + interop/) syncs.
+schema = 1
+project = "bonemesh-interop"
+
+guests = ["ubuntu-26.04"]
+exec = "host"
+
+[build]
+# Install the toolchains the suite drives, then build the up-front artifacts.
+cmd = "sh interop/guest-setup.sh"
+
+[run]
+# Validate the guest reproduces the live matrix and tier 5, then run tier 6
+# (netem). Redirect + re-raise so the real exit status survives a dash /bin/sh.
+cmd = "{ sh interop/run-matrix.sh && sh interop/tier5.sh && sh interop/tier6.sh; } > \"$REAPER_OUT\"/interop.log 2>&1; s=$?; cat \"$REAPER_OUT\"/interop.log; exit $s"
+
+[sync]
+# Never copy host-built, arch-specific artifacts onto the guest: a FreeBSD
+# driver binary rsynced here looks present to a driver's `-x` check, so it skips
+# rebuilding and then fails to exec. The guest builds its own from source (the
+# committed vendor/ trees travel, so those builds stay offline). Also skips the
+# large/regenerated build trees to keep the sync fast.
+exclude = [
+  "/go/interop_node",
+  "/interop/tier5/faultpeer",
+  "/rust/target/",
+  "/java/build/",
+  "/java/.gradle/",
+  "/elixir/_build/",
+  "/elixir/deps/",
+  "/.git/",
+]
+
+[resources]
+cores = 4
+ram_gb = 8

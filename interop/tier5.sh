@@ -50,7 +50,14 @@ issue_node() {
 }
 
 impls=""
-for d in "$here"/drivers/*.sh; do impls="$impls $(basename "$d" .sh)"; done
+for d in "$here"/drivers/*.sh; do
+  impl=$(basename "$d" .sh)
+  if "$d" keygen --id-pub "$work/probe.pub" --id-priv "$work/probe.priv" >/dev/null 2>&1 && [ -s "$work/probe.pub" ]; then
+    impls="$impls $impl"
+  else
+    echo "SKIP $impl — toolchain unavailable on this host"
+  fi
+done
 echo "implementations under test:$impls"
 
 free_port() {

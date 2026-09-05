@@ -65,11 +65,32 @@ initiator, cross and same) interoperate.
   and a final valid send *does* deliver (self-testing that the oracle can see a
   delivery, and that the node survived every fault). It proves passivity under
   faults and survival — not the absence of per-connection error logging.
+- **`tier6.sh`** — methodology tier 6, full mesh under a hostile network.
+  Part A re-runs the matrix while loopback carries netem latency + loss; Part B
+  cuts a listener off with an iptables DROP and asserts a send is *not* delivered
+  (connect fails and the output stays empty), then heals and asserts an identical
+  send *does* deliver. Needs Linux `tc`/netem + iptables as root, so it runs on
+  the interop guest; on any other host it no-ops loudly.
+
+The runners **discover drivers and health-probe each one**, keeping only the
+implementations whose toolchain is present and logging every skip. So the same
+scripts run six-wide on the driver and, on the interop guest (which lacks
+Erlang/OTP 28), five-wide with Elixir logged as skipped — never silently.
+
+## The interop reaper tenant
+
+`../.reaper.toml` (project `bonemesh-interop`) is the root tenant: host execution
+on an `ubuntu-26.04` guest, syncing the whole repo. `interop/guest-setup.sh`
+provisions the toolchains — Java 25, Go 1.26, Rust, PHP 8.5, and Node 24 (from
+NodeSource; apt's Node 22 bundles an OpenSSL without ML-KEM/ML-DSA), all over the
+guest's system OpenSSL 3.5 — plus `tc`/netem and iptables. The run gates the
+matrix, tier 5, and tier 6. Elixir is not provisioned here: its node needs
+Erlang/OTP 28 for the native PQC API, which ubuntu-26.04 does not package; its
+interop is covered by the six-language matrix on the driver (which has OTP 28).
 
 ## Status and future work
 
-Run on the driver today (it has every toolchain). Making this a reaper tenant
-needs a guest carrying every implementation's runtime — the open "polyglot
-guest vs. per-language guests" question. Remaining methodology tiers to land
-here: 6 (containerized meshes under netem), 7 (seeded fuzzing), 8
-(concurrency/convergence), 9 (simulated meshes).
+Runs on the driver (six languages) and as the `bonemesh-interop` reaper tenant
+(five languages under netem). Remaining methodology tiers: 7 (seeded fuzzing),
+8 (concurrency/convergence — needs multi-hop routing, which only Java and Elixir
+have today), 9 (simulated meshes).

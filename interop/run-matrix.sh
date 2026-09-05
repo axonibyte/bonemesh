@@ -40,12 +40,19 @@ issue_for() {
     --mesh "$mesh" --label "$label" --key "$work/$label.pub" --days 1 --out "$work/$label.cert.json"
 }
 
-# Discover implementations from the driver directory.
+# Discover implementations from the driver directory, then keep only those whose
+# toolchain is actually present on this host — each skip is logged, never silent,
+# so a host missing a runtime (e.g. no Erlang/OTP 28) narrows coverage visibly.
 impls=""
 for d in "$here"/drivers/*.sh; do
-  impls="$impls $(basename "$d" .sh)"
+  impl=$(basename "$d" .sh)
+  if "$d" keygen --id-pub "$work/probe.pub" --id-priv "$work/probe.priv" >/dev/null 2>&1 && [ -s "$work/probe.pub" ]; then
+    impls="$impls $impl"
+  else
+    echo "SKIP $impl — toolchain unavailable on this host"
+  fi
 done
-echo "implementations discovered:$impls"
+echo "implementations usable:$impls"
 
 free_port() {
   p=34100
