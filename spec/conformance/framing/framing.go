@@ -12,7 +12,9 @@ import (
 
 // Cap constants (protocol.md §0).
 const (
-	HandshakeCap = 16384
+	// HandshakeCap is 32 KiB: post-quantum certificates and signatures are
+	// large — a bmx2 message runs near 20 KB Base64-expanded.
+	HandshakeCap = 32768
 	TransportCap = 65536
 )
 

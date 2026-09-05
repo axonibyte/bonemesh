@@ -34,7 +34,7 @@ func main() {
 		"cases":       cases,
 		"size_cases": map[string]any{
 			"description":   "The runner also generates frames exactly at the cap (accept) and one byte over (reject, reason 'oversize') from these caps.",
-			"handshake_cap": 16384,
+			"handshake_cap": 32768,
 			"transport_cap": 65536,
 		},
 	}

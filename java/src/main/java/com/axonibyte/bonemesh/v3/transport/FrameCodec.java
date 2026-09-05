@@ -41,8 +41,13 @@ import org.json.JSONTokener;
  */
 public final class FrameCodec {
 
-  /** Maximum handshake frame size, bytes including the newline (protocol.md §0). */
-  public static final int HANDSHAKE_CAP = 16384;
+  /**
+   * Maximum handshake frame size, bytes including the newline (protocol.md §0).
+   * 32 KiB: post-quantum certificates and signatures are large — a bmx2 message
+   * carries an ML-DSA-65 certificate (with a ~4.6 KB ML-DSA-87 root signature)
+   * plus a ~3.3 KB transcript signature, all Base64-expanded, near 20 KB.
+   */
+  public static final int HANDSHAKE_CAP = 32768;
   /** Default maximum transport frame size, bytes including the newline. */
   public static final int TRANSPORT_CAP = 65536;
 

@@ -22,7 +22,7 @@ not depend on a two-party handshake, so they are testable and pinned now.
 | Protocol version (`v`) | `3` |
 | Frame encoding | one UTF-8 JSON object per line, `\n`-terminated, no interior `\n` |
 | Binary-in-JSON encoding | RFC 4648 **standard** Base64, **with** padding, **no** line breaks |
-| Handshake frame max | 16384 bytes (including the terminating `\n`) |
+| Handshake frame max | 32768 bytes (including the terminating `\n`); post-quantum certs and signatures are large |
 | Transport frame max (default) | 65536 bytes; configurable up to an implementation ceiling ≥ 65536 |
 | `mid` (message id) | 128-bit value, lowercase hex, 32 chars |
 | `ttl` default | 16; range 1–255; decremented per relay hop |
@@ -55,7 +55,7 @@ the handshake are in `security.md`; everything else is here.
 - **Every frame has a hard maximum size** (defect **D7**). A reader that has not
   seen a newline within the limit closes the connection rather than growing an
   unbounded buffer. Limits `[PIN]`:
-  - handshake frames: **16 KiB** (ample for ML-DSA certs + signatures);
+  - handshake frames: **32 KiB** (a bmx2 with ML-DSA cert + signatures runs near 20 KB);
   - transport frames: default **64 KiB**, configurable up to a ceiling.
 - Application payloads larger than a transport frame are **chunked** by the
   origin (§6) and reassembled by the destination, so the frame cap never limits

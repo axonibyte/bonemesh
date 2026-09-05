@@ -59,7 +59,7 @@
   "description": "Frame acceptance/rejection (protocol.md section 2). Each case gives 'bytes_b64' (RFC 4648 base64 of the raw wire bytes), the frame 'kind' ('handshake' cap 16384, 'transport' cap 65536), and 'expect' ('accept'|'reject') with a 'reason' tag. A frame reader must reach the same verdict. 'accept' = exactly one newline-terminated JSON object within the cap.",
   "size_cases": {
     "description": "The runner also generates frames exactly at the cap (accept) and one byte over (reject, reason 'oversize') from these caps.",
-    "handshake_cap": 16384,
+    "handshake_cap": 32768,
     "transport_cap": 65536
   }
 }
