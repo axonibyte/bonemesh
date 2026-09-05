@@ -49,8 +49,9 @@ every driver.
   `message` is a JSON payload object.
 
 Current drivers: `drivers/java.sh`, `drivers/elixir.sh`, `drivers/rust.sh`,
-`drivers/go.sh`. The matrix confirms all sixteen pairs (each of the four
-implementations as both responder and initiator, cross and same) interoperate.
+`drivers/go.sh`, `drivers/js.sh`. The matrix confirms all twenty-five pairs
+(each of the five implementations as both responder and initiator, cross and
+same) interoperate.
 
 ## Status and future work
 

@@ -1,0 +1,27 @@
+# Reaper tenant for the JavaScript (Node.js) implementation. The port uses only
+# the Node standard library (OpenSSL 3.5 for all crypto, including ML-KEM/ML-DSA),
+# so there is nothing to install or vendor: the run step is the built-in test
+# runner over the committed sources, in a digest-pinned Node container on the
+# generic Ubuntu guest.
+
+schema = 1
+project = "bonemesh-js"
+
+guests = ["ubuntu-26.04"]
+exec = "container"
+
+[build]
+# node:24-bookworm-slim, pinned by manifest-list digest. A version sanity check;
+# there is no compile or dependency step.
+image = "docker.io/library/node@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e"
+cmd = "node --version"
+
+[run]
+# No pipe into tee: /bin/sh may be dash (no pipefail, no PIPESTATUS), and the
+# suite's exit status is the whole point. Redirect to a file, capture the real
+# status, echo the log for the live view, then re-raise the status.
+cmd = "node --test > \"$REAPER_OUT\"/nodetest.log 2>&1; s=$?; cat \"$REAPER_OUT\"/nodetest.log; exit $s"
+
+[resources]
+cores = 4
+ram_gb = 8
