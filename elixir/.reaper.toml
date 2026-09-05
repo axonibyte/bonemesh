@@ -1,0 +1,28 @@
+# Reaper tenant for the Elixir implementation. Runs the ExUnit suite in a
+# digest-pinned Elixir/OTP-28 container on the generic Ubuntu guest. OTP 28's
+# :crypto provides ML-DSA, ML-KEM, X25519, and ChaCha20-Poly1305 natively, so
+# the port needs no external dependencies.
+
+schema = 1
+project = "bonemesh-elixir"
+
+guests = ["ubuntu-26.04"]
+exec = "container"
+
+[build]
+# elixir:1.19-otp-28, pinned by manifest-list digest.
+image = "docker.io/library/elixir@sha256:d170fadffd75b36146ff40b6e8d5cc881c59d136ae5a2c34a1b394ec33b6cffa"
+cmd = "MIX_HOME=\"$REAPER_CACHE_MIX\" mix compile"
+cache = ["mix"]
+
+[run]
+# No pipe into tee: /bin/sh may be dash (no pipefail). Redirect to a file,
+# capture the real status, echo the log, then re-raise it.
+cmd = "MIX_HOME=\"$REAPER_CACHE_MIX\" mix test > \"$REAPER_OUT\"/mixtest.log 2>&1; s=$?; cat \"$REAPER_OUT\"/mixtest.log; exit $s"
+
+[sync]
+exclude = ["/_build/", "/deps/", "/out/"]
+
+[resources]
+cores = 4
+ram_gb = 8
