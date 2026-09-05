@@ -21,6 +21,13 @@ adversarial *semantic* inputs (bad versions, malformed ids, out-of-range fields)
 live in `messages.json` as their `invalid` cases — rather than a separate
 hostile file, each hostile input sits with the layer that must reject it.
 
+**Known interop-hardening gap:** `framing.json` does not yet include
+lenient-JSON inputs (unquoted keys like `{a:1}`, trailing commas, comments) that
+a strict RFC 8259 parser rejects but some parsers accept. Java's current
+classifier uses a lenient JSON library, so adding these cases will force strict
+parsing there. Tracked for the M5 interop hardening pass; the present cases are
+matched byte-for-byte by both Java and Go.
+
 The `transcripts/` vectors freeze the handshake's cryptographic core across
 languages (Java + Go); `transcripts/README.md` records exactly what is frozen
 and which items (ML-KEM cross-decapsulation, ML-DSA signatures, the byte-exact
