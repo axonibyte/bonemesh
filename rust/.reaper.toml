@@ -1,0 +1,27 @@
+# Reaper tenant for the Rust implementation. Builds and tests offline from the
+# committed vendor/ tree (no crate downloads in the sandbox) in a digest-pinned
+# Rust container on the generic Ubuntu guest.
+
+schema = 1
+project = "bonemesh-rust"
+
+guests = ["ubuntu-26.04"]
+exec = "container"
+
+[build]
+# rust:1-bookworm, pinned by manifest-list digest.
+image = "docker.io/library/rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
+cmd = "CARGO_HOME=\"$REAPER_CACHE_CARGO\" cargo build --offline"
+cache = ["cargo"]
+
+[run]
+# No pipe into tee: /bin/sh may be dash (no pipefail). Redirect, capture the
+# real status, echo the log, re-raise.
+cmd = "CARGO_HOME=\"$REAPER_CACHE_CARGO\" cargo test --offline > \"$REAPER_OUT\"/cargotest.log 2>&1; s=$?; cat \"$REAPER_OUT\"/cargotest.log; exit $s"
+
+[sync]
+exclude = ["/target/"]
+
+[resources]
+cores = 4
+ram_gb = 8

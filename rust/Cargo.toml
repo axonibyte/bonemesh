@@ -1,0 +1,12 @@
+[package]
+name = "bonemesh"
+version = "3.0.0"
+edition = "2021"
+description = "BoneMesh v3 — Rust implementation"
+
+[dependencies]
+serde_json = "1"
+
+[lib]
+name = "bonemesh"
+path = "src/lib.rs"
