@@ -6,4 +6,5 @@ pub mod handshake;
 pub mod keyschedule;
 pub mod message;
 pub mod node;
+pub mod routing;
 pub mod transport;

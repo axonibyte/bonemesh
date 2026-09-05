@@ -10,14 +10,16 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::handshake::Handshake;
+use crate::routing;
 use crate::transport::Transport;
 use crate::{frame, message};
 
@@ -40,6 +42,9 @@ struct Inner {
     config: Config,
     links: Mutex<HashMap<String, Arc<Mutex<Link>>>>,
     listeners: Mutex<Vec<Sender<Value>>>,
+    table: Mutex<routing::Table>,
+    dedup: Mutex<routing::Dedup>,
+    stop: AtomicBool,
 }
 
 /// A running node.
@@ -53,11 +58,18 @@ impl Node {
     pub fn start(config: Config, port: u16) -> std::io::Result<Node> {
         let listener = TcpListener::bind(("0.0.0.0", port))?;
         let port = listener.local_addr()?.port();
+        let label = config.label.clone();
         let inner = Arc::new(Inner {
             config,
             links: Mutex::new(HashMap::new()),
             listeners: Mutex::new(Vec::new()),
+            table: Mutex::new(routing::Table::new(&label)),
+            dedup: Mutex::new(routing::Dedup::new(4096)),
+            stop: AtomicBool::new(false),
         });
+
+        let hb_inner = inner.clone();
+        thread::spawn(move || heartbeat(hb_inner));
 
         let accept_inner = inner.clone();
         thread::spawn(move || {
@@ -108,11 +120,25 @@ impl Node {
         Ok(peer)
     }
 
-    /// Sends an application payload to a direct neighbor. Returns true if sent.
+    /// Routes an application payload toward any reachable destination.
     pub fn send(&self, to: &str, payload: Value) -> bool {
         let mid = message::new_mid();
         let msg = message::data(&mid, &self.inner.config.label, to, message::DEFAULT_TTL, payload);
-        send_to_link(&self.inner, to, &msg)
+        let nh = self.inner.table.lock().unwrap().next_hop(to);
+        match nh {
+            Some(nh) => send_to_link(&self.inner, &nh, &msg),
+            None => false,
+        }
+    }
+
+    /// A snapshot of learned destinations to their next hop.
+    pub fn route_table(&self) -> HashMap<String, String> {
+        self.inner.table.lock().unwrap().route_table()
+    }
+
+    /// Stops the node's heartbeat.
+    pub fn kill(&self) {
+        self.inner.stop.store(true, Ordering::SeqCst);
     }
 }
 
@@ -140,6 +166,7 @@ fn respond(inner: &Arc<Inner>, stream: TcpStream) -> Result<(), String> {
 fn register(inner: &Arc<Inner>, peer: &str, write: TcpStream, reader: BufReader<TcpStream>, transport: Transport) {
     let link = Arc::new(Mutex::new(Link { write, transport }));
     inner.links.lock().unwrap().insert(peer.to_lowercase(), link.clone());
+    inner.table.lock().unwrap().observe_neighbor(peer, 1); // optimistic seed
 
     let inner = inner.clone();
     let peer = peer.to_string();
@@ -150,11 +177,17 @@ fn read_loop(inner: Arc<Inner>, peer: String, mut reader: BufReader<TcpStream>, 
     loop {
         let raw = match read_line(&mut reader) {
             Ok(r) => r,
-            Err(_) => break,
+            Err(_) => {
+                deregister(&inner, &peer, &link);
+                break;
+            }
         };
         let carrier: Value = match serde_json::from_slice(&raw) {
             Ok(v) => v,
-            Err(_) => break,
+            Err(_) => {
+                deregister(&inner, &peer, &link);
+                break;
+            }
         };
         let inner_msg = {
             let mut l = link.lock().unwrap();
@@ -169,19 +202,92 @@ fn read_loop(inner: Arc<Inner>, peer: String, mut reader: BufReader<TcpStream>, 
 
 fn handle_inner(inner: &Arc<Inner>, peer: &str, msg: Value) {
     match msg["type"].as_str() {
-        Some("data") => {
-            let payload = msg["payload"].clone();
-            for tx in inner.listeners.lock().unwrap().iter() {
-                let _ = tx.send(payload.clone());
-            }
-        }
         Some("probe") => {
             if let Some(token) = msg["token"].as_i64() {
                 send_to_link(inner, peer, &message::echo(token));
             }
         }
+        Some("echo") => {
+            if let Some(token) = msg["token"].as_i64() {
+                let rtt = (now_millis() - token).max(0);
+                inner.table.lock().unwrap().observe_neighbor(peer, rtt);
+            }
+        }
+        Some("disco") => {
+            if let Some(routes) = msg["routes"].as_object() {
+                let mut table = inner.table.lock().unwrap();
+                for (dest, cost) in routes {
+                    if let Some(c) = cost.as_i64() {
+                        table.learn_route(dest, peer, c);
+                    }
+                }
+            }
+        }
+        Some("data") => handle_data(inner, msg),
         _ => {}
     }
+}
+
+fn handle_data(inner: &Arc<Inner>, msg: Value) {
+    let mid = msg["mid"].as_str().unwrap_or("");
+    let chunk_idx = msg["chunk"]["i"].as_i64().unwrap_or(-1);
+    if inner.dedup.lock().unwrap().seen(&format!("{}:{}", mid, chunk_idx)) {
+        return;
+    }
+    let to = msg["to"].as_str().unwrap_or("");
+    if to.to_lowercase() == inner.config.label.to_lowercase() {
+        let payload = msg["payload"].clone();
+        for tx in inner.listeners.lock().unwrap().iter() {
+            let _ = tx.send(payload.clone());
+        }
+        return;
+    }
+    let ttl = msg["ttl"].as_i64().unwrap_or(0) - 1;
+    if ttl <= 0 {
+        return; // DROP_TTL, silently
+    }
+    let nh = inner.table.lock().unwrap().next_hop(to);
+    if let Some(nh) = nh {
+        let mut fwd = msg.clone();
+        fwd["ttl"] = json!(ttl);
+        send_to_link(inner, &nh, &fwd);
+    }
+}
+
+// Withdraws a dropped link's routes, but only if it is still the current link.
+fn deregister(inner: &Arc<Inner>, peer: &str, link: &Arc<Mutex<Link>>) {
+    let key = peer.to_lowercase();
+    {
+        let mut links = inner.links.lock().unwrap();
+        if let Some(cur) = links.get(&key) {
+            if Arc::ptr_eq(cur, link) {
+                links.remove(&key);
+            }
+        }
+    }
+    inner.table.lock().unwrap().remove_neighbor(peer);
+}
+
+fn heartbeat(inner: Arc<Inner>) {
+    loop {
+        thread::sleep(Duration::from_secs(1));
+        if inner.stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let peers: Vec<String> = inner.links.lock().unwrap().keys().cloned().collect();
+        for peer in peers {
+            send_to_link(&inner, &peer, &message::probe(now_millis()));
+            let adv = inner.table.lock().unwrap().advertise_to(&peer);
+            send_to_link(&inner, &peer, &message::disco(adv));
+        }
+    }
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
 }
 
 fn send_to_link(inner: &Arc<Inner>, label: &str, inner_msg: &Value) -> bool {

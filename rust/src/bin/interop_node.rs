@@ -24,6 +24,7 @@ fn main() {
         "keygen" => keygen(&f),
         "listen" => listen(&f),
         "connect" => connect(&f),
+        "mesh" => mesh(&f),
         other => {
             eprintln!("usage: interop_node <keygen|listen|connect> [--flag value ...]; got {other}");
             std::process::exit(2);
@@ -84,6 +85,48 @@ fn connect(f: &HashMap<String, String>) {
         std::thread::sleep(Duration::from_millis(200));
     }
     std::thread::sleep(Duration::from_millis(1500));
+}
+
+// The multi-link mode for the convergence tier: dial several --peers
+// (host:port,host:port), optionally log delivered payloads (--out), repeatedly
+// send toward a routed destination (--send-to with --message), and periodically
+// dump the routing table (--routes). Stays up for --seconds.
+fn mesh(f: &HashMap<String, String>) {
+    let seconds: u64 = f.get("seconds").and_then(|s| s.parse().ok()).unwrap_or(10);
+    let port: u16 = f.get("port").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let node = Node::start(config(f), port).expect("start node");
+
+    if let Some(out) = f.get("out").cloned() {
+        let rx = node.add_listener();
+        std::thread::spawn(move || {
+            while let Ok(payload) = rx.recv() {
+                if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&out) {
+                    let _ = writeln!(file, "{}", serde_json::to_string(&payload).unwrap());
+                }
+            }
+        });
+    }
+    if let Some(peers) = f.get("peers") {
+        for peer in peers.split(',').filter(|p| !p.is_empty()) {
+            let c = peer.rfind(':').expect("peer host:port");
+            let p: u16 = peer[c + 1..].parse().expect("peer port");
+            node.connect(&peer[..c], p).expect("mesh connect");
+        }
+    }
+    let payload: Option<Value> = f.get("message").map(|m| serde_json::from_str(&read(m)).unwrap());
+    let send_to = f.get("send-to").cloned();
+    let routes = f.get("routes").cloned();
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    while Instant::now() < deadline {
+        if let (Some(to), Some(p)) = (&send_to, &payload) {
+            node.send(to, p.clone());
+        }
+        if let Some(rf) = &routes {
+            fs::write(rf, serde_json::to_string(&node.route_table()).unwrap()).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    node.kill();
 }
 
 fn read(path: &str) -> String {
