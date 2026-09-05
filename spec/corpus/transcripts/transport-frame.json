@@ -1,0 +1,9 @@
+{
+  "outputs": {"ct_hex": "20f6d9d77b80abe973c25e9b07481ab666ce32ccc672b9776eac2c0c13d9b6cd4965bbff8a597dae1e1c19d72f88"},
+  "inputs": {
+    "key_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "seq": 7,
+    "inner_plaintext_hex": "7b2274797065223a2264617461222c226c696e65223a2268656c6c6f227d"
+  },
+  "description": "Transport-frame vector (protocol.md 4). ct = ChaCha20-Poly1305(key, nonce, empty AAD, inner_plaintext), where nonce is 4 zero bytes then the 64-bit little-endian seq. A conforming implementation reproduces ct_hex and can open it."
+}
