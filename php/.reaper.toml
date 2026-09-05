@@ -1,0 +1,30 @@
+# Reaper tenant for the PHP implementation. The port uses PHP's built-in
+# libsodium for symmetric crypto, X25519, SHA-256 and HKDF, and shells out to the
+# openssl 3.5 CLI for ML-KEM-768 and ML-DSA-65/87. There is nothing to install or
+# vendor (no Composer): the run step is a plain PHP test runner, in a
+# digest-pinned php:8.5-cli container (Debian trixie ships OpenSSL 3.5) on the
+# generic Ubuntu guest.
+
+schema = 1
+project = "bonemesh-php"
+
+guests = ["ubuntu-26.04"]
+exec = "container"
+
+[build]
+# php:8.5-cli (Debian trixie), pinned by manifest-list digest. The build asserts
+# the three prerequisites the port depends on — the CLI, the sodium extension,
+# and an openssl CLI that offers ML-DSA — so a wrong image fails here, loudly,
+# rather than deep inside a test.
+image = "docker.io/library/php@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0"
+cmd = "php -v && php -r 'exit(extension_loaded(\"sodium\") ? 0 : 1);' && command -v openssl && openssl version && openssl list -signature-algorithms | grep -qi mldsa65"
+
+[run]
+# No pipe into tee: /bin/sh may be dash (no pipefail, no PIPESTATUS), and the
+# suite's exit status is the whole point. Redirect to a file, capture the real
+# status, echo the log for the live view, then re-raise the status.
+cmd = "php tests/run.php > \"$REAPER_OUT\"/phptest.log 2>&1; s=$?; cat \"$REAPER_OUT\"/phptest.log; exit $s"
+
+[resources]
+cores = 4
+ram_gb = 8
