@@ -48,9 +48,9 @@ every driver.
   certificate; `id-pub`/`id-priv` are base64 of the raw ML-DSA-65 node keys;
   `message` is a JSON payload object.
 
-Current drivers: `drivers/java.sh`, `drivers/elixir.sh`. The matrix confirms all
-four pairs (each implementation as both responder and initiator, cross and
-same) interoperate.
+Current drivers: `drivers/java.sh`, `drivers/elixir.sh`, `drivers/rust.sh`,
+`drivers/go.sh`. The matrix confirms all sixteen pairs (each of the four
+implementations as both responder and initiator, cross and same) interoperate.
 
 ## Status and future work
 

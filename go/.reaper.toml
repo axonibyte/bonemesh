@@ -1,0 +1,31 @@
+# Reaper tenant for the Go implementation. Builds and tests offline from the
+# committed vendor/ tree (no module downloads in the sandbox) in a digest-pinned
+# Go container on the generic Ubuntu guest.
+
+schema = 1
+project = "bonemesh-gonode"
+
+guests = ["ubuntu-26.04"]
+exec = "container"
+
+[build]
+# golang:1.26-bookworm, pinned by manifest-list digest. GOTOOLCHAIN=local keeps
+# the build hermetic; GOFLAGS=-mod=vendor builds from the committed vendor/ tree
+# so no module download is needed in the sandbox.
+image = "docker.io/library/golang@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81"
+cmd = "GOTOOLCHAIN=local GOFLAGS=-mod=vendor GOCACHE=\"$REAPER_CACHE_GO\" go build ./..."
+cache = ["go"]
+
+[run]
+# No pipe into tee: /bin/sh may be dash (no pipefail, no PIPESTATUS), and the
+# suite's exit status is the whole point. Redirect to a file, capture the real
+# status, echo the log for the live view, then re-raise the status.
+cmd = "GOTOOLCHAIN=local GOFLAGS=-mod=vendor GOCACHE=\"$REAPER_CACHE_GO\" go test ./... > \"$REAPER_OUT\"/gotest.log 2>&1; s=$?; cat \"$REAPER_OUT\"/gotest.log; exit $s"
+
+[sync]
+# The prebuilt driver binary is a local artifact, not a source input.
+exclude = ["/interop_node"]
+
+[resources]
+cores = 4
+ram_gb = 8
