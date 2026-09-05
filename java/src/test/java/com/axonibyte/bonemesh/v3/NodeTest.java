@@ -92,6 +92,25 @@ public class NodeTest {
     assertTrue(await(alphaGot, 5000), "alpha never received beta's reply");
   }
 
+  @Test void largePayloadIsChunkedAndReassembledEndToEnd() throws Exception {
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+
+    // A payload well over the 64 KiB transport frame cap must be chunked by the
+    // sender and reassembled by the receiver.
+    StringBuilder blob = new StringBuilder();
+    for(int i = 0; i < 200_000; i++) blob.append((char) ('a' + (i % 26)));
+    String expected = blob.toString();
+
+    CountDownLatch betaGot = new CountDownLatch(1);
+    beta.addDataListener(p -> { if(expected.equals(p.optString("blob"))) betaGot.countDown(); });
+
+    alpha.connect("127.0.0.1", beta.port());
+    assertTrue(alpha.send("beta", new JSONObject().put("blob", expected)), "could not route large payload");
+    assertTrue(await(betaGot, 8000), "beta never reassembled the large payload");
+  }
+
   @Test void threeNodeLineRelaysAcrossTheMiddleHop() throws Exception {
     setUpRoot();
     Node alpha = node("alpha");

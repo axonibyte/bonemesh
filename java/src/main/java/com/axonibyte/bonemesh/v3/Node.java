@@ -33,8 +33,10 @@ import org.json.JSONObject;
 import com.axonibyte.bonemesh.v3.cert.Certificate;
 import com.axonibyte.bonemesh.v3.crypto.Signer;
 import com.axonibyte.bonemesh.v3.handshake.Handshake;
+import com.axonibyte.bonemesh.v3.message.Chunker;
 import com.axonibyte.bonemesh.v3.message.Dedup;
 import com.axonibyte.bonemesh.v3.message.Messages;
+import com.axonibyte.bonemesh.v3.message.Reassembler;
 import com.axonibyte.bonemesh.v3.routing.Router;
 import com.axonibyte.bonemesh.v3.routing.RoutingTable;
 import com.axonibyte.bonemesh.v3.transport.FrameCodec;
@@ -64,6 +66,7 @@ public final class Node {
   private final RoutingTable routing;
   private final Router router;
   private final Dedup dedup = new Dedup(4096);
+  private final Reassembler reassembler = new Reassembler();
   private final Map<String, PeerLink> links = new ConcurrentHashMap<>();
   private final CopyOnWriteArrayList<Consumer<JSONObject>> dataListeners = new CopyOnWriteArrayList<>();
 
@@ -168,8 +171,11 @@ public final class Node {
    * @return <code>true</code> if the message was handed to a next hop
    */
   public boolean send(String to, JSONObject payload) {
-    JSONObject data = Messages.data(Messages.newMid(rng), label, to, Messages.DEFAULT_TTL, payload);
-    return forward(data);
+    String mid = Messages.newMid(rng);
+    boolean all = true;
+    for(JSONObject msg : Chunker.split(mid, label, to, Messages.DEFAULT_TTL, payload))
+      all = forward(msg) && all;
+    return all;
   }
 
   private boolean forward(JSONObject dataMessage) {
@@ -255,12 +261,17 @@ public final class Node {
   private void handleInner(String peer, JSONObject inner) {
     String type = inner.optString("type", "");
     switch(type) {
-      case "data":
-        if(dedup.seenBefore(inner.getString("mid"))) return;
+      case "data": {
+        int chunkIndex = inner.has("chunk") ? inner.getJSONObject("chunk").getInt("i") : -1;
+        // Dedup per (mid, chunk) so the chunks of one message are not mistaken
+        // for duplicates of each other.
+        if(dedup.seenBefore(inner.getString("mid") + ":" + chunkIndex)) return;
         Router.Decision d = router.route(inner);
         switch(d.action()) {
           case DELIVER:
-            for(Consumer<JSONObject> l : dataListeners) l.accept(inner.getJSONObject("payload"));
+            reassembler.offer(inner).ifPresent(payload -> {
+              for(Consumer<JSONObject> l : dataListeners) l.accept(payload);
+            });
             break;
           case FORWARD:
             forward(d.message());
@@ -271,6 +282,7 @@ public final class Node {
             break;
         }
         break;
+      }
       case "probe":
         PeerLink link = links.get(key(peer));
         if(link != null) link.send(Messages.echo(inner.getLong("token")));
