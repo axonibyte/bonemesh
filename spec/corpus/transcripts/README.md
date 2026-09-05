@@ -37,9 +37,11 @@ implementations, and the BMX handshake works across them.
   cross-decapsulation or ML-DSA signatures; resolving it needs the seed
   representation reconciled and an ML-DSA library (Cloudflare CIRCL). Tracked
   for the interop harness.
-- **Byte-exact full transcript** (the whole bmx1/bmx2/bmx3 bytes) — best proven
-  by a live cross-language handshake, which the two full implementations
-  (Java, Elixir) can now perform.
+- **Byte-exact full transcript** (the whole bmx1/bmx2/bmx3 bytes) — a static
+  vector is unnecessary now that the live cross-language handshake is proven end
+  to end: `interop/run-matrix.sh` completes a real BMX handshake, encrypted
+  transport, and delivery between Java and Elixir in both directions. A pinned
+  transcript vector remains optional future work for offline conformance.
 
 Nothing frozen is weakened: the key agreement and schedule are proven across
 Java, Go, and Elixir, and the post-quantum layer is now proven across Java and

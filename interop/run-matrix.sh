@@ -1,0 +1,112 @@
+#!/bin/sh
+# Language-agnostic interop matrix.
+#
+# The harness knows nothing about any specific implementation. It discovers
+# drivers in interop/drivers/*.sh, each of which speaks the neutral driver
+# contract (see README.md), and runs every (responder, initiator) pair: one
+# driver listens as node "one", the other connects as node "two" and sends a
+# message, and the harness checks the message arrived. A client does not care
+# what implementation answers, only that the protocol is obeyed.
+#
+# Adding an implementation is dropping a new drivers/<name>.sh — no change here.
+#
+# Requires the shared mesh to be provisioned first (a root and two member
+# certificates); this uses the bundled bonemesh-ca, whose output is neutral and
+# consumed identically by every driver. Exits non-zero if any pair fails.
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/.." && pwd)
+jar="$repo/java/build/libs/bonemesh.jar"
+mesh="interop-mesh"
+work=$(mktemp -d)
+trap 'rm -rf "$work"; kill $(jobs -p) 2>/dev/null || true' EXIT
+
+ca() { java -cp "$jar" com.axonibyte.bonemesh.v3.tools.BoneMeshCA "$@" >/dev/null 2>&1; }
+
+echo "provisioning a shared mesh (root + two member certificates)"
+[ -f "$jar" ] || (cd "$repo/java" && ./gradlew --no-daemon --quiet shadowJar)
+ca init-root --out "$work/ca"
+for label in one two; do
+  ca keygen --out "$work/$label"
+  ca issue --root-priv "$work/ca/root.priv" --root-pub "$work/ca/root.pub" \
+    --mesh "$mesh" --label "$label" --key "$work/$label.pub" --days 1 --out "$work/$label.cert.json"
+done
+printf '{"probe":"cross-language-hello"}' > "$work/message.json"
+expected="cross-language-hello"
+
+# Discover implementations from the driver directory.
+impls=""
+for d in "$here"/drivers/*.sh; do
+  impls="$impls $(basename "$d" .sh)"
+done
+echo "implementations discovered:$impls"
+
+free_port() {
+  p=34100
+  while :; do
+    if (exec 3<>/dev/tcp/127.0.0.1/$p) 2>/dev/null; then
+      exec 3>&- 3<&-
+      p=$((p + 1))
+    else
+      echo "$p"
+      return
+    fi
+  done
+}
+
+fail=0
+results=""
+
+for server in $impls; do
+  for client in $impls; do
+    port=$(free_port)
+    out="$work/received-$server-$client.txt"
+    : > "$out"
+
+    # "one" listens (responder) via the server driver.
+    "$here/drivers/$server.sh" listen --port "$port" --mesh "$mesh" \
+      --root-pub "$work/ca/root.pub" --cert "$work/one.cert.json" \
+      --id-pub "$work/one.pub" --id-priv "$work/one.priv" --out "$out" --seconds 20 &
+    server_pid=$!
+
+    # Wait for the listener to bind.
+    tries=0
+    while ! (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null; do
+      tries=$((tries + 1)); [ "$tries" -gt 100 ] && break; sleep 0.1
+    done
+    exec 3>&- 3<&- 2>/dev/null || true
+
+    # "two" connects (initiator) via the client driver and sends to "one".
+    "$here/drivers/$client.sh" connect --mesh "$mesh" \
+      --root-pub "$work/ca/root.pub" --cert "$work/two.cert.json" \
+      --id-pub "$work/two.pub" --id-priv "$work/two.priv" \
+      --host 127.0.0.1 --port "$port" --to one --message "$work/message.json" --seconds 12 \
+      >/dev/null 2>&1 || true
+
+    # Give delivery a moment, then check.
+    ok=no
+    tries=0
+    while [ "$tries" -lt 30 ]; do
+      if grep -q "$expected" "$out" 2>/dev/null; then ok=yes; break; fi
+      tries=$((tries + 1)); sleep 0.2
+    done
+
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+
+    if [ "$ok" = yes ]; then
+      results="$results\nPASS  responder=$server  initiator=$client"
+    else
+      results="$results\nFAIL  responder=$server  initiator=$client"
+      fail=1
+    fi
+  done
+done
+
+printf '%b\n' "$results"
+if [ "$fail" -ne 0 ]; then
+  echo "interop matrix: FAILURES present"
+  exit 1
+fi
+echo "interop matrix: all pairs interoperate"
