@@ -49,8 +49,36 @@ switch ($mode) {
         $node->kill();
         break;
 
+    // The multi-link mode for the convergence tier: dial several --peers
+    // (host:port,host:port), optionally log delivered payloads (--out), send
+    // toward a routed destination (--send-to with --message), and periodically
+    // dump the routing table (--routes). Stays up for --seconds.
+    case 'mesh':
+        $node = Node::start(config($f), (int) ($f['port'] ?? 0));
+        if (isset($f['out'])) {
+            $out = $f['out'];
+            $node->onMessage(function ($payload) use ($out) {
+                file_put_contents($out, json_encode($payload) . "\n", FILE_APPEND);
+            });
+        }
+        foreach (array_filter(explode(',', $f['peers'] ?? '')) as $peer) {
+            $c = strrpos($peer, ':');
+            $node->connect(substr($peer, 0, $c), (int) substr($peer, $c + 1));
+        }
+        $payload = isset($f['message']) ? json_decode(file_get_contents($f['message']), true) : null;
+        $node->serve(seconds($f), function (Node $n) use ($f, $payload) {
+            if (isset($f['send-to']) && $payload !== null) {
+                $n->send($f['send-to'], $payload);
+            }
+            if (isset($f['routes'])) {
+                file_put_contents($f['routes'], json_encode($n->routeTable()));
+            }
+        });
+        $node->kill();
+        break;
+
     default:
-        fwrite(STDERR, "usage: interop_node <keygen|listen|connect> [--flag value ...]\n");
+        fwrite(STDERR, "usage: interop_node <keygen|listen|connect|mesh> [--flag value ...]\n");
         exit(2);
 }
 

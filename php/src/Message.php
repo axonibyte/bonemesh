@@ -134,4 +134,19 @@ final class Message
     {
         return ['type' => 'echo', 'token' => $token];
     }
+
+    // A liveness probe carrying the sender's send-time timestamp (ms), echoed
+    // back so the sender can measure RTT.
+    public static function probe(int $token): array
+    {
+        return ['type' => 'probe', 'token' => $token];
+    }
+
+    // A route advertisement: destination label -> path cost in ms. The routes
+    // map is cast to an object so it encodes as {} (not []) when empty, which
+    // the other implementations parse as an object.
+    public static function disco(array $routes): array
+    {
+        return ['type' => 'disco', 'routes' => (object) $routes];
+    }
 }
