@@ -37,8 +37,18 @@ import java.util.Set;
  */
 public final class RoutingTable {
 
-  /** Sentinel path cost meaning "unreachable" (used in poisoned advertisements). */
+  /** Sentinel path cost meaning "unreachable" that this node advertises. */
   public static final long UNREACHABLE = Long.MAX_VALUE;
+
+  /**
+   * Any advertised cost at or above this is treated as unreachable on receipt.
+   * Implementations differ in the exact sentinel they emit — Java advertises
+   * {@link #UNREACHABLE} (Long.MAX_VALUE), Elixir and the JS port advertise
+   * 1_000_000_000 — so a tolerant threshold, rather than an exact match, keeps a
+   * mixed mesh converging. Real path costs (summed millisecond latencies) never
+   * approach this.
+   */
+  public static final long POISON_THRESHOLD = 1_000_000_000L;
 
   private final String selfLabel;
   private final Map<String, LatencyTracker> neighbors = new HashMap<>();
@@ -96,7 +106,7 @@ public final class RoutingTable {
     if(dest.equalsIgnoreCase(selfLabel)) return;         // never route to ourselves
     if(dest.equalsIgnoreCase(viaNeighbor)) return;       // that is just the neighbor itself
     if(!neighbors.containsKey(viaNeighbor)) return;      // only learn via known neighbors
-    if(advertisedCost == UNREACHABLE) {                  // poisoned: withdraw if we used this via
+    if(advertisedCost >= POISON_THRESHOLD) {             // poisoned: withdraw if we used this via
       Route existing = routes.get(key(dest));
       if(existing != null && existing.via.equalsIgnoreCase(viaNeighbor)) routes.remove(key(dest));
       return;

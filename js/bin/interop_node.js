@@ -14,6 +14,7 @@ switch (mode) {
   case 'keygen': keygen(); break;
   case 'listen': await listen(); break;
   case 'connect': await connect(); break;
+  case 'mesh': await mesh(); break;
   default:
     process.stderr.write('usage: interop_node <keygen|listen|connect> [--flag value ...]\n');
     process.exit(2);
@@ -55,6 +56,28 @@ async function connect() {
     await sleep(200);
   }
   await sleep(1500);
+  node.kill();
+  process.exit(0);
+}
+
+// The multi-link mode for the convergence tier: dial several --peers
+// (host:port,host:port), optionally log delivered payloads (--out), repeatedly
+// send toward a routed destination (--send-to with --message), and periodically
+// dump the routing table (--routes). Stays up for --seconds.
+async function mesh() {
+  const node = await Node.start(config(), Number(f.port || 0));
+  if (f.out) node.onMessage((payload) => fs.appendFileSync(f.out, JSON.stringify(payload) + '\n'));
+  for (const peer of (f.peers || '').split(',').filter(Boolean)) {
+    const c = peer.lastIndexOf(':');
+    await node.connect(peer.slice(0, c), Number(peer.slice(c + 1)));
+  }
+  const payload = f.message ? JSON.parse(read(f.message)) : null;
+  const deadline = Date.now() + seconds() * 1000;
+  while (Date.now() < deadline) {
+    if (f['send-to'] && payload) node.send(f['send-to'], payload);
+    if (f.routes) fs.writeFileSync(f.routes, JSON.stringify(node.routeTable()));
+    await sleep(500);
+  }
   node.kill();
   process.exit(0);
 }

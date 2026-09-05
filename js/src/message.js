@@ -93,3 +93,14 @@ export function ack(mid) {
 export function echo(token) {
   return { type: 'echo', token };
 }
+
+// A liveness probe carrying the sender's send-time timestamp (ms), echoed back
+// so the sender can measure RTT.
+export function probe(token) {
+  return { type: 'probe', token };
+}
+
+// A route advertisement: destination label -> path cost in ms.
+export function disco(routes) {
+  return { type: 'disco', routes };
+}

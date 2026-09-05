@@ -25,11 +25,11 @@ function config(root, label) {
   return { label, mesh: MESH, rootPublic: root.pubRaw, cert, idPrivate: priv };
 }
 
-const waitFor = (predicate) => new Promise((resolve, reject) => {
+const waitFor = (predicate, timeoutMs = 5000) => new Promise((resolve, reject) => {
   const started = Date.now();
   const tick = () => {
     if (predicate()) return resolve();
-    if (Date.now() - started > 5000) return reject(new Error('timeout'));
+    if (Date.now() - started > timeoutMs) return reject(new Error('timeout'));
     setTimeout(tick, 20);
   };
   tick();
@@ -59,4 +59,28 @@ test('two nodes exchange payloads over loopback', async () => {
 
   one.kill();
   two.kill();
+});
+
+test('three-node line relays across the middle hop', async () => {
+  const root = newRoot();
+  const alpha = await Node.start(config(root, 'alpha'), 0);
+  const beta = await Node.start(config(root, 'beta'), 0);
+  const gamma = await Node.start(config(root, 'gamma'), 0);
+
+  const gammaGot = [];
+  gamma.onMessage((p) => gammaGot.push(p));
+
+  // Line topology: alpha <-> beta <-> gamma; alpha and gamma never connect.
+  await alpha.connect('127.0.0.1', beta.port());
+  await gamma.connect('127.0.0.1', beta.port());
+
+  // Wait for discovery to give alpha a route to gamma (via beta), then delivery.
+  await waitFor(() => alpha.send('gamma', { m: 'relayed' }), 15000);
+  await waitFor(() => gammaGot.length > 0, 15000);
+  assert.equal(gammaGot[0].m, 'relayed');
+  assert.equal(alpha.routeTable().gamma, 'beta');
+
+  alpha.kill();
+  beta.kill();
+  gamma.kill();
 });

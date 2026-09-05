@@ -99,6 +99,24 @@ public class RoutingTest {
     assertEquals(RoutingTable.UNREACHABLE, rt.advertiseTo("beta").get("delta"));
   }
 
+  // A poisoned advert is recognized by threshold, not exact sentinel: Elixir and
+  // the JS port poison with 1_000_000_000, not Long.MAX_VALUE. Without the
+  // threshold check Java would install a bogus ~1e9-cost route and then
+  // poison-reverse the destination back, flapping the route (observed against a
+  // JS relay). It must withdraw, not install.
+  @Test void tolerantPoisonThresholdWithdrawsAndInstallsNothing() {
+    RoutingTable rt = new RoutingTable("self");
+    rt.observeNeighbor("beta", 10);
+    rt.learnRoute("delta", "beta", 5);
+    rt.learnRoute("delta", "beta", 1_000_000_000L); // Elixir/JS poison sentinel
+    assertNull(rt.nextHop("delta"), "a 1e9 poison from our next hop must withdraw the route");
+
+    RoutingTable rt2 = new RoutingTable("self");
+    rt2.observeNeighbor("beta", 10);
+    rt2.learnRoute("gamma", "beta", 1_000_000_000L); // poison for a route we don't have
+    assertNull(rt2.nextHop("gamma"), "a poison advert must never install a route");
+  }
+
   // Cost arithmetic must saturate, never overflow negative through the sentinel.
   @Test void routeCostSaturatesInsteadOfOverflowing() {
     RoutingTable rt = new RoutingTable("self");

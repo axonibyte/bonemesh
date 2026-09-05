@@ -14,6 +14,7 @@ import { Handshake } from './handshake.js';
 import { Transport } from './transport.js';
 import { classify, encode, HANDSHAKE_CAP, TRANSPORT_CAP } from './frame.js';
 import * as message from './message.js';
+import { Table, Dedup } from './routing.js';
 
 // A per-socket frame reader: buffers bytes, splits on newlines under a cap, and
 // hands complete frames either to awaiting readFrame() calls or to a push
@@ -79,6 +80,9 @@ export class Node {
     this.links = new Map();
     this.listeners = [];
     this.server = null;
+    this.table = new Table(config.label);
+    this.dedup = new Dedup(4096);
+    this.hb = null;
   }
 
   static async start(config, port) {
@@ -87,10 +91,20 @@ export class Node {
     node.server.on('error', () => {});
     node.server.listen(port);
     await once(node.server, 'listening');
+    // 1 s heartbeat: probe + per-neighbor route advertisement to each link.
+    node.hb = setInterval(() => {
+      for (const label of node.links.keys()) {
+        node.#sendToLink(label, message.probe(nowMs()));
+        node.#sendToLink(label, message.disco(node.table.advertiseTo(label)));
+      }
+    }, 1000);
     return node;
   }
 
   port() { return this.server.address().port; }
+
+  // A snapshot of learned destinations to their next hop.
+  routeTable() { return this.table.routeTable(); }
 
   // Register a callback invoked with each delivered application payload.
   onMessage(cb) { this.listeners.push(cb); }
@@ -110,11 +124,17 @@ export class Node {
   }
 
   send(to, payload) {
-    const link = this.links.get(to.toLowerCase());
-    if (!link) return false;
+    const nh = this.table.nextHop(to);
+    if (!nh) return false;
     const msg = message.data(message.newMid(), this.cfg.label, to, message.DEFAULT_TTL, payload);
+    return this.#sendToLink(nh, msg);
+  }
+
+  #sendToLink(label, inner) {
+    const link = this.links.get(label.toLowerCase());
+    if (!link) return false;
     try {
-      link.socket.write(encode(link.transport.seal(msg)));
+      link.socket.write(encode(link.transport.seal(inner)));
       return true;
     } catch {
       return false;
@@ -141,6 +161,8 @@ export class Node {
     ch.setCap(TRANSPORT_CAP);
     const link = { socket, transport };
     this.links.set(peer.toLowerCase(), link);
+    this.table.observeNeighbor(peer, 1); // optimistic seed so it is routable
+    socket.on('close', () => this.#deregister(peer, link));
     ch.onFrame((carrier) => {
       let inner;
       try {
@@ -148,21 +170,58 @@ export class Node {
       } catch {
         return;
       }
-      this.#handleInner(inner);
+      this.#handleInner(peer, inner);
     });
   }
 
-  #handleInner(msg) {
-    if (msg.type !== 'data') return;
-    for (const cb of this.listeners) {
-      try { cb(msg.payload); } catch { /* listener errors are its own */ }
+  // Withdraws a dropped link's routes, but only if it is still the current link.
+  #deregister(peer, link) {
+    const k = peer.toLowerCase();
+    if (this.links.get(k) === link) this.links.delete(k);
+    this.table.removeNeighbor(peer);
+  }
+
+  #handleInner(peer, msg) {
+    switch (msg.type) {
+      case 'probe':
+        this.#sendToLink(peer, message.echo(msg.token));
+        break;
+      case 'echo':
+        this.table.observeNeighbor(peer, Math.max(0, nowMs() - msg.token));
+        break;
+      case 'disco':
+        if (msg.routes) {
+          for (const [dest, cost] of Object.entries(msg.routes)) this.table.learnRoute(dest, peer, cost);
+        }
+        break;
+      case 'data':
+        this.#handleData(msg);
+        break;
     }
   }
 
+  #handleData(msg) {
+    const chunkIdx = msg.chunk && typeof msg.chunk.i === 'number' ? msg.chunk.i : -1;
+    if (this.dedup.sawBefore(`${msg.mid}:${chunkIdx}`)) return;
+    if (String(msg.to || '').toLowerCase() === this.cfg.label.toLowerCase()) {
+      for (const cb of this.listeners) {
+        try { cb(msg.payload); } catch { /* listener errors are its own */ }
+      }
+      return;
+    }
+    const ttl = (msg.ttl | 0) - 1;
+    if (ttl <= 0) return; // DROP_TTL, silently
+    const nh = this.table.nextHop(msg.to);
+    if (!nh) return; // UNREACHABLE, silently
+    this.#sendToLink(nh, { ...msg, ttl });
+  }
+
   kill() {
+    if (this.hb) clearInterval(this.hb);
     if (this.server) this.server.close();
     for (const link of this.links.values()) link.socket.destroy();
   }
 }
 
 function now() { return Math.floor(Date.now() / 1000); }
+function nowMs() { return Date.now(); }
