@@ -13,6 +13,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/axonibyte/bonemesh/gonode/frame"
@@ -37,11 +38,24 @@ type link struct {
 	conn      net.Conn
 	transport *transport.Transport
 	mu        sync.Mutex
+	// initiator records whether this node dialed the connection this link
+	// runs over (protocol.md §3: the simultaneous-dial tiebreak needs to
+	// know who initiated each competing session).
+	initiator bool
+	// establishedAt is when the handshake completed, in unix millis.
+	establishedAt int64
+	// lastInbound is the unix-millis time of the last successfully opened
+	// inbound frame — any authenticated frame proves the peer is alive.
+	lastInbound atomic.Int64
+	// lastData is the unix-millis time of the last data frame sent over or
+	// received on this link (probe/echo/disco never count as activity).
+	lastData atomic.Int64
 }
 
 // Node is a running mesh node.
 type Node struct {
 	cfg       Config
+	tun       tunables
 	listener  net.Listener
 	links     map[string]*link
 	mu        sync.Mutex
@@ -59,6 +73,7 @@ func Start(cfg Config, port int) (*Node, error) {
 	}
 	n := &Node{
 		cfg:      cfg,
+		tun:      loadTunables(),
 		listener: l,
 		links:    make(map[string]*link),
 		table:    routing.NewTable(cfg.Label),
@@ -108,7 +123,7 @@ func (n *Node) Connect(host string, port int) (string, error) {
 		return "", err
 	}
 	peer, _ := hs.SessionResult().PeerCert["label"].(string)
-	n.register(peer, conn, r, transport.New(hs.SessionResult()))
+	n.register(peer, conn, r, transport.New(hs.SessionResult()), true)
 	return peer, nil
 }
 
@@ -159,14 +174,24 @@ func (n *Node) respond(conn net.Conn) {
 		return
 	}
 	peer, _ := hs.SessionResult().PeerCert["label"].(string)
-	n.register(peer, conn, r, transport.New(hs.SessionResult()))
+	n.register(peer, conn, r, transport.New(hs.SessionResult()), false)
 }
 
-func (n *Node) register(peer string, conn net.Conn, r *bufio.Reader, t *transport.Transport) {
-	lk := &link{conn: conn, transport: t}
+func (n *Node) register(peer string, conn net.Conn, r *bufio.Reader, t *transport.Transport, initiator bool) {
+	now := nowMillis()
+	lk := &link{conn: conn, transport: t, initiator: initiator, establishedAt: now}
+	lk.lastInbound.Store(now)
+	lk.lastData.Store(now)
 	n.mu.Lock()
+	prev := n.links[lower(peer)]
 	n.links[lower(peer)] = lk
 	n.mu.Unlock()
+	if prev != nil && prev != lk {
+		// A reconnect displaced an existing link: close it so its socket and
+		// reader goroutine do not linger. Its deregister is identity-guarded,
+		// so its death cannot withdraw this new link's routes.
+		prev.conn.Close()
+	}
 	n.table.ObserveNeighbor(peer, 1) // optimistic seed so it is immediately routable
 	go n.readLoop(peer, r, lk)
 }
@@ -184,20 +209,28 @@ func (n *Node) readLoop(peer string, r *bufio.Reader, lk *link) {
 		if err != nil {
 			continue
 		}
+		lk.lastInbound.Store(nowMillis())
+		if inner["type"] == "data" {
+			lk.lastData.Store(nowMillis())
+		}
 		n.handleInner(peer, inner)
 	}
 }
 
 // deregister removes a dropped link and withdraws routes through it — but only
-// if this is still the current link for peer (a reconnect may have replaced it).
+// if this is still the current link for peer (a reconnect may have replaced it,
+// in which case the stale link's death must not withdraw the live link's routes).
 func (n *Node) deregister(peer string, lk *link) {
 	lk.conn.Close()
 	n.mu.Lock()
-	if n.links[lower(peer)] == lk {
+	wasCurrent := n.links[lower(peer)] == lk
+	if wasCurrent {
 		delete(n.links, lower(peer))
 	}
 	n.mu.Unlock()
-	n.table.RemoveNeighbor(peer)
+	if wasCurrent {
+		n.table.RemoveNeighbor(peer)
+	}
 }
 
 func (n *Node) heartbeatLoop() {
@@ -292,6 +325,9 @@ func (n *Node) sendToLink(label string, inner map[string]any) bool {
 	n.mu.Unlock()
 	if lk == nil {
 		return false
+	}
+	if inner["type"] == "data" {
+		lk.lastData.Store(nowMillis())
 	}
 	lk.mu.Lock()
 	defer lk.mu.Unlock()

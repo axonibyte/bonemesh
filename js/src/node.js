@@ -1,9 +1,10 @@
-// A BoneMesh v3 mesh node (protocol.md §3) over TCP: one authenticated,
-// encrypted session per neighbor, each served by an async frame reader, with
-// application payloads delivered to registered listeners. Wire-compatible with
-// the Java, Elixir, Rust, and Go implementations. Does direct neighbor delivery,
-// which is what two-party interop needs; relay/discovery/heartbeat are shared
-// parity work tracked elsewhere.
+// A BoneMesh v3 mesh node (protocol.md §3, §5) over TCP: one authenticated,
+// encrypted session per neighbor, each served by an async frame reader. It
+// routes — distance-vector discovery over a 1 s heartbeat (probe/echo for link
+// latency, disco for route advertisement with poisoned reverse), relays data
+// toward a next hop with TTL, and delivers payloads addressed to itself,
+// deduping by message id. Wire-compatible with the Java, Elixir, Rust, Go, and
+// PHP implementations.
 //
 // Node.js is single-threaded and event-driven, so there is no shared-state race
 // to guard (contrast the Java node's synchronized routing tables): each link's
@@ -15,6 +16,7 @@ import { Transport } from './transport.js';
 import { classify, encode, HANDSHAKE_CAP, TRANSPORT_CAP } from './frame.js';
 import * as message from './message.js';
 import { Table, Dedup } from './routing.js';
+import { loadTunables } from './tunables.js';
 
 // A per-socket frame reader: buffers bytes, splits on newlines under a cap, and
 // hands complete frames either to awaiting readFrame() calls or to a push
@@ -77,6 +79,7 @@ export class Node {
   // config = { label, mesh, rootPublic, cert, idPrivate }
   constructor(config) {
     this.cfg = config;
+    this.tun = loadTunables();
     this.links = new Map();
     this.listeners = [];
     this.server = null;
@@ -119,7 +122,7 @@ export class Node {
     const m2 = await ch.readFrame();
     socket.write(hs.readMessage2WriteMessage3(m2));
     const peer = hs.session.peerCert.label;
-    this.#register(peer, socket, ch, new Transport(hs.session));
+    this.#register(peer, socket, ch, new Transport(hs.session), true);
     return peer;
   }
 
@@ -133,6 +136,7 @@ export class Node {
   #sendToLink(label, inner) {
     const link = this.links.get(label.toLowerCase());
     if (!link) return false;
+    if (inner.type === 'data') link.lastData = nowMs();
     try {
       link.socket.write(encode(link.transport.seal(inner)));
       return true;
@@ -154,13 +158,25 @@ export class Node {
       socket.destroy();
       return;
     }
-    this.#register(hs.session.peerCert.label, socket, ch, new Transport(hs.session));
+    this.#register(hs.session.peerCert.label, socket, ch, new Transport(hs.session), false);
   }
 
-  #register(peer, socket, ch, transport) {
+  #register(peer, socket, ch, transport, initiator) {
     ch.setCap(TRANSPORT_CAP);
-    const link = { socket, transport };
+    const now = nowMs();
+    // initiator: whether this node dialed the connection (protocol.md §3 —
+    // the simultaneous-dial tiebreak needs to know who initiated each
+    // competing session). lastInbound/lastData feed liveness and idle checks;
+    // probe/echo/disco never count as data activity.
+    const link = { socket, ch, transport, initiator, establishedAt: now, lastInbound: now, lastData: now };
+    const displaced = this.links.get(peer.toLowerCase());
     this.links.set(peer.toLowerCase(), link);
+    if (displaced && displaced !== link) {
+      // A reconnect displaced an existing link: close it so its socket does
+      // not linger. Its deregister is identity-guarded, so its death cannot
+      // withdraw this new link's routes.
+      displaced.socket.destroy();
+    }
     this.table.observeNeighbor(peer, 1); // optimistic seed so it is routable
     socket.on('close', () => this.#deregister(peer, link));
     ch.onFrame((carrier) => {
@@ -170,15 +186,21 @@ export class Node {
       } catch {
         return;
       }
+      link.lastInbound = nowMs();
+      if (inner.type === 'data') link.lastData = nowMs();
       this.#handleInner(peer, inner);
     });
   }
 
-  // Withdraws a dropped link's routes, but only if it is still the current link.
+  // Withdraws a dropped link's routes, but only if it is still the current
+  // link — a reconnect may have replaced it, and the stale link's death must
+  // not withdraw the live link's routes.
   #deregister(peer, link) {
     const k = peer.toLowerCase();
-    if (this.links.get(k) === link) this.links.delete(k);
-    this.table.removeNeighbor(peer);
+    if (this.links.get(k) === link) {
+      this.links.delete(k);
+      this.table.removeNeighbor(peer);
+    }
   }
 
   #handleInner(peer, msg) {

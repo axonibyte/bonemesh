@@ -61,7 +61,11 @@ defmodule Bonemesh.Node do
       id_private: Keyword.fetch!(opts, :id_private),
       listen: listen,
       port: port,
+      tun: load_tunables(),
       routing: Routing.new(label),
+      # links: downcased label => %{pid, initiator, established_at,
+      # last_inbound, last_data} (protocol.md §3 — the tiebreak/liveness/idle
+      # features need who initiated each link and when it last carried traffic).
       links: %{},
       dedup: {MapSet.new(), :queue.new()},
       reassembler: %{},
@@ -96,26 +100,63 @@ defmodule Bonemesh.Node do
   def handle_call({:send, to, payload}, _from, s) do
     mid = Message.new_mid()
     msgs = Message.split(mid, s.label, to, Message.default_ttl(), payload)
-    {ok, s} = Enum.reduce(msgs, {true, s}, fn m, {acc, st} -> {forward(st, m) and acc, st} end)
+
+    {ok, s} =
+      Enum.reduce(msgs, {true, s}, fn m, {acc, st} ->
+        {sent, st} = forward(st, m)
+        {sent and acc, st}
+      end)
+
     {:reply, ok, s}
   end
 
   @impl true
   def handle_cast({:add_listener, pid}, s), do: {:noreply, %{s | listeners: [pid | s.listeners]}}
 
-  def handle_cast({:link_up, peer, pid}, s), do: {:noreply, register_link_pid(s, peer, pid)}
+  def handle_cast({:link_up, peer, pid}, s), do: {:noreply, register_link_pid(s, peer, pid, false)}
 
-  def handle_cast({:inbound, peer, inner}, s), do: {:noreply, handle_inner(s, peer, inner)}
+  # An inbound frame proves the peer alive; stamp the link's liveness clock
+  # (and its data clock if it was a data frame) — but only if the frame came
+  # from the link that is currently registered for this peer.
+  def handle_cast({:inbound, peer, pid, inner}, s) do
+    key = String.downcase(peer)
+    now = System.system_time(:millisecond)
 
-  def handle_cast({:link_down, peer}, s) do
-    {:noreply, %{s | links: Map.delete(s.links, peer), routing: Routing.remove_neighbor(s.routing, peer)}}
+    s =
+      case s.links[key] do
+        %{pid: ^pid} = e ->
+          e = %{e | last_inbound: now}
+          e = if inner["type"] == "data", do: %{e | last_data: now}, else: e
+          %{s | links: Map.put(s.links, key, e)}
+
+        _ ->
+          s
+      end
+
+    {:noreply, handle_inner(s, peer, inner)}
+  end
+
+  # Withdraw routes on a link's death only if it is still the current link for
+  # its peer — a reconnect may have replaced it, and a stale link's death must
+  # not withdraw the live link's routes.
+  def handle_cast({:link_down, peer, pid}, s) do
+    key = String.downcase(peer)
+
+    case s.links[key] do
+      %{pid: ^pid} ->
+        {:noreply,
+         %{s | links: Map.delete(s.links, key), routing: Routing.remove_neighbor(s.routing, peer)}}
+
+      _ ->
+        {:noreply, s}
+    end
   end
 
   @impl true
   def handle_info(:heartbeat, s) do
     now = System.system_time(:millisecond)
 
-    for {label, pid} <- s.links do
+    for {label, %{pid: pid}} <- s.links do
       Kernel.send(pid, {:send, Message.probe(now)})
       Kernel.send(pid, {:send, Message.disco(Routing.advertise_to(s.routing, label))})
     end
@@ -170,28 +211,47 @@ defmodule Bonemesh.Node do
       end
     else
       ttl = m["ttl"] - 1
-      if ttl > 0, do: forward(s, Map.put(m, "ttl", ttl)), else: false
-      s
+
+      if ttl > 0 do
+        {_sent, s} = forward(s, Map.put(m, "ttl", ttl))
+        s
+      else
+        s
+      end
     end
   end
 
+  # Returns {routed?, state}: state may change because sending a data frame
+  # stamps the destination link's data-activity clock (for idle teardown).
   defp forward(s, m) do
     case Routing.next_hop(s.routing, m["to"]) do
-      nil -> false
+      nil -> {false, s}
       next -> send_to_link(s, next, m)
     end
   end
 
   defp send_to_link(s, label, inner) do
-    case s.links[String.downcase(label)] do
-      nil -> false
-      pid -> Kernel.send(pid, {:send, inner}) && true
+    key = String.downcase(label)
+
+    case s.links[key] do
+      nil ->
+        {false, s}
+
+      %{pid: pid} = e ->
+        Kernel.send(pid, {:send, inner})
+
+        s =
+          if inner["type"] == "data",
+            do: %{s | links: Map.put(s.links, key, %{e | last_data: System.system_time(:millisecond)})},
+            else: s
+
+        {true, s}
     end
   end
 
   defp register_link(s, peer, socket, session) do
     pid = start_link_process(self(), peer, socket, Transport.session(session))
-    register_link_pid(s, peer, pid)
+    register_link_pid(s, peer, pid, true)
   end
 
   # Spawns a link process, transfers socket ownership to it, and releases it.
@@ -211,9 +271,26 @@ defmodule Bonemesh.Node do
     pid
   end
 
-  defp register_link_pid(s, peer, pid) do
+  defp register_link_pid(s, peer, pid, initiator) do
     key = String.downcase(peer)
-    %{s | links: Map.put(s.links, key, pid), routing: Routing.observe_neighbor(s.routing, peer, 1)}
+    now = System.system_time(:millisecond)
+    # A reconnect displaces an existing link: tell the old link process to close
+    # so its socket does not linger. Its {:link_down} is pid-guarded, so its
+    # death cannot withdraw this new link's routes.
+    case s.links[key] do
+      %{pid: old} when old != pid -> Kernel.send(old, :close)
+      _ -> :ok
+    end
+
+    entry = %{
+      pid: pid,
+      initiator: initiator,
+      established_at: now,
+      last_inbound: now,
+      last_data: now
+    }
+
+    %{s | links: Map.put(s.links, key, entry), routing: Routing.observe_neighbor(s.routing, peer, 1)}
   end
 
   # A neighbor link: owns the socket + transport session, relays inbound inner
@@ -221,18 +298,20 @@ defmodule Bonemesh.Node do
   defp link_loop(node, peer, socket, session) do
     receive do
       {:tcp, ^socket, line} ->
-        session =
-          case Transport.open(session, JSON.decode!(String.trim(line))) do
-            {:ok, inner, session} ->
-              GenServer.cast(node, {:inbound, peer, inner})
-              session
+        case safe_open(session, line) do
+          {:ok, inner, session} ->
+            GenServer.cast(node, {:inbound, peer, self(), inner})
+            :inet.setopts(socket, active: :once)
+            link_loop(node, peer, socket, session)
 
-            {:error, _reason} ->
-              session
-          end
-
-        :inet.setopts(socket, active: :once)
-        link_loop(node, peer, socket, session)
+          :error ->
+            # A frame that violates the transport expectation (bad JSON or a
+            # seq desync) closes the connection loudly rather than being
+            # swallowed — a swallowed error would wedge the link forever
+            # (protocol.md §2). The node re-dials on demand.
+            :gen_tcp.close(socket)
+            GenServer.cast(node, {:link_down, peer, self()})
+        end
 
       {:send, inner} ->
         {carrier, session} = Transport.seal(session, inner)
@@ -240,10 +319,30 @@ defmodule Bonemesh.Node do
         link_loop(node, peer, socket, session)
 
       {:tcp_closed, ^socket} ->
-        GenServer.cast(node, {:link_down, peer})
+        GenServer.cast(node, {:link_down, peer, self()})
+
+      :close ->
+        # Displaced by a reconnect: shut down without withdrawing routes (the
+        # node has already handed the peer to the new link).
+        :gen_tcp.close(socket)
 
       _ ->
         link_loop(node, peer, socket, session)
+    end
+  end
+
+  # Opens a transport frame, converting a malformed line or a transport error
+  # into a single :error the caller acts on.
+  defp safe_open(session, line) do
+    case JSON.decode(String.trim(line)) do
+      {:ok, carrier} ->
+        case Transport.open(session, carrier) do
+          {:ok, inner, session} -> {:ok, inner, session}
+          {:error, _reason} -> :error
+        end
+
+      {:error, _reason} ->
+        :error
     end
   end
 
@@ -324,4 +423,33 @@ defmodule Bonemesh.Node do
   # frame (post-quantum bmx2 runs ~20 KB, transport frames up to 64 KiB).
   defp tcp_opts,
     do: [:binary, {:packet, :line}, {:active, false}, {:packet_size, 200_000}, {:buffer, 200_000}]
+
+  # Operational knobs (protocol.md §0): local behavior, never part of the wire
+  # contract, read once from the environment at node start. Two nodes with
+  # different values still interoperate.
+  defp load_tunables do
+    %{
+      probe_timeout_ms: env_int("BONEMESH_PROBE_TIMEOUT_MS", 15_000),
+      idle_ms: env_int("BONEMESH_IDLE_MS", 0),
+      retry_base_ms: env_int("BONEMESH_RETRY_BASE_MS", 500),
+      retry_cap_ms: env_int("BONEMESH_RETRY_CAP_MS", 30_000),
+      retry_max_ms: env_int("BONEMESH_RETRY_MAX_MS", 60_000),
+      rekey_ms: env_int("BONEMESH_REKEY_MS", 3_600_000),
+      rekey_frames: env_int("BONEMESH_REKEY_FRAMES", 65_536),
+      rekey_timeout_ms: env_int("BONEMESH_REKEY_TIMEOUT_MS", 10_000),
+      keylog_path: System.get_env("BONEMESH_KEYLOG", "")
+    }
+  end
+
+  defp env_int(name, fallback) do
+    case System.get_env(name) do
+      nil -> fallback
+      "" -> fallback
+      v ->
+        case Integer.parse(v) do
+          {n, ""} -> n
+          _ -> fallback
+        end
+    end
+  end
 end

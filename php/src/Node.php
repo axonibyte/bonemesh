@@ -1,12 +1,12 @@
 <?php
 namespace Bonemesh;
 
-// A BoneMesh v3 mesh node (protocol.md §3) over TCP: one authenticated,
-// encrypted session per neighbor, with application payloads delivered to
-// registered listeners. Wire-compatible with the Java, Elixir, Rust, Go, and JS
-// implementations. Does direct neighbor delivery, which is what two-party
-// interop needs; relay/discovery/heartbeat are shared parity work tracked
-// elsewhere.
+// A BoneMesh v3 mesh node (protocol.md §3, §5) over TCP: one authenticated,
+// encrypted session per neighbor. It routes — distance-vector discovery over a
+// 1 s heartbeat (probe/echo for link latency, disco for route advertisement
+// with poisoned reverse), relays data toward a next hop with TTL, and delivers
+// payloads addressed to itself, deduping by message id. Wire-compatible with
+// the Java, Elixir, Rust, Go, and JS implementations.
 //
 // PHP is synchronous, so incoming connections are driven by a stream_select
 // loop (serve); the initiator side completes its handshake with blocking reads
@@ -24,12 +24,14 @@ final class Node
     private array $listeners = [];
     private RoutingTable $table;
     private Dedup $dedup;
+    private array $tun;
     private float $lastHeartbeat = 0.0;
 
     public function __construct(private array $cfg)
     {
         $this->table = new RoutingTable($cfg['label']);
         $this->dedup = new Dedup(4096);
+        $this->tun = Tunables::load();
     }
 
     // A snapshot of learned destinations to their next hop.
@@ -76,9 +78,29 @@ final class Node
         stream_set_blocking($sock, false);
         $id = (int) $sock;
         $this->conns[$id] = ['sock' => $sock, 'buf' => '', 'phase' => 'established', 'transport' => new Transport($sess), 'peer' => $peer];
-        $this->links[strtolower($peer)] = $id;
-        $this->table->observeNeighbor($peer, 1); // optimistic seed
+        $this->registerLink($id, $peer, true);
         return $peer;
+    }
+
+    // Records a newly-established link (protocol.md §3): stamps who initiated
+    // the connection and the liveness/idle clocks, closes any link this one
+    // displaces (a reconnect), and seeds the neighbor as routable. Closing the
+    // displaced conn is safe because closeConn withdraws routes only when the
+    // links entry still points at the closing id, so it cannot clobber this one.
+    private function registerLink(int $id, string $peer, bool $initiator): void
+    {
+        $now = self::nowMs();
+        $this->conns[$id]['initiator'] = $initiator;
+        $this->conns[$id]['establishedAt'] = $now;
+        $this->conns[$id]['lastInbound'] = $now;
+        $this->conns[$id]['lastData'] = $now;
+        $prev = $this->links[strtolower($peer)] ?? null;
+        $this->links[strtolower($peer)] = $id;
+        if ($prev !== null && $prev !== $id && isset($this->conns[$prev])) {
+            @fclose($this->conns[$prev]['sock']);
+            unset($this->conns[$prev]);
+        }
+        $this->table->observeNeighbor($peer, 1); // optimistic seed
     }
 
     // Routes an application payload toward any reachable destination.
@@ -97,6 +119,9 @@ final class Node
         $id = $this->links[strtolower($label)] ?? null;
         if ($id === null || !isset($this->conns[$id])) {
             return false;
+        }
+        if (($inner['type'] ?? null) === 'data') {
+            $this->conns[$id]['lastData'] = self::nowMs();
         }
         $frame = Frame::encode($this->conns[$id]['transport']->seal($inner));
         return @fwrite($this->conns[$id]['sock'], $frame) !== false;
@@ -213,7 +238,9 @@ final class Node
         }
     }
 
-    // Closes a connection and withdraws routes through it (if it was a neighbor).
+    // Closes a connection and withdraws routes through it — but only if this
+    // conn is still the current link for its peer. A reconnect may have replaced
+    // it, and a stale conn's death must not withdraw the live link's routes.
     private function closeConn(int $id): void
     {
         if (!isset($this->conns[$id])) {
@@ -222,10 +249,8 @@ final class Node
         $peer = $this->conns[$id]['peer'] ?? null;
         @fclose($this->conns[$id]['sock']);
         unset($this->conns[$id]);
-        if ($peer !== null) {
-            if (($this->links[strtolower($peer)] ?? null) === $id) {
-                unset($this->links[strtolower($peer)]);
-            }
+        if ($peer !== null && ($this->links[strtolower($peer)] ?? null) === $id) {
+            unset($this->links[strtolower($peer)]);
             $this->table->removeNeighbor($peer);
         }
     }
@@ -247,11 +272,14 @@ final class Node
                 $this->conns[$id]['transport'] = new Transport($sess);
                 $this->conns[$id]['phase'] = 'established';
                 $this->conns[$id]['peer'] = $peer;
-                $this->links[strtolower($peer)] = $id;
-                $this->table->observeNeighbor($peer, 1);
+                $this->registerLink($id, $peer, false);
                 break;
             case 'established':
                 $inner = $this->conns[$id]['transport']->open($obj);
+                $this->conns[$id]['lastInbound'] = self::nowMs();
+                if (($inner['type'] ?? null) === 'data') {
+                    $this->conns[$id]['lastData'] = self::nowMs();
+                }
                 $this->handleInner($id, $this->conns[$id]['peer'], $inner);
                 break;
         }

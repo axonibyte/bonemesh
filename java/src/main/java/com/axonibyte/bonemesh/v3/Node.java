@@ -63,6 +63,7 @@ public final class Node {
   private final Signer identity;
   private final SecureRandom rng = new SecureRandom();
 
+  private final Tunables tunables = Tunables.load();
   private final RoutingTable routing;
   private final Router router;
   private final Dedup dedup = new Dedup(4096);
@@ -169,7 +170,7 @@ public final class Node {
     writeRaw(out, hs.readMessage2WriteMessage3(m2));
 
     String peer = hs.session().peerCertificate().label();
-    PeerLink link = new PeerLink(peer, socket, new TransportSession(hs.session()));
+    PeerLink link = new PeerLink(peer, socket, new TransportSession(hs.session()), true);
     registerLink(peer, link);
     Thread reader = new Thread(link::readLoop, "bonemesh-read-" + label + "-" + peer);
     reader.setDaemon(true);
@@ -255,7 +256,7 @@ public final class Node {
       hs.readMessage3(m3);
 
       String peer = hs.session().peerCertificate().label();
-      PeerLink link = new PeerLink(peer, socket, new TransportSession(hs.session()));
+      PeerLink link = new PeerLink(peer, socket, new TransportSession(hs.session()), false);
       registerLink(peer, link);
       link.readLoop();
     } catch(Exception e) {
@@ -353,17 +354,36 @@ public final class Node {
     private final TransportSession session;
     private final InputStream in;
     private final OutputStream out;
+    // Whether this node dialed the connection this link runs over (protocol.md
+    // §3: the simultaneous-dial tiebreak needs to know who initiated each
+    // competing session).
+    private final boolean initiator;
+    // When the handshake completed.
+    private final long establishedAtMillis;
+    // The last successfully opened inbound frame — any authenticated frame
+    // proves the peer is alive.
+    private volatile long lastInboundMillis;
+    // The last data frame sent over or received on this link; probe/echo/disco
+    // never count as activity.
+    private volatile long lastDataMillis;
 
-    PeerLink(String peer, Socket socket, TransportSession session) throws IOException {
+    PeerLink(String peer, Socket socket, TransportSession session, boolean initiator)
+        throws IOException {
       this.peer = peer;
       this.socket = socket;
       this.session = session;
       this.in = socket.getInputStream();
       this.out = socket.getOutputStream();
+      this.initiator = initiator;
+      long now = System.currentTimeMillis();
+      this.establishedAtMillis = now;
+      this.lastInboundMillis = now;
+      this.lastDataMillis = now;
     }
 
     synchronized void send(JSONObject inner) {
       try {
+        if("data".equals(inner.optString("type", ""))) lastDataMillis = System.currentTimeMillis();
         FrameCodec.writeFrame(out, session.seal(inner), FrameCodec.TRANSPORT_CAP);
       } catch(Exception e) {
         close();
@@ -375,6 +395,8 @@ public final class Node {
         while(running && !socket.isClosed()) {
           JSONObject carrier = FrameCodec.readFrame(in, FrameCodec.TRANSPORT_CAP);
           JSONObject inner = session.open(carrier);
+          lastInboundMillis = System.currentTimeMillis();
+          if("data".equals(inner.optString("type", ""))) lastDataMillis = System.currentTimeMillis();
           handleInner(peer, inner);
         }
       } catch(Exception e) {
@@ -382,9 +404,13 @@ public final class Node {
       }
     }
 
+    // Closes the link and withdraws its routes — but the route withdrawal only
+    // fires if this link is still the registered one for peer. A reconnect may
+    // have displaced it, and a stale link's death must not withdraw the live
+    // link's routes.
     void close() {
-      links.remove(key(peer), this);
-      routing.removeNeighbor(peer);
+      boolean wasCurrent = links.remove(key(peer), this);
+      if(wasCurrent) routing.removeNeighbor(peer);
       closeQuietly(socket);
     }
   }

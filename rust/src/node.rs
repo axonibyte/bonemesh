@@ -1,11 +1,10 @@
-//! A BoneMesh v3 mesh node (protocol.md §3) over std TCP: one authenticated,
-//! encrypted session per neighbor, each owned by a reader thread, with
-//! application payloads delivered to registered listeners. Wire-compatible with
-//! the Java, Elixir, and Go implementations.
-//!
-//! This node does direct neighbor delivery (sufficient for two-party
-//! interop and the matrix); distance-vector relay, discovery, and chunking are
-//! shared with the other implementations and tracked as follow-up parity work.
+//! A BoneMesh v3 mesh node (protocol.md §3, §5) over std TCP: one
+//! authenticated, encrypted session per neighbor, each owned by a reader
+//! thread. It routes — distance-vector discovery over a 1 s heartbeat
+//! (probe/echo for link latency, disco for route advertisement with poisoned
+//! reverse), relays data toward a next hop with TTL, and delivers payloads
+//! addressed to itself, deduping by message id. Wire-compatible with the
+//! Java, Elixir, Go, JS, and PHP implementations.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -36,15 +35,63 @@ pub struct Config {
 struct Link {
     write: TcpStream,
     transport: Transport,
+    /// Whether this node dialed the connection this link runs over
+    /// (protocol.md §3: the simultaneous-dial tiebreak needs to know who
+    /// initiated each competing session).
+    initiator: bool,
+    /// When the handshake completed, in unix millis.
+    established_at: i64,
+    /// Unix-millis time of the last successfully opened inbound frame —
+    /// any authenticated frame proves the peer is alive.
+    last_inbound: i64,
+    /// Unix-millis time of the last data frame sent over or received on this
+    /// link (probe/echo/disco never count as activity).
+    last_data: i64,
 }
 
 struct Inner {
     config: Config,
+    tun: Tunables,
     links: Mutex<HashMap<String, Arc<Mutex<Link>>>>,
     listeners: Mutex<Vec<Sender<Value>>>,
     table: Mutex<routing::Table>,
     dedup: Mutex<routing::Dedup>,
     stop: AtomicBool,
+}
+
+/// Operational knobs (protocol.md §0): local behavior, never part of the wire
+/// contract, read once from the environment at node start.
+struct Tunables {
+    probe_timeout_ms: i64,
+    idle_ms: i64,
+    retry_base_ms: i64,
+    retry_cap_ms: i64,
+    retry_max_ms: i64,
+    rekey_ms: i64,
+    rekey_frames: i64,
+    rekey_timeout_ms: i64,
+    keylog_path: String,
+}
+
+fn load_tunables() -> Tunables {
+    Tunables {
+        probe_timeout_ms: env_i64("BONEMESH_PROBE_TIMEOUT_MS", 15000),
+        idle_ms: env_i64("BONEMESH_IDLE_MS", 0),
+        retry_base_ms: env_i64("BONEMESH_RETRY_BASE_MS", 500),
+        retry_cap_ms: env_i64("BONEMESH_RETRY_CAP_MS", 30000),
+        retry_max_ms: env_i64("BONEMESH_RETRY_MAX_MS", 60000),
+        rekey_ms: env_i64("BONEMESH_REKEY_MS", 3600000),
+        rekey_frames: env_i64("BONEMESH_REKEY_FRAMES", 65536),
+        rekey_timeout_ms: env_i64("BONEMESH_REKEY_TIMEOUT_MS", 10000),
+        keylog_path: std::env::var("BONEMESH_KEYLOG").unwrap_or_default(),
+    }
+}
+
+fn env_i64(name: &str, fallback: i64) -> i64 {
+    match std::env::var(name) {
+        Ok(v) => v.parse().unwrap_or(fallback),
+        Err(_) => fallback,
+    }
 }
 
 /// A running node.
@@ -61,6 +108,7 @@ impl Node {
         let label = config.label.clone();
         let inner = Arc::new(Inner {
             config,
+            tun: load_tunables(),
             links: Mutex::new(HashMap::new()),
             listeners: Mutex::new(Vec::new()),
             table: Mutex::new(routing::Table::new(&label)),
@@ -116,7 +164,10 @@ impl Node {
         write.flush().ok();
 
         let peer = hs.session().peer_cert["label"].as_str().unwrap_or("").to_string();
-        register(&self.inner, &peer, write, reader, Transport::new(hs.session()));
+        // Handshake done: drop the dial read-timeout so it cannot masquerade
+        // as a liveness timer; liveness is the probe-timeout's job.
+        write.set_read_timeout(None).ok();
+        register(&self.inner, &peer, write, reader, Transport::new(hs.session()), true);
         Ok(peer)
     }
 
@@ -158,14 +209,40 @@ fn respond(inner: &Arc<Inner>, stream: TcpStream) -> Result<(), String> {
     hs.read_message3(&m3)?;
 
     let peer = hs.session().peer_cert["label"].as_str().unwrap_or("").to_string();
-    register(inner, &peer, write, reader, Transport::new(hs.session()));
+    // Handshake done: drop the accept read-timeout so it cannot masquerade
+    // as a liveness timer; liveness is the probe-timeout's job.
+    write.set_read_timeout(None).ok();
+    register(inner, &peer, write, reader, Transport::new(hs.session()), false);
     Ok(())
 }
 
-// Registers a link and spawns its reader thread.
-fn register(inner: &Arc<Inner>, peer: &str, write: TcpStream, reader: BufReader<TcpStream>, transport: Transport) {
-    let link = Arc::new(Mutex::new(Link { write, transport }));
-    inner.links.lock().unwrap().insert(peer.to_lowercase(), link.clone());
+// Registers a link and spawns its reader thread. A displaced link (reconnect)
+// is closed so its socket and reader thread do not linger; its deregister is
+// identity-guarded, so its death cannot withdraw the new link's routes.
+fn register(
+    inner: &Arc<Inner>,
+    peer: &str,
+    write: TcpStream,
+    reader: BufReader<TcpStream>,
+    transport: Transport,
+    initiator: bool,
+) {
+    let now = now_millis();
+    let link = Arc::new(Mutex::new(Link {
+        write,
+        transport,
+        initiator,
+        established_at: now,
+        last_inbound: now,
+        last_data: now,
+    }));
+    let displaced = inner.links.lock().unwrap().insert(peer.to_lowercase(), link.clone());
+    if let Some(old) = displaced {
+        if !Arc::ptr_eq(&old, &link) {
+            let l = old.lock().unwrap();
+            l.write.shutdown(std::net::Shutdown::Both).ok();
+        }
+    }
     inner.table.lock().unwrap().observe_neighbor(peer, 1); // optimistic seed
 
     let inner = inner.clone();
@@ -192,7 +269,13 @@ fn read_loop(inner: Arc<Inner>, peer: String, mut reader: BufReader<TcpStream>, 
         let inner_msg = {
             let mut l = link.lock().unwrap();
             match l.transport.open(&carrier) {
-                Ok(v) => v,
+                Ok(v) => {
+                    l.last_inbound = now_millis();
+                    if v["type"] == "data" {
+                        l.last_data = now_millis();
+                    }
+                    v
+                }
                 Err(_) => continue,
             }
         };
@@ -254,18 +337,24 @@ fn handle_data(inner: &Arc<Inner>, msg: Value) {
     }
 }
 
-// Withdraws a dropped link's routes, but only if it is still the current link.
+// Withdraws a dropped link's routes, but only if it is still the current link —
+// a reconnect may have replaced it, and the stale link's death must not
+// withdraw the live link's routes.
 fn deregister(inner: &Arc<Inner>, peer: &str, link: &Arc<Mutex<Link>>) {
     let key = peer.to_lowercase();
-    {
+    let was_current = {
         let mut links = inner.links.lock().unwrap();
-        if let Some(cur) = links.get(&key) {
-            if Arc::ptr_eq(cur, link) {
+        match links.get(&key) {
+            Some(cur) if Arc::ptr_eq(cur, link) => {
                 links.remove(&key);
+                true
             }
+            _ => false,
         }
+    };
+    if was_current {
+        inner.table.lock().unwrap().remove_neighbor(peer);
     }
-    inner.table.lock().unwrap().remove_neighbor(peer);
 }
 
 fn heartbeat(inner: Arc<Inner>) {
@@ -296,6 +385,9 @@ fn send_to_link(inner: &Arc<Inner>, label: &str, inner_msg: &Value) -> bool {
         None => false,
         Some(link) => {
             let mut l = link.lock().unwrap();
+            if inner_msg["type"] == "data" {
+                l.last_data = now_millis();
+            }
             let carrier = l.transport.seal(inner_msg);
             let bytes = frame::encode(&carrier);
             l.write.write_all(&bytes).and_then(|_| l.write.flush()).is_ok()
@@ -317,4 +409,122 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+// White-box tests for link registration lifecycle (protocol.md §3): a stale
+// link's death must never withdraw the live link's routes, a displaced link
+// must be closed, and per-link metadata must be recorded at register time.
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::io::Read;
+    use std::net::TcpListener;
+
+    fn bare_inner() -> Arc<Inner> {
+        Arc::new(Inner {
+            config: Config {
+                label: "self".into(),
+                mesh: "m".into(),
+                root_public: vec![],
+                cert: Value::Null,
+                id_private: [0u8; 32],
+            },
+            tun: load_tunables(),
+            links: Mutex::new(HashMap::new()),
+            listeners: Mutex::new(Vec::new()),
+            table: Mutex::new(routing::Table::new("self")),
+            dedup: Mutex::new(routing::Dedup::new(16)),
+            stop: AtomicBool::new(false),
+        })
+    }
+
+    fn tcp_pair(listener: &TcpListener) -> (TcpStream, TcpStream) {
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (client, server)
+    }
+
+    fn dummy_transport() -> Transport {
+        Transport::new(&crate::handshake::Session {
+            send_key: vec![0u8; 32],
+            receive_key: vec![0u8; 32],
+            peer_cert: json!({"label": "peer"}),
+        })
+    }
+
+    #[test]
+    fn stale_link_death_does_not_withdraw_live_neighbor() {
+        let inner = bare_inner();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (c1, s1) = tcp_pair(&listener);
+        let (c2, _s2) = tcp_pair(&listener);
+        let r1 = BufReader::new(c1.try_clone().unwrap());
+        let r2 = BufReader::new(c2.try_clone().unwrap());
+
+        register(&inner, "peer", c1, r1, dummy_transport(), true);
+        let first = inner.links.lock().unwrap().get("peer").cloned().unwrap();
+
+        // Reconnect: displaces the first link.
+        register(&inner, "peer", c2, r2, dummy_transport(), true);
+        let cur = inner.links.lock().unwrap().get("peer").cloned().unwrap();
+        assert!(!Arc::ptr_eq(&first, &cur), "reconnect did not replace the link");
+
+        // The displaced socket must be shut down — its far end sees EOF.
+        let mut s1 = s1;
+        s1.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut buf = [0u8; 1];
+        match s1.read(&mut buf) {
+            Ok(0) => {}
+            other => panic!("displaced link was not closed: {:?}", other),
+        }
+
+        // The stale link's death must not withdraw the live neighbor entry.
+        deregister(&inner, "peer", &first);
+        assert!(
+            inner.table.lock().unwrap().next_hop("peer").is_some(),
+            "stale link death withdrew the live link's neighbor entry"
+        );
+        assert!(inner.links.lock().unwrap().get("peer").is_some(), "live link lost");
+
+        // Control: the CURRENT link's death does withdraw the neighbor.
+        deregister(&inner, "peer", &cur);
+        assert!(
+            inner.table.lock().unwrap().next_hop("peer").is_none(),
+            "current link death failed to withdraw the neighbor"
+        );
+    }
+
+    #[test]
+    fn register_records_initiator_and_timestamps() {
+        let inner = bare_inner();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (c1, _s1) = tcp_pair(&listener);
+        let r1 = BufReader::new(c1.try_clone().unwrap());
+        let before = now_millis();
+        register(&inner, "peer", c1, r1, dummy_transport(), true);
+        let link = inner.links.lock().unwrap().get("peer").cloned().unwrap();
+        let l = link.lock().unwrap();
+        assert!(l.initiator, "initiator flag not recorded");
+        assert!(
+            l.established_at >= before && l.last_inbound >= before && l.last_data >= before,
+            "timestamps not initialized at register"
+        );
+    }
+
+    #[test]
+    fn tunables_env_and_defaults() {
+        std::env::set_var("BONEMESH_PROBE_TIMEOUT_MS", "1234");
+        let t = load_tunables();
+        assert_eq!(t.probe_timeout_ms, 1234, "env override ignored");
+        std::env::set_var("BONEMESH_PROBE_TIMEOUT_MS", "garbage");
+        assert_eq!(load_tunables().probe_timeout_ms, 15000, "unparseable env did not fall back");
+        std::env::remove_var("BONEMESH_PROBE_TIMEOUT_MS");
+        let d = load_tunables();
+        assert_eq!(
+            (d.idle_ms, d.retry_base_ms, d.retry_cap_ms, d.retry_max_ms),
+            (0, 500, 30000, 60000)
+        );
+        assert_eq!((d.rekey_ms, d.rekey_frames, d.rekey_timeout_ms), (3600000, 65536, 10000));
+    }
 }
