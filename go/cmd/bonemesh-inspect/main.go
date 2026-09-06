@@ -52,16 +52,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "no usable key-log entries")
 		os.Exit(1)
 	}
-	// Per direction, try newest epoch first so a rekeyed stream's later frames
-	// (seq resets to 0 each epoch) match their own key; the Poly1305 tag is the
-	// real arbiter, so ordering is only an efficiency hint.
-	byDir := map[string][]keyEntry{}
-	for _, e := range entries {
-		byDir[e.dir] = append(byDir[e.dir], e)
-	}
-	for _, es := range byDir {
-		sort.SliceStable(es, func(i, j int) bool { return es[i].epoch > es[j].epoch })
-	}
+	byDir := indexKeys(entries)
 
 	in := openFile(capturePath)
 	defer in.Close()
@@ -83,7 +74,36 @@ func main() {
 	}
 }
 
+// indexKeys groups keys by direction, newest epoch first, so a rekeyed stream's
+// later frames (seq resets to 0 each epoch) match their own key; the Poly1305
+// tag is the real arbiter, so ordering is only an efficiency hint.
+func indexKeys(entries []keyEntry) map[string][]keyEntry {
+	byDir := map[string][]keyEntry{}
+	for _, e := range entries {
+		byDir[e.dir] = append(byDir[e.dir], e)
+	}
+	for _, es := range byDir {
+		sort.SliceStable(es, func(i, j int) bool { return es[i].epoch > es[j].epoch })
+	}
+	return byDir
+}
+
 func emitFrame(out *bufio.Writer, line []byte, byDir map[string][]keyEntry) {
+	rendered, reason := openFrame(line, byDir)
+	if reason != "" {
+		fmt.Fprintln(os.Stderr, reason)
+		return
+	}
+	blob, _ := json.Marshal(rendered)
+	out.Write(blob)
+	out.WriteByte('\n')
+}
+
+// openFrame parses one capture line, decrypts it with the first key of its
+// direction whose Poly1305 tag verifies, and returns the rendered
+// {dir,seq,epoch,inner} record. On any failure it returns a non-empty reason
+// string instead (used for a diagnostic to stderr).
+func openFrame(line []byte, byDir map[string][]keyEntry) (map[string]any, string) {
 	var rec struct {
 		Dir   string `json:"dir"`
 		Frame struct {
@@ -94,20 +114,16 @@ func emitFrame(out *bufio.Writer, line []byte, byDir map[string][]keyEntry) {
 	dec := json.NewDecoder(bytes.NewReader(line))
 	dec.UseNumber()
 	if err := dec.Decode(&rec); err != nil {
-		fmt.Fprintf(os.Stderr, "skipping unparseable capture line: %v\n", err)
-		return
+		return nil, fmt.Sprintf("skipping unparseable capture line: %v", err)
 	}
 	seq, err := strconv.ParseUint(rec.Frame.Seq.String(), 10, 64)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "skipping frame with bad seq %q\n", rec.Frame.Seq.String())
-		return
+		return nil, fmt.Sprintf("skipping frame with bad seq %q", rec.Frame.Seq.String())
 	}
 	ct, err := base64.StdEncoding.DecodeString(rec.Frame.Ct)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "skipping frame with bad ct base64\n")
-		return
+		return nil, "skipping frame with bad ct base64"
 	}
-
 	for _, e := range byDir[rec.Dir] {
 		pt, ok := transport.OpenCiphertext(e.key, seq, ct)
 		if !ok {
@@ -119,14 +135,9 @@ func emitFrame(out *bufio.Writer, line []byte, byDir map[string][]keyEntry) {
 		if id.Decode(&inner) != nil {
 			continue
 		}
-		blob, _ := json.Marshal(map[string]any{
-			"dir": rec.Dir, "seq": seq, "epoch": e.epoch, "inner": inner,
-		})
-		out.Write(blob)
-		out.WriteByte('\n')
-		return
+		return map[string]any{"dir": rec.Dir, "seq": seq, "epoch": e.epoch, "inner": inner}, ""
 	}
-	fmt.Fprintf(os.Stderr, "frame dir=%s seq=%d: no key opened it\n", rec.Dir, seq)
+	return nil, fmt.Sprintf("frame dir=%s seq=%d: no key opened it", rec.Dir, seq)
 }
 
 func parseKeylog(path string) []keyEntry {

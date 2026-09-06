@@ -37,7 +37,8 @@ public final class MessageSchema {
   /**
    * Validates a message against a named schema.
    *
-   * @param name one of {@code bmx1}, {@code envelope}, {@code data}, {@code ack}
+   * @param name one of {@code bmx1}, {@code envelope}, {@code data}, {@code ack},
+   *     {@code nak}, {@code bye}
    * @param frame the message object
    * @return {@code null} if valid, otherwise a short reason tag
    */
@@ -47,6 +48,8 @@ public final class MessageSchema {
       case "envelope": return validateEnvelope(frame);
       case "data":     return validateData(frame);
       case "ack":      return validateAck(frame);
+      case "nak":      return validateNak(frame);
+      case "bye":      return validateBye(frame);
       default:         return "unknown-schema";
     }
   }
@@ -98,6 +101,35 @@ public final class MessageSchema {
   private static String validateAck(JSONObject f) {
     if(!"ack".equals(f.optString("type", null))) return "type";
     return checkMid(f.opt("mid"));
+  }
+
+  // A NAK is routed back toward the origin like data (to/from/ttl), naming the
+  // failing hop and a reason. The reason string is required but not enum-checked,
+  // so a future reason value is not a wire break (protocol.md §8).
+  private static String validateNak(JSONObject f) {
+    if(!"nak".equals(f.optString("type", null))) return "type";
+    String midReason = checkMid(f.opt("mid"));
+    if(midReason != null) return midReason;
+    if(!(f.opt("hop") instanceof String) || ((String) f.opt("hop")).isEmpty()) return "missing-field";
+    if(!(f.opt("reason") instanceof String) || ((String) f.opt("reason")).isEmpty()) return "missing-field";
+    if(!(f.opt("to") instanceof String)) return "missing-field";
+    if(!(f.opt("from") instanceof String)) return "missing-field";
+    if(!f.has("ttl")) return "missing-field";
+    int ttl;
+    try {
+      ttl = f.getInt("ttl");
+    } catch(JSONException e) {
+      return "missing-field";
+    }
+    if(ttl < 1 || ttl > 255) return "ttl-range";
+    return null;
+  }
+
+  // A graceful session-close control — link-local, so only its type is required;
+  // an optional reason string is not validated further.
+  private static String validateBye(JSONObject f) {
+    if(!"bye".equals(f.optString("type", null))) return "type";
+    return null;
   }
 
   private static String checkBase64(Object v) {

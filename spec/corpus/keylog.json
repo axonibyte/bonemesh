@@ -1,0 +1,69 @@
+{
+  "capture": [
+    {
+      "dir": "i2r",
+      "frame": {
+        "ct": "GKixZAiviwO5Klog/7+PFNmx5p17/k48GJC1OPWOhOnztzXzT+r2Mspgu7uMvQMNqyXFU8Tk9I1bOY2YhZv4XiOxg0HEPqoXlNNo4t/xjc9V9jQqbmpQuqZGLMo1eBKc/Hgjk3QqZdD3L52qa9jF2Mc6AWA6W6M8/gav0zI/2YVlAQ3KcuZH",
+        "seq": 0
+      }
+    },
+    {
+      "dir": "i2r",
+      "frame": {
+        "ct": "G/c0CnjhpyoOQUTiZ/+gYSPRgjwx9268tK7He1j33akVi5UqwZ58IgGD+0I2PzXlpr8LU3kd",
+        "seq": 1
+      }
+    },
+    {
+      "dir": "r2i",
+      "frame": {
+        "ct": "Y3ENJRyFKXhMHofmTbr5R/XYD8FCinLvipXFtSJKMmX5fiq22OvDLXcLVXJRbFz+K2iTm9N6Ck/ag/auGychQRj3BMBN46c2xH0BdCjjy6ckpXT5XGN15e9Rgj05WC2d9DAp+QZjBwFeJ7I=",
+        "seq": 0
+      }
+    }
+  ],
+  "description": "Key-log + captured-stream vector (security.md §8). Each keylog line is BMX3_\u003cDIR\u003e_TRAFFIC_\u003cepoch\u003e \u003chex sha256 transcript-hash\u003e \u003chex 32-byte key\u003e; '#' lines are comments. Each capture frame is {dir,frame{seq,ct}} where ct = ChaCha20-Poly1305(key_for_dir_at_epoch, nonce=4 zero bytes||LE64(seq), empty AAD, inner_json). A conforming inspector opens each frame with its direction's key and reproduces 'inner'.",
+  "expected": [
+    {
+      "dir": "i2r",
+      "epoch": 0,
+      "inner": {
+        "from": "alpha",
+        "mid": "0123456789abcdef0123456789abcdef",
+        "payload": {
+          "line": "hello"
+        },
+        "to": "beta",
+        "ttl": 16,
+        "type": "data"
+      },
+      "seq": 0
+    },
+    {
+      "dir": "i2r",
+      "epoch": 0,
+      "inner": {
+        "token": 1788000000000,
+        "type": "probe"
+      },
+      "seq": 1
+    },
+    {
+      "dir": "r2i",
+      "epoch": 0,
+      "inner": {
+        "from": "beta",
+        "mid": "0123456789abcdef0123456789abcdef",
+        "to": "alpha",
+        "ttl": 16,
+        "type": "ack"
+      },
+      "seq": 0
+    }
+  ],
+  "keylog": [
+    "# BoneMesh key-log vector (security.md §8): BMX3_\u003cDIR\u003e_TRAFFIC_\u003cepoch\u003e \u003chex transcript-hash\u003e \u003chex key\u003e",
+    "BMX3_I2R_TRAFFIC_0 0000000000000000000000000000000000000000000000000000000000000000 0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "BMX3_R2I_TRAFFIC_0 0000000000000000000000000000000000000000000000000000000000000000 6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+  ]
+}

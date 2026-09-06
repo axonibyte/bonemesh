@@ -8,13 +8,16 @@ defmodule Bonemesh.MessageSchema do
 
   @doc """
   Validates a message map against a named schema. Returns `nil` if valid, or a
-  short reason tag. Schemas: `"bmx1"`, `"envelope"`, `"data"`, `"ack"`.
+  short reason tag. Schemas: `"bmx1"`, `"envelope"`, `"data"`, `"ack"`, `"nak"`,
+  `"bye"`.
   """
   @spec validate(String.t(), map()) :: nil | String.t()
   def validate("bmx1", f), do: validate_bmx1(f)
   def validate("envelope", f), do: validate_envelope(f)
   def validate("data", f), do: validate_data(f)
   def validate("ack", f), do: validate_ack(f)
+  def validate("nak", f), do: validate_nak(f)
+  def validate("bye", f), do: validate_bye(f)
   def validate(_other, _f), do: "unknown-schema"
 
   defp validate_bmx1(f) do
@@ -50,6 +53,29 @@ defmodule Bonemesh.MessageSchema do
 
   defp validate_ack(f) do
     if f["type"] != "ack", do: "type", else: mid_reason(f["mid"])
+  end
+
+  # A NAK is routed back toward the origin like data (to/from/ttl) and names the
+  # failing hop and a reason. The reason string is required but its value is not
+  # enum-checked, so a future reason value is not a wire break (protocol.md §8).
+  defp validate_nak(f) do
+    cond do
+      f["type"] != "nak" -> "type"
+      (r = mid_reason(f["mid"])) != nil -> r
+      not is_binary(f["hop"]) or f["hop"] == "" -> "missing-field"
+      not is_binary(f["reason"]) or f["reason"] == "" -> "missing-field"
+      not is_binary(f["to"]) -> "missing-field"
+      not is_binary(f["from"]) -> "missing-field"
+      not is_integer(f["ttl"]) -> "missing-field"
+      f["ttl"] < 1 or f["ttl"] > 255 -> "ttl-range"
+      true -> nil
+    end
+  end
+
+  # A graceful session-close control — link-local, so only its type is required;
+  # an optional reason string is not validated further.
+  defp validate_bye(f) do
+    if f["type"] != "bye", do: "type", else: nil
   end
 
   defp first_missing_or_base64(_f, []), do: nil

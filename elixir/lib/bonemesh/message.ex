@@ -21,6 +21,13 @@ defmodule Bonemesh.Message do
   @doc "An acknowledgement for a message id."
   def ack(mid), do: %{"type" => "ack", "mid" => mid}
 
+  @doc """
+  A negative acknowledgement naming the hop that failed and why, routed back
+  toward the origin like data (to/from/ttl) (protocol.md §7).
+  """
+  def nak(mid, from, to, hop, reason, ttl),
+    do: %{"type" => "nak", "mid" => mid, "hop" => hop, "reason" => reason, "from" => from, "to" => to, "ttl" => ttl}
+
   @doc "A discovery advertisement (label -> path cost)."
   def disco(costs), do: %{"type" => "disco", "routes" => costs}
 
@@ -30,8 +37,11 @@ defmodule Bonemesh.Message do
   @doc "The echo response to a probe."
   def echo(token), do: %{"type" => "echo", "token" => token}
 
-  @doc "A graceful session-close message."
+  @doc "A graceful session-close message with no stated reason."
   def bye, do: %{"type" => "bye"}
+
+  @doc "A graceful session-close message stating why (e.g. \"idle\", \"rekey-failed\")."
+  def bye(reason) when is_binary(reason) and reason != "", do: Map.put(bye(), "reason", reason)
 
   @doc """
   Splits a payload across one or more data messages sharing a message id

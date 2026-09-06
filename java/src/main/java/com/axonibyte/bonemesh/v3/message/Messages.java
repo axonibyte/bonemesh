@@ -77,14 +77,27 @@ public final class Messages {
   }
 
   /**
-   * Builds a negative acknowledgement naming the failing hop (defect D4).
+   * Builds a negative acknowledgement naming the failing hop and reason (defect
+   * D4), routed back toward the origin like a data message (protocol.md &sect;7).
    *
    * @param mid the id that could not be delivered
-   * @param failedHop the label of the next hop that failed
+   * @param from this reporting relay's label
+   * @param to the origin the nak is routed back toward
+   * @param hop the label of the hop that failed
+   * @param reason a short reason (e.g. {@code ttl}, {@code no-route},
+   *     {@code link-dead}); not enum-checked on the wire
+   * @param ttl the hop limit for routing the nak back
    * @return the nak message
    */
-  public static JSONObject nak(String mid, String failedHop) {
-    return new JSONObject().put("type", "nak").put("mid", mid).put("hop", failedHop);
+  public static JSONObject nak(String mid, String from, String to, String hop, String reason, int ttl) {
+    return new JSONObject()
+        .put("type", "nak")
+        .put("mid", mid)
+        .put("hop", hop)
+        .put("reason", reason)
+        .put("from", from)
+        .put("to", to)
+        .put("ttl", ttl);
   }
 
   /**
@@ -120,11 +133,24 @@ public final class Messages {
   }
 
   /**
-   * Builds a graceful session-close message.
+   * Builds a graceful session-close message with no reason.
    *
    * @return the bye message
    */
   public static JSONObject bye() {
     return new JSONObject().put("type", "bye");
+  }
+
+  /**
+   * Builds a graceful session-close message carrying a reason.
+   *
+   * @param reason a short reason (e.g. {@code idle}, {@code rekey-failed}); when
+   *     {@code null} or empty the reason field is omitted
+   * @return the bye message
+   */
+  public static JSONObject bye(String reason) {
+    JSONObject m = new JSONObject().put("type", "bye");
+    if(reason != null && !reason.isEmpty()) m.put("reason", reason);
+    return m;
   }
 }

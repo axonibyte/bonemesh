@@ -9,7 +9,8 @@ import (
 )
 
 // Validate checks frame against the named schema and returns "" if valid, or a
-// reason tag. Recognized schemas: "bmx1", "envelope", "data", "ack".
+// reason tag. Recognized schemas: "bmx1", "envelope", "data", "ack", "nak",
+// "bye".
 func Validate(name string, frame map[string]any) string {
 	switch name {
 	case "bmx1":
@@ -20,6 +21,10 @@ func Validate(name string, frame map[string]any) string {
 		return validateData(frame)
 	case "ack":
 		return validateAck(frame)
+	case "nak":
+		return validateNak(frame)
+	case "bye":
+		return validateBye(frame)
 	default:
 		return "unknown-schema"
 	}
@@ -93,6 +98,49 @@ func validateAck(f map[string]any) string {
 		return "type"
 	}
 	return checkMID(f["mid"])
+}
+
+// validateNak checks a NAK, which is routed back toward the origin like data
+// (to/from/ttl) and additionally names the failing hop and a reason. The reason
+// string is required but its value is not enum-checked — an unrecognized reason
+// is accepted so a future reason value is not a wire break (protocol.md §8).
+func validateNak(f map[string]any) string {
+	if s, _ := f["type"].(string); s != "nak" {
+		return "type"
+	}
+	if r := checkMID(f["mid"]); r != "" {
+		return r
+	}
+	if s, ok := f["hop"].(string); !ok || s == "" {
+		return "missing-field"
+	}
+	if s, ok := f["reason"].(string); !ok || s == "" {
+		return "missing-field"
+	}
+	if _, ok := f["to"].(string); !ok {
+		return "missing-field"
+	}
+	if _, ok := f["from"].(string); !ok {
+		return "missing-field"
+	}
+	ttl, ok := asInt(f["ttl"])
+	if !ok {
+		return "missing-field"
+	}
+	if ttl < 1 || ttl > 255 {
+		return "ttl-range"
+	}
+	return ""
+}
+
+// validateBye checks a graceful session-close control. It is link-local (not
+// routed), so it carries only its type; an optional reason string is not
+// validated further.
+func validateBye(f map[string]any) string {
+	if s, _ := f["type"].(string); s != "bye" {
+		return "type"
+	}
+	return ""
 }
 
 // asInt accepts a json.Number that is an integer.

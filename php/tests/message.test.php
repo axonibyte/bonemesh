@@ -31,6 +31,19 @@ test('schema verdicts', function () {
         ['ack', ['type' => 'nack', 'mid' => MID], 'type'],
         ['ack', ['type' => 'ack', 'mid' => 'NOTHEX0000000000000000000000000x'], 'mid-format'],
 
+        ['nak', ['type' => 'nak', 'mid' => MID, 'hop' => 'b', 'reason' => 'ttl', 'to' => 'a', 'from' => 'b', 'ttl' => 16], null],
+        ['nak', ['type' => 'nak', 'mid' => MID, 'hop' => 'b', 'reason' => 'anything-new', 'to' => 'a', 'from' => 'b', 'ttl' => 16], null],
+        ['nak', ['type' => 'data', 'mid' => MID, 'hop' => 'b', 'reason' => 'ttl', 'to' => 'a', 'from' => 'b', 'ttl' => 16], 'type'],
+        ['nak', ['type' => 'nak', 'mid' => 'short', 'hop' => 'b', 'reason' => 'ttl', 'to' => 'a', 'from' => 'b', 'ttl' => 16], 'mid-format'],
+        ['nak', ['type' => 'nak', 'mid' => MID, 'reason' => 'ttl', 'to' => 'a', 'from' => 'b', 'ttl' => 16], 'missing-field'],
+        ['nak', ['type' => 'nak', 'mid' => MID, 'hop' => 'b', 'to' => 'a', 'from' => 'b', 'ttl' => 16], 'missing-field'],
+        ['nak', ['type' => 'nak', 'mid' => MID, 'hop' => 'b', 'reason' => 'ttl', 'to' => 'a', 'from' => 'b', 'ttl' => 0], 'ttl-range'],
+
+        ['bye', ['type' => 'bye', 'reason' => 'idle'], null],
+        ['bye', ['type' => 'bye'], null],
+        ['bye', ['type' => 'bye', 'reason' => 'anything-new'], null],
+        ['bye', ['type' => 'data'], 'type'],
+
         ['mystery', [], 'unknown-schema'],
     ];
     foreach ($cases as [$schema, $msg, $want]) {
@@ -41,6 +54,9 @@ test('schema verdicts', function () {
 test('builders produce valid messages', function () {
     assertNull(Message::validate('data', Message::data(Message::newMid(), 'a', 'b', Message::DEFAULT_TTL, ['k' => 'v'])));
     assertNull(Message::validate('ack', Message::ack(Message::newMid())));
+    assertNull(Message::validate('nak', Message::nak(Message::newMid(), 'a', 'b', 'beta', 'ttl', Message::DEFAULT_TTL)));
+    assertNull(Message::validate('bye', Message::bye('idle')));
+    assertNull(Message::validate('bye', Message::bye()));
 });
 
 test('newMid is well-formed and unique', function () {

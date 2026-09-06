@@ -10,13 +10,15 @@ use serde_json::{json, Value};
 pub const DEFAULT_TTL: i64 = 16;
 
 /// Validates a message against a named schema. Returns `None` if valid, else a
-/// reason tag. Schemas: `bmx1`, `envelope`, `data`, `ack`.
+/// reason tag. Schemas: `bmx1`, `envelope`, `data`, `ack`, `nak`, `bye`.
 pub fn validate(schema: &str, f: &Value) -> Option<&'static str> {
     match schema {
         "bmx1" => validate_bmx1(f),
         "envelope" => validate_envelope(f),
         "data" => validate_data(f),
         "ack" => validate_ack(f),
+        "nak" => validate_nak(f),
+        "bye" => validate_bye(f),
         _ => Some("unknown-schema"),
     }
 }
@@ -83,6 +85,44 @@ fn validate_ack(f: &Value) -> Option<&'static str> {
     mid_reason(&f["mid"])
 }
 
+/// A NAK is routed back toward the origin like data (to/from/ttl) and names the
+/// failing hop and a reason. The reason string is required but its value is not
+/// enum-checked, so an unrecognized reason is accepted (forward-compatible).
+fn validate_nak(f: &Value) -> Option<&'static str> {
+    if f["type"].as_str() != Some("nak") {
+        return Some("type");
+    }
+    if let Some(r) = mid_reason(&f["mid"]) {
+        return Some(r);
+    }
+    match f["hop"].as_str() {
+        Some(h) if !h.is_empty() => {}
+        _ => return Some("missing-field"),
+    }
+    match f["reason"].as_str() {
+        Some(r) if !r.is_empty() => {}
+        _ => return Some("missing-field"),
+    }
+    if !f["to"].is_string() || !f["from"].is_string() {
+        return Some("missing-field");
+    }
+    match f["ttl"].as_i64() {
+        None => return Some("missing-field"),
+        Some(t) if !(1..=255).contains(&t) => return Some("ttl-range"),
+        _ => {}
+    }
+    None
+}
+
+/// A graceful session-close control. Link-local (not routed), so only its type
+/// is required; an optional reason string is not validated further.
+fn validate_bye(f: &Value) -> Option<&'static str> {
+    if f["type"].as_str() != Some("bye") {
+        return Some("type");
+    }
+    None
+}
+
 fn base64_reason(v: &Value) -> Option<&'static str> {
     match v.as_str() {
         Some(s) if B64.decode(s).is_ok() => None,
@@ -113,6 +153,21 @@ pub fn data(mid: &str, from: &str, to: &str, ttl: i64, payload: Value) -> Value 
 /// An acknowledgement for a message id.
 pub fn ack(mid: &str) -> Value {
     json!({"type":"ack","mid":mid})
+}
+
+/// A negative acknowledgement naming the hop that failed and why, routed back
+/// toward the origin (protocol.md §7).
+pub fn nak(mid: &str, from: &str, to: &str, hop: &str, reason: &str, ttl: i64) -> Value {
+    json!({"type":"nak","mid":mid,"hop":hop,"reason":reason,"from":from,"to":to,"ttl":ttl})
+}
+
+/// A graceful session-close control. A reason is optional; `None` omits it,
+/// defaulting to a plain shutdown.
+pub fn bye(reason: Option<&str>) -> Value {
+    match reason {
+        Some(r) => json!({"type":"bye","reason":r}),
+        None => json!({"type":"bye"}),
+    }
 }
 
 /// A latency probe with an opaque token.

@@ -49,6 +49,19 @@ func TestValidate(t *testing.T) {
 		{"ack", `{"type":"ack","mid":"0123456789abcdef0123456789abcdef"}`, ""},
 		{"ack", `{"type":"nack","mid":"0123456789abcdef0123456789abcdef"}`, "type"},
 		{"ack", `{"type":"ack","mid":"NOTHEX0000000000000000000000000x"}`, "mid-format"},
+		// nak (routed like data; reason value is not enum-checked)
+		{"nak", `{"type":"nak","mid":"0123456789abcdef0123456789abcdef","hop":"b","reason":"ttl","to":"a","from":"b","ttl":16}`, ""},
+		{"nak", `{"type":"nak","mid":"0123456789abcdef0123456789abcdef","hop":"b","reason":"anything-new","to":"a","from":"b","ttl":16}`, ""},
+		{"nak", `{"type":"data","mid":"0123456789abcdef0123456789abcdef","hop":"b","reason":"ttl","to":"a","from":"b","ttl":16}`, "type"},
+		{"nak", `{"type":"nak","mid":"short","hop":"b","reason":"ttl","to":"a","from":"b","ttl":16}`, "mid-format"},
+		{"nak", `{"type":"nak","mid":"0123456789abcdef0123456789abcdef","reason":"ttl","to":"a","from":"b","ttl":16}`, "missing-field"},
+		{"nak", `{"type":"nak","mid":"0123456789abcdef0123456789abcdef","hop":"b","to":"a","from":"b","ttl":16}`, "missing-field"},
+		{"nak", `{"type":"nak","mid":"0123456789abcdef0123456789abcdef","hop":"b","reason":"ttl","to":"a","from":"b","ttl":0}`, "ttl-range"},
+		// bye (link-local; reason optional and free)
+		{"bye", `{"type":"bye","reason":"idle"}`, ""},
+		{"bye", `{"type":"bye"}`, ""},
+		{"bye", `{"type":"bye","reason":"anything-new"}`, ""},
+		{"bye", `{"type":"data"}`, "type"},
 		// unknown
 		{"mystery", `{}`, "unknown-schema"},
 	}
@@ -70,6 +83,16 @@ func TestBuildersProduceValidMessages(t *testing.T) {
 	ack := roundtrip(t, Ack(NewMID()))
 	if r := Validate("ack", ack); r != "" {
 		t.Fatalf("Ack() invalid: %q", r)
+	}
+	nak := roundtrip(t, Nak(NewMID(), "a", "b", "beta", "ttl", DefaultTTL))
+	if r := Validate("nak", nak); r != "" {
+		t.Fatalf("Nak() invalid: %q", r)
+	}
+	if r := Validate("bye", roundtrip(t, Bye("idle"))); r != "" {
+		t.Fatalf("Bye(reason) invalid: %q", r)
+	}
+	if r := Validate("bye", roundtrip(t, Bye(""))); r != "" {
+		t.Fatalf("Bye() invalid: %q", r)
 	}
 }
 

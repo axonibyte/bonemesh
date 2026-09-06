@@ -45,4 +45,36 @@ defmodule Bonemesh.MessageSchemaTest do
 
   test "ack wrong type",
     do: assert(MS.validate("ack", %{"type" => "data", "mid" => @mid}) == "type")
+
+  # nak: routed like data (to/from/ttl), plus hop and a reason whose value is
+  # not enum-checked.
+  defp nak(overrides),
+    do: Map.merge(%{"type" => "nak", "mid" => @mid, "hop" => "beta", "reason" => "ttl", "to" => "alpha", "from" => "beta", "ttl" => 16}, overrides)
+
+  test "nak valid", do: assert(MS.validate("nak", nak(%{})) == nil)
+
+  test "nak unknown reason is accepted (forward-compatible)",
+    do: assert(MS.validate("nak", nak(%{"reason" => "some-future-reason"})) == nil)
+
+  test "nak wrong type", do: assert(MS.validate("nak", nak(%{"type" => "data"})) == "type")
+
+  test "nak bad mid", do: assert(MS.validate("nak", nak(%{"mid" => "0123"})) == "mid-format")
+
+  test "nak missing hop",
+    do: assert(MS.validate("nak", Map.delete(nak(%{}), "hop")) == "missing-field")
+
+  test "nak missing reason",
+    do: assert(MS.validate("nak", Map.delete(nak(%{}), "reason")) == "missing-field")
+
+  test "nak ttl out of range", do: assert(MS.validate("nak", nak(%{"ttl" => 0})) == "ttl-range")
+
+  # bye: link-local; reason optional and free.
+  test "bye valid with reason", do: assert(MS.validate("bye", %{"type" => "bye", "reason" => "idle"}) == nil)
+
+  test "bye valid without reason", do: assert(MS.validate("bye", %{"type" => "bye"}) == nil)
+
+  test "bye unknown reason is accepted",
+    do: assert(MS.validate("bye", %{"type" => "bye", "reason" => "some-future-reason"}) == nil)
+
+  test "bye wrong type", do: assert(MS.validate("bye", %{"type" => "data"}) == "type")
 end

@@ -51,6 +51,38 @@ public class MessageTest {
     assertNull(MessageSchema.validate("data",
         Messages.data(mid, "alpha", "gamma", Messages.DEFAULT_TTL, new JSONObject().put("line", "hi"))));
     assertNull(MessageSchema.validate("ack", Messages.ack(mid)));
+    assertNull(MessageSchema.validate("nak",
+        Messages.nak(mid, "beta", "alpha", "charlie", "ttl", Messages.DEFAULT_TTL)));
+    assertNull(MessageSchema.validate("bye", Messages.bye()));
+    assertNull(MessageSchema.validate("bye", Messages.bye("idle")));
+  }
+
+  // nak is routed like data (to/from/ttl) plus hop/reason; the reason value is
+  // not enum-checked, so an unrecognized reason string is still valid.
+  @Test void nakSchemaVerdicts() {
+    String mid = Messages.newMid(RNG);
+    assertNull(MessageSchema.validate("nak", Messages.nak(mid, "b", "a", "c", "future-reason", 16)));
+    assertEquals("type", MessageSchema.validate("nak",
+        new JSONObject().put("type", "data").put("mid", mid).put("hop", "c")
+            .put("reason", "ttl").put("to", "a").put("from", "b").put("ttl", 16)));
+    assertEquals("mid-format", MessageSchema.validate("nak",
+        Messages.nak("0123", "b", "a", "c", "ttl", 16)));
+    assertEquals("missing-field", MessageSchema.validate("nak",
+        new JSONObject().put("type", "nak").put("mid", mid)
+            .put("reason", "ttl").put("to", "a").put("from", "b").put("ttl", 16)));
+    assertEquals("missing-field", MessageSchema.validate("nak",
+        new JSONObject().put("type", "nak").put("mid", mid).put("hop", "c")
+            .put("to", "a").put("from", "b").put("ttl", 16)));
+    assertEquals("ttl-range", MessageSchema.validate("nak",
+        Messages.nak(mid, "b", "a", "c", "ttl", 0)));
+  }
+
+  // bye is link-local: only its type is required; reason is optional and free.
+  @Test void byeSchemaVerdicts() {
+    assertNull(MessageSchema.validate("bye", Messages.bye("idle")));
+    assertNull(MessageSchema.validate("bye", Messages.bye()));
+    assertNull(MessageSchema.validate("bye", Messages.bye("some-future-reason")));
+    assertEquals("type", MessageSchema.validate("bye", new JSONObject().put("type", "data")));
   }
 
   @Test void dataWithBadTtlFailsSchema() {
