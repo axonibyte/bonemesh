@@ -24,6 +24,13 @@ This repository is organized as a super-repo:
   up a mesh, running and embedding a node, the security model.
 - **[docs/architecture.md](docs/architecture.md)** — how it is built: the
   protocol stack, cryptography, routing, and the cross-language testing regime.
+- **[docs/testing.md](docs/testing.md)** — the testing guide: the tier map, the
+  reaper tenants and how to run one, the interop battery, seed replay, the
+  environment tunables, the gated long soak, and a key-log debugging walkthrough.
+- **Per-language quickstarts** — build, test, and run the interop driver for one
+  implementation: [go](go/README.md) · [rust](rust/README.md) ·
+  [js](js/README.md) · [php](php/README.md) · [elixir](elixir/README.md) ·
+  [java](java/README.md).
 - **[spec/protocol.md](spec/protocol.md)** and
   **[spec/security.md](spec/security.md)** — the normative wire and security
   specifications.

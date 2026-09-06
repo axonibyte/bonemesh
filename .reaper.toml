@@ -1,4 +1,4 @@
-# Root interop tenant: the multiprotocol suite (methodology tiers 5–9), run on a
+# Root interop tenant: the multiprotocol suite (methodology tiers 5–10), run on a
 # networked Linux guest with tc/netem. Host execution — commands run directly on
 # the VM as root — because the suite orchestrates many node processes and shapes
 # loopback traffic, which a single sandboxed container cannot. The manifest sits

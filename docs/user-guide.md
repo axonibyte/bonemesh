@@ -306,13 +306,40 @@ For the full trust and threat model see [`spec/security.md`](../spec/security.md
 ## 8. Debugging encrypted traffic
 
 Because the protocol is JSON under channel encryption, it is designed to be
-inspectable during development without weakening production. The security design
-specifies a session-key logging hook (in the spirit of `SSLKEYLOGFILE`) and a
-`bonemesh-inspect` tool for reading captured traffic; see
-[`spec/security.md`](../spec/security.md) §8. **These are deferred — specified
-but not implemented in 3.0.0** — so for now inspect payloads at the application
-boundary instead: log what you `send` and what your listener receives, rather
-than disabling encryption.
+inspectable during development without weakening production. As of 3.1.0 every
+implementation ships a session-key logging hook (in the spirit of
+`SSLKEYLOGFILE`), and the `bonemesh-inspect` tool reads a captured stream back
+into cleartext; see [`spec/security.md`](../spec/security.md) §8.
+
+Set `BONEMESH_KEYLOG` to a writable path and the node appends one line per
+directional traffic key as each session is established or rekeyed — the format
+is pinned in `spec/security.md` §8:
+
+```
+BMX3_I2R_TRAFFIC_<epoch> <hex transcript-hash> <hex 32-byte key>
+BMX3_R2I_TRAFFIC_<epoch> <hex transcript-hash> <hex 32-byte key>
+```
+
+Epoch 0 is the initial handshake; the counter increments on each rekey. The
+node prints a loud warning for every session while a keylog is active, so it is
+obvious when this is on. It is off unless the variable is set.
+
+Given a keylog and a captured frame stream (NDJSON, one
+`{"dir":"i2r"|"r2i","frame":{seq,ct}}` per line), `bonemesh-inspect` decrypts
+the transport back to the inner messages:
+
+```
+bonemesh-inspect --keylog keys.log --capture session.ndjson
+```
+
+It matches each direction's newest epoch first and lets the Poly1305 tag
+arbitrate, so a capture that spans a rekey is read without the tool having to
+parse the rekey exchange itself. This exposes only what the keylog holder could
+already decrypt — it is a development aid, not a downgrade of the channel.
+
+You can still inspect payloads at the application boundary instead — log what
+you `send` and what your listener receives — but there is no longer any reason
+to disable encryption to see traffic.
 
 For protocol-level questions, the shared test corpus under
 [`spec/corpus/`](../spec/corpus/) contains worked examples of canonical

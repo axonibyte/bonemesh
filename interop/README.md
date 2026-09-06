@@ -143,6 +143,12 @@ interop is covered by the six-language matrix on the driver (which has OTP 28).
 
 Runs on the driver (six languages) and as the `bonemesh-interop` reaper tenant
 (five languages under netem; tier 8 needs both Java and Elixir, so it runs on
-the driver and skips on the guest). Methodology tiers 5–9 are all implemented.
-Tiers 10–11 (long-horizon soak, human-reviewed transcripts) remain future work,
-as the plan states.
+the driver and skips on the guest). Methodology tiers 5–10 are all implemented
+and in the standard battery: tier 10 (`tier10.sh`) is the feature-behavior tier
+covering the 3.1.0 session-lifecycle features (ack, NAK/D4 attribution, rekey
+under traffic, idle teardown, probe-timeout death, key-log round-trip). Tier 11
+(`tier11.sh`) is the long-horizon seeded soak; it is implemented but deliberately
+**not** in the standard battery — it runs only behind an explicit
+`BONEMESH_LONG_SOAK=1` (or `--long-soak`) gate and writes a human-reviewed
+transcript bundle. See [docs/testing.md](../docs/testing.md) for the full tier
+map and how to run the soak.

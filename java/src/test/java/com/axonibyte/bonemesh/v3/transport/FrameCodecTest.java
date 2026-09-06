@@ -82,6 +82,31 @@ public class FrameCodecTest {
     expectReject(ascii("{\"a\":1} X\n"), "trailing-data");
   }
 
+  // Lenient-JSON inputs that org.json's default tokener accepts but a strict
+  // RFC 8259 parser (and the other five implementations) reject. These guard
+  // the wire-compatibility divergence cured in 3.1.0; each mirrors a
+  // 'lenient-*' case in spec/corpus/framing.json.
+
+  @Test void unquotedKeyRejected() {
+    expectReject(ascii("{a:1}\n"), "invalid-json");
+  }
+
+  @Test void singleQuotedStringRejected() {
+    expectReject(ascii("{\"a\":'b'}\n"), "invalid-json");
+  }
+
+  @Test void trailingCommaRejected() {
+    expectReject(ascii("{\"a\":1,}\n"), "invalid-json");
+  }
+
+  @Test void leadingZeroNumberRejected() {
+    expectReject(ascii("{\"a\":01}\n"), "invalid-json");
+  }
+
+  @Test void nanLiteralRejected() {
+    expectReject(ascii("{\"a\":NaN}\n"), "invalid-json");
+  }
+
   @Test void frameExactlyAtCapAccepts() {
     expectAcceptAtCap(FrameCodec.TRANSPORT_CAP);
   }
