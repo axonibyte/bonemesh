@@ -48,9 +48,28 @@ final class Tunables {
     this.keylogPath = kl == null ? "" : kl;
   }
 
+  // Package-visible test seam: build tunables with explicit probe-timeout and
+  // idle values (the two the liveness/idle sweep reads) instead of the
+  // environment. The rest keep their pinned defaults.
+  private Tunables(long probeTimeoutMillis, long idleMillis) {
+    this.probeTimeoutMillis = probeTimeoutMillis;
+    this.idleMillis = idleMillis;
+    this.retryBaseMillis = 500L;
+    this.retryCapMillis = 30000L;
+    this.retryMaxMillis = 60000L;
+    this.rekeyMillis = 3600000L;
+    this.rekeyFrames = 65536L;
+    this.rekeyTimeoutMillis = 10000L;
+    this.keylogPath = "";
+  }
+
   /** @return the tunables resolved from the current environment */
   static Tunables load() {
     return new Tunables();
+  }
+
+  static Tunables forTest(long probeTimeoutMillis, long idleMillis) {
+    return new Tunables(probeTimeoutMillis, idleMillis);
   }
 
   private static long envLong(String name, long fallback) {

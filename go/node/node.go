@@ -57,12 +57,13 @@ type Node struct {
 	cfg       Config
 	tun       tunables
 	listener  net.Listener
-	links     map[string]*link
-	mu        sync.Mutex
-	listeners []chan map[string]any
-	table     *routing.Table
-	dedup     *routing.Dedup
-	done      chan struct{}
+	links        map[string]*link
+	mu           sync.Mutex
+	listeners    []chan map[string]any
+	ackListeners []chan map[string]any
+	table        *routing.Table
+	dedup        *routing.Dedup
+	done         chan struct{}
 }
 
 // Start starts a node listening on port (0 for ephemeral).
@@ -127,14 +128,45 @@ func (n *Node) Connect(host string, port int) (string, error) {
 	return peer, nil
 }
 
-// Send routes an application payload toward any reachable destination.
+// Send routes an application payload toward any reachable destination. Returns
+// true if the message was handed to a next hop.
 func (n *Node) Send(to string, payload any) bool {
-	msg := message.Data(message.NewMID(), n.cfg.Label, to, message.DefaultTTL, payload)
+	_, ok := n.SendM(to, payload)
+	return ok
+}
+
+// SendM is Send that also returns the message id, so a caller can correlate the
+// ack/nak delivered to AckListener (protocol.md §7).
+func (n *Node) SendM(to string, payload any) (string, bool) {
+	mid := message.NewMID()
+	msg := message.Data(mid, n.cfg.Label, to, message.DefaultTTL, payload)
 	nh, ok := n.table.NextHop(to)
 	if !ok {
-		return false
+		return mid, false
 	}
-	return n.sendToLink(nh, msg)
+	return mid, n.sendToLink(nh, msg)
+}
+
+// sendWithTTL is Send with an explicit initial TTL, used by tests to force a
+// relay to exhaust the hop limit and emit a NAK.
+func (n *Node) sendWithTTL(to string, payload any, ttl int) (string, bool) {
+	mid := message.NewMID()
+	msg := message.Data(mid, n.cfg.Label, to, ttl, payload)
+	nh, ok := n.table.NextHop(to)
+	if !ok {
+		return mid, false
+	}
+	return mid, n.sendToLink(nh, msg)
+}
+
+// AckListener returns a channel that receives ack and nak messages addressed to
+// this node (the origin), each as the raw inner map.
+func (n *Node) AckListener() <-chan map[string]any {
+	ch := make(chan map[string]any, 16)
+	n.mu.Lock()
+	n.ackListeners = append(n.ackListeners, ch)
+	n.mu.Unlock()
+	return ch
 }
 
 func (n *Node) acceptLoop() {
@@ -177,23 +209,48 @@ func (n *Node) respond(conn net.Conn) {
 	n.register(peer, conn, r, transport.New(hs.SessionResult()), false)
 }
 
-func (n *Node) register(peer string, conn net.Conn, r *bufio.Reader, t *transport.Transport, initiator bool) {
+// register installs a new link for peer and starts its reader. It returns true
+// if the new link was kept. On a collision with an existing link it applies the
+// simultaneous-dial tiebreak (protocol.md §3): if the two links were initiated
+// by the same side it is a reconnect (last writer wins); if by opposite sides
+// it is a genuine dial collision, and both ends deterministically keep the
+// session initiated by the lexicographically-lower label, so the pair converges
+// on exactly one session.
+func (n *Node) register(peer string, conn net.Conn, r *bufio.Reader, t *transport.Transport, initiator bool) bool {
 	now := nowMillis()
 	lk := &link{conn: conn, transport: t, initiator: initiator, establishedAt: now}
 	lk.lastInbound.Store(now)
 	lk.lastData.Store(now)
+
 	n.mu.Lock()
 	prev := n.links[lower(peer)]
-	n.links[lower(peer)] = lk
+	keepNew := true
+	if prev != nil && prev.initiator != initiator {
+		// Dial collision: keep the session the lower-labelled node initiated.
+		// Both ends compute the same winner, so they agree on which to drop.
+		selfWins := lower(n.cfg.Label) < lower(peer)
+		keepNew = initiator == selfWins
+	}
+	if keepNew {
+		n.links[lower(peer)] = lk
+	}
 	n.mu.Unlock()
+
+	if !keepNew {
+		// This new link lost the tiebreak; drop it and keep the existing one.
+		conn.Close()
+		return false
+	}
 	if prev != nil && prev != lk {
-		// A reconnect displaced an existing link: close it so its socket and
-		// reader goroutine do not linger. Its deregister is identity-guarded,
-		// so its death cannot withdraw this new link's routes.
+		// Displaced an existing link (reconnect, or collision the new link won):
+		// close it so its socket and reader goroutine do not linger. Its
+		// deregister is identity-guarded, so its death cannot withdraw this
+		// new link's routes.
 		prev.conn.Close()
 	}
 	n.table.ObserveNeighbor(peer, 1) // optimistic seed so it is immediately routable
 	go n.readLoop(peer, r, lk)
+	return true
 }
 
 func (n *Node) readLoop(peer string, r *bufio.Reader, lk *link) {
@@ -212,6 +269,11 @@ func (n *Node) readLoop(peer string, r *bufio.Reader, lk *link) {
 		lk.lastInbound.Store(nowMillis())
 		if inner["type"] == "data" {
 			lk.lastData.Store(nowMillis())
+		}
+		if inner["type"] == "bye" {
+			// Peer is closing this session gracefully; tear it down and stop.
+			n.deregister(peer, lk)
+			return
 		}
 		n.handleInner(peer, inner)
 	}
@@ -241,18 +303,39 @@ func (n *Node) heartbeatLoop() {
 		case <-n.done:
 			return
 		case <-ticker.C:
+			now := nowMillis()
+			type pl struct {
+				peer string
+				lk   *link
+			}
 			n.mu.Lock()
-			peers := make([]string, 0, len(n.links))
-			for label := range n.links {
-				peers = append(peers, label)
+			pairs := make([]pl, 0, len(n.links))
+			for label, lk := range n.links {
+				pairs = append(pairs, pl{label, lk})
 			}
 			n.mu.Unlock()
-			for _, peer := range peers {
-				n.sendToLink(peer, message.Probe(nowMillis()))
-				n.sendToLink(peer, message.Disco(n.table.AdvertiseTo(peer)))
+			for _, p := range pairs {
+				n.sweepLink(now, p.peer, p.lk)
 			}
 		}
 	}
+}
+
+// sweepLink runs the once-per-heartbeat maintenance for one link: tear it down
+// if it is probe-timeout dead (F3) or data-idle past the idle timeout (F4,
+// disabled at idleMS==0), otherwise send it a probe and a route advertisement.
+func (n *Node) sweepLink(now int64, peer string, lk *link) {
+	if now-lk.lastInbound.Load() > n.tun.probeTimeoutMS {
+		n.deregister(peer, lk)
+		return
+	}
+	if n.tun.idleMS > 0 && now-lk.lastData.Load() > n.tun.idleMS {
+		n.sendToLink(peer, message.Bye("idle"))
+		n.deregister(peer, lk)
+		return
+	}
+	n.sendToLink(peer, message.Probe(now))
+	n.sendToLink(peer, message.Disco(n.table.AdvertiseTo(peer)))
 }
 
 func (n *Node) handleInner(peer string, msg map[string]any) {
@@ -273,6 +356,10 @@ func (n *Node) handleInner(peer string, msg map[string]any) {
 		}
 	case "data":
 		n.handleData(msg)
+	case "ack":
+		n.handleControl(msg, "a:")
+	case "nak":
+		n.handleControl(msg, "n:")
 	}
 }
 
@@ -282,21 +369,29 @@ func (n *Node) handleData(msg map[string]any) {
 	if ch, ok := msg["chunk"].(map[string]any); ok {
 		chunkIdx = asInt(ch["i"])
 	}
-	if n.dedup.Seen(mid + ":" + strconv.Itoa(chunkIdx)) {
+	if n.dedup.Seen("d:" + mid + ":" + strconv.Itoa(chunkIdx)) {
 		return
 	}
 	to, _ := msg["to"].(string)
+	from, _ := msg["from"].(string)
 	if lower(to) == lower(n.cfg.Label) {
 		n.deliver(msg)
+		// F6: acknowledge receipt back toward the origin.
+		if from != "" && lower(from) != lower(n.cfg.Label) {
+			n.routeControl(message.AckTo(mid, n.cfg.Label, from, message.DefaultTTL))
+		}
 		return
 	}
 	ttl := asInt(msg["ttl"]) - 1
 	if ttl <= 0 {
-		return // DROP_TTL, silently
+		// F6/D4: the relay that dropped it names itself as the failing hop.
+		n.emitNak(mid, from, "ttl")
+		return
 	}
 	nh, ok := n.table.NextHop(to)
 	if !ok {
-		return // UNREACHABLE, silently
+		n.emitNak(mid, from, "no-route")
+		return
 	}
 	fwd := make(map[string]any, len(msg))
 	for k, v := range msg {
@@ -304,6 +399,56 @@ func (n *Node) handleData(msg map[string]any) {
 	}
 	fwd["ttl"] = ttl
 	n.sendToLink(nh, fwd)
+}
+
+// handleControl relays or delivers an ack/nak (routed back toward the origin
+// like data). A type-prefixed dedup key keeps a relayed ack from colliding with
+// the data it answers (same mid). ack/nak are never themselves ack'd or nak'd.
+func (n *Node) handleControl(msg map[string]any, prefix string) {
+	mid, _ := msg["mid"].(string)
+	if n.dedup.Seen(prefix + mid) {
+		return
+	}
+	to, _ := msg["to"].(string)
+	if lower(to) == lower(n.cfg.Label) {
+		n.deliverAck(msg)
+		return
+	}
+	ttl := asInt(msg["ttl"]) - 1
+	if ttl <= 0 {
+		return // drop silently; no nak-of-nak
+	}
+	nh, ok := n.table.NextHop(to)
+	if !ok {
+		return
+	}
+	fwd := make(map[string]any, len(msg))
+	for k, v := range msg {
+		fwd[k] = v
+	}
+	fwd["ttl"] = ttl
+	n.sendToLink(nh, fwd)
+}
+
+// emitNak sends a NAK back toward the origin naming this node as the failing
+// hop. Best-effort: if the NAK itself cannot be routed it is dropped (no
+// recursion).
+func (n *Node) emitNak(mid, origin, reason string) {
+	if origin == "" || lower(origin) == lower(n.cfg.Label) {
+		return
+	}
+	n.routeControl(message.Nak(mid, n.cfg.Label, origin, n.cfg.Label, reason, message.DefaultTTL))
+}
+
+// routeControl sends a freshly-built ack/nak toward its destination, dropping
+// silently if there is no route (never producing a control-of-control).
+func (n *Node) routeControl(msg map[string]any) {
+	to, _ := msg["to"].(string)
+	nh, ok := n.table.NextHop(to)
+	if !ok {
+		return
+	}
+	n.sendToLink(nh, msg)
 }
 
 func (n *Node) deliver(msg map[string]any) {
@@ -314,6 +459,19 @@ func (n *Node) deliver(msg map[string]any) {
 	for _, ch := range listeners {
 		select {
 		case ch <- payload:
+		default:
+		}
+	}
+}
+
+// deliverAck hands an ack/nak addressed to this node to the ack listeners.
+func (n *Node) deliverAck(msg map[string]any) {
+	n.mu.Lock()
+	listeners := append([]chan map[string]any{}, n.ackListeners...)
+	n.mu.Unlock()
+	for _, ch := range listeners {
+		select {
+		case ch <- msg:
 		default:
 		}
 	}

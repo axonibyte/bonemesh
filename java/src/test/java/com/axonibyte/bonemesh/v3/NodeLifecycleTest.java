@@ -16,6 +16,7 @@
 
 package com.axonibyte.bonemesh.v3;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -149,6 +150,132 @@ public final class NodeLifecycleTest {
       c.close(); s.close(); c2.close(); s2.close();
     } finally {
       node.kill();
+    }
+  }
+
+  private static Object linkFor(Node node, String peer) throws Exception {
+    Field f = Node.class.getDeclaredField("links");
+    f.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    java.util.Map<String, Object> links = (java.util.Map<String, Object>) f.get(node);
+    return links.get(peer.toLowerCase(java.util.Locale.ROOT));
+  }
+
+  private static boolean initiatorOf(Object peerLink) throws Exception {
+    Field f = peerLink.getClass().getDeclaredField("initiator");
+    f.setAccessible(true);
+    return (boolean) f.get(peerLink);
+  }
+
+  private static void setLong(Object obj, String field, long v) throws Exception {
+    Field f = obj.getClass().getDeclaredField(field);
+    f.setAccessible(true);
+    f.setLong(obj, v);
+  }
+
+  private static void sweep(Node node, long now, Object peerLink) throws Exception {
+    Method m = Node.class.getDeclaredMethod("sweepLink", long.class,
+        Class.forName("com.axonibyte.bonemesh.v3.Node$PeerLink"));
+    m.setAccessible(true);
+    m.invoke(node, now, peerLink);
+  }
+
+  private static Socket[] loopbackPair(ServerSocket ss) throws Exception {
+    Socket c = new Socket();
+    c.connect(new InetSocketAddress("127.0.0.1", ss.getLocalPort()));
+    Socket s = ss.accept();
+    return new Socket[] {c, s};
+  }
+
+  // F1: on a dial collision both ends keep the session initiated by the
+  // lower-labelled node, regardless of registration order. self="self": against
+  // a higher peer ("zzz") self keeps its own-initiated link; against a lower
+  // peer ("aaa") it keeps the one it accepted.
+  @Test
+  void tiebreakKeepsLowerLabelInitiatedSession() throws Exception {
+    String[] peers = {"zzz", "aaa"};
+    boolean[] wants = {true, false}; // self<zzz keep self-initiated; self>aaa keep accepted
+    for(int i = 0; i < peers.length; i++) {
+      for(boolean firstInitiator : new boolean[] {true, false}) {
+        Node node = bareNode();
+        try(ServerSocket ss = new ServerSocket(0)) {
+          Socket[] p1 = loopbackPair(ss);
+          Socket[] p2 = loopbackPair(ss);
+          registerLink(node, peers[i], peerLink(node, peers[i], p1[0], firstInitiator));
+          registerLink(node, peers[i], peerLink(node, peers[i], p2[0], !firstInitiator));
+          Object survivor = linkFor(node, peers[i]);
+          assertTrue(survivor != null, "no surviving link");
+          assertEquals(wants[i], initiatorOf(survivor),
+              "peer=" + peers[i] + " firstInitiator=" + firstInitiator + ": wrong session survived");
+          for(Socket s : new Socket[] {p1[0], p1[1], p2[0], p2[1]}) s.close();
+        } finally {
+          node.kill();
+        }
+      }
+    }
+  }
+
+  // F3: a link silent past the probe timeout is torn down and its routes
+  // withdrawn; a fresh link is kept.
+  @Test
+  void probeTimeoutClosesSilentLink() throws Exception {
+    Node node = bareNode();
+    node.useTunablesForTest(Tunables.forTest(100L, 0L));
+    try(ServerSocket ss = new ServerSocket(0)) {
+      Socket[] p = loopbackPair(ss);
+      Object link = peerLink(node, "peer", p[0], true);
+      registerLink(node, "peer", link);
+
+      long now = System.currentTimeMillis();
+      sweep(node, now, link); // fresh: kept
+      assertTrue(routing(node).isNeighbor("peer"), "a fresh link was wrongly torn down");
+
+      setLong(link, "lastInboundMillis", now - 5000); // silent past the 100ms timeout
+      sweep(node, now, link);
+      assertFalse(routing(node).isNeighbor("peer"), "probe-timed-out link not torn down");
+      assertTrue(linkFor(node, "peer") == null, "dead link not removed from the map");
+      for(Socket s : p) s.close();
+    } finally {
+      node.kill();
+    }
+  }
+
+  // F4: with idle teardown enabled a link carrying no data past the idle timeout
+  // is torn down; with it disabled (idleMillis==0) the same idle link stays up.
+  @Test
+  void idleTeardownOnlyWhenEnabled() throws Exception {
+    long now = System.currentTimeMillis();
+
+    Node enabled = bareNode();
+    enabled.useTunablesForTest(Tunables.forTest(1_000_000L, 100L));
+    try(ServerSocket ss = new ServerSocket(0)) {
+      Socket[] p = loopbackPair(ss);
+      Object link = peerLink(enabled, "peer", p[0], true);
+      registerLink(enabled, "peer", link);
+      setLong(link, "lastInboundMillis", now);        // not probe-dead
+      setLong(link, "lastDataMillis", now - 5000);    // idle
+      sweep(enabled, now, link);
+      assertFalse(routing(enabled).isNeighbor("peer"),
+          "idle link not torn down when idle teardown is enabled");
+      for(Socket s : p) s.close();
+    } finally {
+      enabled.kill();
+    }
+
+    Node disabled = bareNode();
+    disabled.useTunablesForTest(Tunables.forTest(1_000_000L, 0L)); // idle disabled
+    try(ServerSocket ss = new ServerSocket(0)) {
+      Socket[] p = loopbackPair(ss);
+      Object link = peerLink(disabled, "peer", p[0], true);
+      registerLink(disabled, "peer", link);
+      setLong(link, "lastInboundMillis", now);
+      setLong(link, "lastDataMillis", now - 5000);
+      sweep(disabled, now, link);
+      assertTrue(routing(disabled).isNeighbor("peer"),
+          "idle teardown fired even though it is disabled (idleMillis=0)");
+      for(Socket s : p) s.close();
+    } finally {
+      disabled.kill();
     }
   }
 

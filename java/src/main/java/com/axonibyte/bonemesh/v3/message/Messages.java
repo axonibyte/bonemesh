@@ -77,6 +77,22 @@ public final class Messages {
   }
 
   /**
+   * Builds an acknowledgement routed back toward the origin (protocol.md
+   * &sect;7): {@code to} is the origin, {@code from} is this node.
+   *
+   * @param mid the id being acknowledged
+   * @param from this node's label
+   * @param to the origin the ack is routed back toward
+   * @param ttl the hop limit for routing the ack back
+   * @return the ack message
+   */
+  public static JSONObject ackTo(String mid, String from, String to, int ttl) {
+    return new JSONObject()
+        .put("type", "ack").put("mid", mid)
+        .put("from", from).put("to", to).put("ttl", ttl);
+  }
+
+  /**
    * Builds a negative acknowledgement naming the failing hop and reason (defect
    * D4), routed back toward the origin like a data message (protocol.md &sect;7).
    *

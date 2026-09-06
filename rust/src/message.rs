@@ -155,6 +155,12 @@ pub fn ack(mid: &str) -> Value {
     json!({"type":"ack","mid":mid})
 }
 
+/// An acknowledgement routed back toward the origin (protocol.md §7): `to` is
+/// the origin, `from` is this node.
+pub fn ack_to(mid: &str, from: &str, to: &str, ttl: i64) -> Value {
+    json!({"type":"ack","mid":mid,"from":from,"to":to,"ttl":ttl})
+}
+
 /// A negative acknowledgement naming the hop that failed and why, routed back
 /// toward the origin (protocol.md §7).
 pub fn nak(mid: &str, from: &str, to: &str, hop: &str, reason: &str, ttl: i64) -> Value {

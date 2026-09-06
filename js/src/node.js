@@ -82,6 +82,7 @@ export class Node {
     this.tun = loadTunables();
     this.links = new Map();
     this.listeners = [];
+    this.ackListeners = [];
     this.server = null;
     this.table = new Table(config.label);
     this.dedup = new Dedup(4096);
@@ -94,14 +95,32 @@ export class Node {
     node.server.on('error', () => {});
     node.server.listen(port);
     await once(node.server, 'listening');
-    // 1 s heartbeat: probe + per-neighbor route advertisement to each link.
+    // 1 s heartbeat: maintain each link (probe + route advertisement) or tear
+    // it down if it is probe-timeout dead (F3) or idle (F4).
     node.hb = setInterval(() => {
-      for (const label of node.links.keys()) {
-        node.#sendToLink(label, message.probe(nowMs()));
-        node.#sendToLink(label, message.disco(node.table.advertiseTo(label)));
-      }
+      const now = nowMs();
+      for (const [label, link] of [...node.links]) node.sweepLink(now, label, link);
     }, 1000);
     return node;
+  }
+
+  // Once-per-heartbeat maintenance for one link: tear it down if it is
+  // probe-timeout dead (F3) or data-idle past the idle timeout (F4, disabled at
+  // idleMs==0), otherwise send it a probe and a route advertisement.
+  sweepLink(now, peer, link) {
+    if (now - link.lastInbound > this.tun.probeTimeoutMs) {
+      this.#deregister(peer, link);
+      link.socket.destroy();
+      return;
+    }
+    if (this.tun.idleMs > 0 && now - link.lastData > this.tun.idleMs) {
+      this.#sendToLink(peer, message.bye('idle'));
+      this.#deregister(peer, link);
+      link.socket.destroy();
+      return;
+    }
+    this.#sendToLink(peer, message.probe(now));
+    this.#sendToLink(peer, message.disco(this.table.advertiseTo(peer)));
   }
 
   port() { return this.server.address().port; }
@@ -111,6 +130,10 @@ export class Node {
 
   // Register a callback invoked with each delivered application payload.
   onMessage(cb) { this.listeners.push(cb); }
+
+  // Register a callback invoked with each ack/nak addressed to this node (the
+  // origin), as the raw inner message.
+  onAck(cb) { this.ackListeners.push(cb); }
 
   async connect(host, port) {
     const socket = net.connect({ host, port });
@@ -126,11 +149,30 @@ export class Node {
     return peer;
   }
 
+  // Routes an application payload toward any reachable destination. Returns
+  // true if the message was handed to a next hop.
   send(to, payload) {
+    return this.sendMid(to, payload).ok;
+  }
+
+  // Send that also returns the message id, so a caller can correlate the
+  // ack/nak delivered to onAck (protocol.md §7). Returns { mid, ok }.
+  sendMid(to, payload) {
+    return this.#sendWithTtl(to, payload, message.DEFAULT_TTL);
+  }
+
+  // sendMid with an explicit initial TTL, used by tests to force a relay to
+  // exhaust the hop limit and emit a NAK.
+  sendWithTtl(to, payload, ttl) {
+    return this.#sendWithTtl(to, payload, ttl);
+  }
+
+  #sendWithTtl(to, payload, ttl) {
+    const mid = message.newMid();
     const nh = this.table.nextHop(to);
-    if (!nh) return false;
-    const msg = message.data(message.newMid(), this.cfg.label, to, message.DEFAULT_TTL, payload);
-    return this.#sendToLink(nh, msg);
+    if (!nh) return { mid, ok: false };
+    const ok = this.#sendToLink(nh, message.data(mid, this.cfg.label, to, ttl, payload));
+    return { mid, ok };
   }
 
   #sendToLink(label, inner) {
@@ -169,13 +211,27 @@ export class Node {
     // competing session). lastInbound/lastData feed liveness and idle checks;
     // probe/echo/disco never count as data activity.
     const link = { socket, ch, transport, initiator, establishedAt: now, lastInbound: now, lastData: now };
-    const displaced = this.links.get(peer.toLowerCase());
-    this.links.set(peer.toLowerCase(), link);
-    if (displaced && displaced !== link) {
-      // A reconnect displaced an existing link: close it so its socket does
-      // not linger. Its deregister is identity-guarded, so its death cannot
+    const k = peer.toLowerCase();
+    const prev = this.links.get(k);
+    // F1 simultaneous-dial tiebreak (protocol.md §3): if an existing link was
+    // initiated by the opposite side, this is a genuine dial collision — both
+    // ends deterministically keep the session initiated by the lower-labelled
+    // node, so the pair converges on one session. Same-initiator = reconnect
+    // (last writer wins).
+    if (prev && prev.initiator !== initiator) {
+      const selfWins = this.cfg.label.toLowerCase() < peer.toLowerCase();
+      if (initiator !== selfWins) {
+        // This new link lost the tiebreak; drop it and keep the existing one.
+        socket.destroy();
+        return false;
+      }
+    }
+    this.links.set(k, link);
+    if (prev && prev !== link) {
+      // Displaced an existing link (reconnect, or collision the new link won):
+      // close it. Its deregister is identity-guarded, so its death cannot
       // withdraw this new link's routes.
-      displaced.socket.destroy();
+      prev.socket.destroy();
     }
     this.table.observeNeighbor(peer, 1); // optimistic seed so it is routable
     socket.on('close', () => this.#deregister(peer, link));
@@ -188,6 +244,12 @@ export class Node {
       }
       link.lastInbound = nowMs();
       if (inner.type === 'data') link.lastData = nowMs();
+      if (inner.type === 'bye') {
+        // Peer is closing this session gracefully; tear it down.
+        this.#deregister(peer, link);
+        link.socket.destroy();
+        return;
+      }
       this.#handleInner(peer, inner);
     });
   }
@@ -219,23 +281,74 @@ export class Node {
       case 'data':
         this.#handleData(msg);
         break;
+      case 'ack':
+        this.#handleControl(msg, 'a:');
+        break;
+      case 'nak':
+        this.#handleControl(msg, 'n:');
+        break;
     }
   }
 
   #handleData(msg) {
     const chunkIdx = msg.chunk && typeof msg.chunk.i === 'number' ? msg.chunk.i : -1;
-    if (this.dedup.sawBefore(`${msg.mid}:${chunkIdx}`)) return;
+    if (this.dedup.sawBefore(`d:${msg.mid}:${chunkIdx}`)) return;
+    const from = String(msg.from || '');
     if (String(msg.to || '').toLowerCase() === this.cfg.label.toLowerCase()) {
       for (const cb of this.listeners) {
         try { cb(msg.payload); } catch { /* listener errors are its own */ }
       }
+      // F6: acknowledge receipt back toward the origin.
+      if (from && from.toLowerCase() !== this.cfg.label.toLowerCase()) {
+        this.#routeControl(message.ackTo(msg.mid, this.cfg.label, from, message.DEFAULT_TTL));
+      }
       return;
     }
     const ttl = (msg.ttl | 0) - 1;
-    if (ttl <= 0) return; // DROP_TTL, silently
+    if (ttl <= 0) {
+      // F6/D4: the relay that dropped it names itself as the failing hop.
+      this.#emitNak(msg.mid, from, 'ttl');
+      return;
+    }
     const nh = this.table.nextHop(msg.to);
-    if (!nh) return; // UNREACHABLE, silently
+    if (!nh) {
+      this.#emitNak(msg.mid, from, 'no-route');
+      return;
+    }
     this.#sendToLink(nh, { ...msg, ttl });
+  }
+
+  // Relays or delivers an ack/nak (routed back toward the origin like data). A
+  // type-prefixed dedup key keeps a relayed ack from colliding with the data it
+  // answers (same mid). ack/nak are never themselves ack'd or nak'd.
+  #handleControl(msg, prefix) {
+    if (this.dedup.sawBefore(`${prefix}${msg.mid}`)) return;
+    if (String(msg.to || '').toLowerCase() === this.cfg.label.toLowerCase()) {
+      for (const cb of this.ackListeners) {
+        try { cb(msg); } catch { /* listener errors are its own */ }
+      }
+      return;
+    }
+    const ttl = (msg.ttl | 0) - 1;
+    if (ttl <= 0) return; // drop silently; no nak-of-nak
+    const nh = this.table.nextHop(msg.to);
+    if (!nh) return;
+    this.#sendToLink(nh, { ...msg, ttl });
+  }
+
+  // Sends a NAK back toward the origin naming this node as the failing hop.
+  // Best-effort: dropped if it cannot be routed (no recursion).
+  #emitNak(mid, origin, reason) {
+    if (!origin || origin.toLowerCase() === this.cfg.label.toLowerCase()) return;
+    this.#routeControl(message.nak(mid, this.cfg.label, origin, this.cfg.label, reason, message.DEFAULT_TTL));
+  }
+
+  // Sends a freshly-built ack/nak toward its destination, dropping silently if
+  // there is no route (never producing a control-of-control).
+  #routeControl(msg) {
+    const nh = this.table.nextHop(msg.to);
+    if (!nh) return;
+    this.#sendToLink(nh, msg);
   }
 
   kill() {

@@ -195,6 +195,12 @@ func Ack(mid string) map[string]any {
 	return map[string]any{"type": "ack", "mid": mid}
 }
 
+// AckTo builds an acknowledgement routed back toward the origin (protocol.md
+// §7): to is the origin, from is this node, ttl the hop limit.
+func AckTo(mid, from, to string, ttl int) map[string]any {
+	return map[string]any{"type": "ack", "mid": mid, "from": from, "to": to, "ttl": ttl}
+}
+
 // Nak builds a negative acknowledgement naming the hop that failed and why,
 // routed back toward the origin (protocol.md §7).
 func Nak(mid, from, to, hop, reason string, ttl int) map[string]any {

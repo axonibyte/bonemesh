@@ -112,6 +112,53 @@ public class NodeTest {
     assertTrue(await(betaGot, 8000), "beta never reassembled the large payload");
   }
 
+  @Test void deliveredMessageIsAcknowledgedToTheOrigin() throws Exception {
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+
+    java.util.concurrent.atomic.AtomicReference<JSONObject> ack = new java.util.concurrent.atomic.AtomicReference<>();
+    CountDownLatch got = new CountDownLatch(1);
+    alpha.addAckListener(a -> { ack.set(a); got.countDown(); });
+
+    alpha.connect("127.0.0.1", beta.port());
+    String mid = alpha.sendMid("beta", new JSONObject().put("m", "hi"));
+
+    assertTrue(await(got, 5000), "origin never received an ack for its delivered message");
+    assertEquals("ack", ack.get().optString("type"), "expected an ack");
+    assertEquals(mid, ack.get().optString("mid"), "ack mid must match the sent mid");
+  }
+
+  @Test void nakNamesTheFailingRelayNotTheDestination() throws Exception {
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+    Node gamma = node("gamma");
+
+    // Line alpha <-> beta <-> gamma. Sending toward gamma with ttl=1 makes beta
+    // (the relay) exhaust the hop limit — the NAK must name beta, not gamma
+    // (defect D4).
+    alpha.connect("127.0.0.1", beta.port());
+    gamma.connect("127.0.0.1", beta.port());
+
+    long deadline = System.currentTimeMillis() + 15000;
+    while(System.currentTimeMillis() < deadline && !"beta".equals(alpha.routeTable().get("gamma")))
+      Thread.sleep(100);
+    assertEquals("beta", alpha.routeTable().get("gamma"), "alpha never learned a route to gamma via beta");
+
+    java.util.concurrent.atomic.AtomicReference<JSONObject> nak = new java.util.concurrent.atomic.AtomicReference<>();
+    CountDownLatch got = new CountDownLatch(1);
+    alpha.addAckListener(a -> { if("nak".equals(a.optString("type"))) { nak.set(a); got.countDown(); } });
+
+    String mid = alpha.sendWithTtl("gamma", new JSONObject().put("m", "doomed"), 1);
+
+    assertTrue(await(got, 5000), "origin never received a NAK for the TTL-dropped message");
+    assertEquals("beta", nak.get().optString("hop"),
+        "the NAK must name the relay beta, not the destination (the D4 bug names the destination)");
+    assertEquals("ttl", nak.get().optString("reason"), "nak reason should be ttl");
+    assertEquals(mid, nak.get().optString("mid"), "nak mid must match the sent mid");
+  }
+
   @Test void threeNodeLineRelaysAcrossTheMiddleHop() throws Exception {
     setUpRoot();
     Node alpha = node("alpha");

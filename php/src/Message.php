@@ -172,6 +172,13 @@ final class Message
         return ['type' => 'ack', 'mid' => $mid];
     }
 
+    // An acknowledgement routed back toward the origin (protocol.md §7): to is
+    // the origin, from is this node, ttl the hop limit.
+    public static function ackTo(string $mid, string $from, string $to, int $ttl): array
+    {
+        return ['type' => 'ack', 'mid' => $mid, 'from' => $from, 'to' => $to, 'ttl' => $ttl];
+    }
+
     // A negative acknowledgement naming the hop that failed and why, routed
     // back toward the origin (protocol.md §7).
     public static function nak(string $mid, string $from, string $to, string $hop, string $reason, int $ttl): array

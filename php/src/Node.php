@@ -22,6 +22,8 @@ final class Node
     private array $links = [];
     /** @var callable[] */
     private array $listeners = [];
+    /** @var callable[] invoked with each ack/nak addressed to this node */
+    private array $ackListeners = [];
     private RoutingTable $table;
     private Dedup $dedup;
     private array $tun;
@@ -83,10 +85,17 @@ final class Node
     }
 
     // Records a newly-established link (protocol.md §3): stamps who initiated
-    // the connection and the liveness/idle clocks, closes any link this one
-    // displaces (a reconnect), and seeds the neighbor as routable. Closing the
-    // displaced conn is safe because closeConn withdraws routes only when the
-    // links entry still points at the closing id, so it cannot clobber this one.
+    // the connection and the liveness/idle clocks, applies the simultaneous-dial
+    // tiebreak, and seeds the neighbor as routable.
+    //
+    // On a collision with an existing link for the same peer: if both were
+    // initiated by the same side it is a reconnect (last writer wins, displacing
+    // the old); if by opposite sides it is a genuine dial collision, and both
+    // ends deterministically keep the session initiated by the
+    // lexicographically-lower label so the pair converges on one session — the
+    // loser is closed. Closing the displaced/losing conn is safe because
+    // closeConn withdraws routes only when the links entry still points at the
+    // closing id, so it cannot clobber the surviving link.
     private function registerLink(int $id, string $peer, bool $initiator): void
     {
         $now = self::nowMs();
@@ -94,8 +103,24 @@ final class Node
         $this->conns[$id]['establishedAt'] = $now;
         $this->conns[$id]['lastInbound'] = $now;
         $this->conns[$id]['lastData'] = $now;
-        $prev = $this->links[strtolower($peer)] ?? null;
-        $this->links[strtolower($peer)] = $id;
+
+        $key = strtolower($peer);
+        $prev = $this->links[$key] ?? null;
+        $keepNew = true;
+        if ($prev !== null && $prev !== $id && isset($this->conns[$prev])
+            && ($this->conns[$prev]['initiator'] ?? null) !== $initiator) {
+            $selfWins = strtolower($this->cfg['label']) < $key;
+            $keepNew = ($initiator === $selfWins);
+        }
+
+        if (!$keepNew) {
+            // This new link lost the tiebreak; drop it and keep the existing one.
+            @fclose($this->conns[$id]['sock']);
+            unset($this->conns[$id]);
+            return;
+        }
+
+        $this->links[$key] = $id;
         if ($prev !== null && $prev !== $id && isset($this->conns[$prev])) {
             @fclose($this->conns[$prev]['sock']);
             unset($this->conns[$prev]);
@@ -103,7 +128,8 @@ final class Node
         $this->table->observeNeighbor($peer, 1); // optimistic seed
     }
 
-    // Routes an application payload toward any reachable destination.
+    // Routes an application payload toward any reachable destination. Returns
+    // true if the message was handed to a next hop.
     public function send(string $to, $payload): bool
     {
         $nh = $this->table->nextHop($to);
@@ -112,6 +138,37 @@ final class Node
         }
         $msg = Message::data(Message::newMid(), $this->cfg['label'], $to, Message::DEFAULT_TTL, $payload);
         return $this->sendToLink($nh, $msg);
+    }
+
+    // send that also returns the message id, so a caller can correlate the
+    // ack/nak delivered to an onAck listener (protocol.md §7). The mid is always
+    // returned, even when there is no route yet.
+    public function sendMid(string $to, $payload): ?string
+    {
+        $mid = Message::newMid();
+        $nh = $this->table->nextHop($to);
+        if ($nh !== null) {
+            $this->sendToLink($nh, Message::data($mid, $this->cfg['label'], $to, Message::DEFAULT_TTL, $payload));
+        }
+        return $mid;
+    }
+
+    // Registers a callback invoked with each ack/nak addressed to this node.
+    public function onAck(callable $cb): void
+    {
+        $this->ackListeners[] = $cb;
+    }
+
+    // send with an explicit initial TTL; used by tests to force a relay to
+    // exhaust the hop limit and emit a NAK.
+    private function sendWithTtl(string $to, $payload, int $ttl): ?string
+    {
+        $mid = Message::newMid();
+        $nh = $this->table->nextHop($to);
+        if ($nh !== null) {
+            $this->sendToLink($nh, Message::data($mid, $this->cfg['label'], $to, $ttl, $payload));
+        }
+        return $mid;
     }
 
     private function sendToLink(string $label, array $inner): bool
@@ -168,13 +225,34 @@ final class Node
 
     private function heartbeat(): void
     {
-        foreach ($this->conns as $id => $conn) {
-            if (($conn['phase'] ?? '') !== 'established') {
-                continue;
-            }
-            $this->sendRaw($id, Message::probe(self::nowMs()));
-            $this->sendRaw($id, Message::disco($this->table->advertiseTo($conn['peer'])));
+        // Snapshot the ids first: sweepConn may close (unset) a conn mid-sweep.
+        foreach (array_keys($this->conns) as $id) {
+            $this->sweepConn($id);
         }
+    }
+
+    // Once-per-heartbeat maintenance for one established link: tear it down if
+    // it is probe-timeout dead (F3) or data-idle past the idle timeout (F4,
+    // disabled at idleMs==0), otherwise send it a probe and a route
+    // advertisement.
+    private function sweepConn(int $id): void
+    {
+        $conn = $this->conns[$id] ?? null;
+        if ($conn === null || ($conn['phase'] ?? '') !== 'established') {
+            return;
+        }
+        $now = self::nowMs();
+        if ($now - ($conn['lastInbound'] ?? $now) > $this->tun['probeTimeoutMs']) {
+            $this->closeConn($id);
+            return;
+        }
+        if ($this->tun['idleMs'] > 0 && $now - ($conn['lastData'] ?? $now) > $this->tun['idleMs']) {
+            $this->sendRaw($id, Message::bye('idle'));
+            $this->closeConn($id);
+            return;
+        }
+        $this->sendRaw($id, Message::probe($now));
+        $this->sendRaw($id, Message::disco($this->table->advertiseTo($conn['peer'])));
     }
 
     private function sendRaw(int $id, array $inner): void
@@ -302,33 +380,102 @@ final class Node
             case 'data':
                 $this->handleData($msg);
                 break;
+            case 'ack':
+                $this->handleControl($msg, 'a:');
+                break;
+            case 'nak':
+                $this->handleControl($msg, 'n:');
+                break;
+            case 'bye':
+                // Peer is closing this session gracefully; tear it down.
+                $this->closeConn($id);
+                break;
         }
     }
 
     private function handleData(array $msg): void
     {
-        $mid = $msg['mid'] ?? '';
+        $mid = (string) ($msg['mid'] ?? '');
         $chunkIdx = isset($msg['chunk']['i']) ? (int) $msg['chunk']['i'] : -1;
-        if ($this->dedup->sawBefore($mid . ':' . $chunkIdx)) {
+        if ($this->dedup->sawBefore('d:' . $mid . ':' . $chunkIdx)) {
             return;
         }
-        if (strtolower((string) ($msg['to'] ?? '')) === strtolower($this->cfg['label'])) {
+        $to = (string) ($msg['to'] ?? '');
+        $from = (string) ($msg['from'] ?? '');
+        if (strtolower($to) === strtolower($this->cfg['label'])) {
             foreach ($this->listeners as $cb) {
                 $cb($msg['payload'] ?? null);
+            }
+            // F6: acknowledge receipt back toward the origin.
+            if ($from !== '' && strtolower($from) !== strtolower($this->cfg['label'])) {
+                $this->routeControl(Message::ackTo($mid, $this->cfg['label'], $from, Message::DEFAULT_TTL));
             }
             return;
         }
         $ttl = (int) ($msg['ttl'] ?? 0) - 1;
         if ($ttl <= 0) {
-            return; // DROP_TTL, silently
+            // F6/D4: the relay that dropped it names itself as the failing hop.
+            $this->emitNak($mid, $from, 'ttl');
+            return;
         }
-        $nh = $this->table->nextHop((string) ($msg['to'] ?? ''));
+        $nh = $this->table->nextHop($to);
         if ($nh === null) {
-            return; // UNREACHABLE, silently
+            $this->emitNak($mid, $from, 'no-route');
+            return;
         }
         $fwd = $msg;
         $fwd['ttl'] = $ttl;
         $this->sendToLink($nh, $fwd);
+    }
+
+    // Relays or delivers an ack/nak (routed back toward the origin like data). A
+    // type-prefixed dedup key keeps a relayed ack from colliding with the data
+    // it answers (same mid). ack/nak are never themselves ack'd or nak'd.
+    private function handleControl(array $msg, string $prefix): void
+    {
+        $mid = (string) ($msg['mid'] ?? '');
+        if ($this->dedup->sawBefore($prefix . $mid)) {
+            return;
+        }
+        $to = (string) ($msg['to'] ?? '');
+        if (strtolower($to) === strtolower($this->cfg['label'])) {
+            foreach ($this->ackListeners as $cb) {
+                $cb($msg);
+            }
+            return;
+        }
+        $ttl = (int) ($msg['ttl'] ?? 0) - 1;
+        if ($ttl <= 0) {
+            return; // drop silently; no nak-of-nak
+        }
+        $nh = $this->table->nextHop($to);
+        if ($nh === null) {
+            return;
+        }
+        $fwd = $msg;
+        $fwd['ttl'] = $ttl;
+        $this->sendToLink($nh, $fwd);
+    }
+
+    // Sends a NAK back toward the origin naming this node as the failing hop.
+    // Best-effort: dropped if it cannot itself be routed (no recursion).
+    private function emitNak(string $mid, string $origin, string $reason): void
+    {
+        if ($origin === '' || strtolower($origin) === strtolower($this->cfg['label'])) {
+            return;
+        }
+        $this->routeControl(Message::nak($mid, $this->cfg['label'], $origin, $this->cfg['label'], $reason, Message::DEFAULT_TTL));
+    }
+
+    // Sends a freshly-built ack/nak toward its destination, dropping silently if
+    // there is no route (never producing a control-of-control).
+    private function routeControl(array $msg): void
+    {
+        $nh = $this->table->nextHop((string) ($msg['to'] ?? ''));
+        if ($nh === null) {
+            return;
+        }
+        $this->sendToLink($nh, $msg);
     }
 
     /** @param resource $sock */

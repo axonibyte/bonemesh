@@ -115,6 +115,12 @@ export function ack(mid) {
   return { type: 'ack', mid };
 }
 
+// An acknowledgement routed back toward the origin (protocol.md §7): to is the
+// origin, from is this node, ttl the hop limit.
+export function ackTo(mid, from, to, ttl) {
+  return { type: 'ack', mid, from, to, ttl };
+}
+
 // A negative acknowledgement naming the hop that failed and why, routed back
 // toward the origin (protocol.md §7).
 export function nak(mid, from, to, hop, reason, ttl) {

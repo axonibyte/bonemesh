@@ -63,13 +63,14 @@ public final class Node {
   private final Signer identity;
   private final SecureRandom rng = new SecureRandom();
 
-  private final Tunables tunables = Tunables.load();
+  private Tunables tunables = Tunables.load();
   private final RoutingTable routing;
   private final Router router;
   private final Dedup dedup = new Dedup(4096);
   private final Reassembler reassembler = new Reassembler();
   private final Map<String, PeerLink> links = new ConcurrentHashMap<>();
   private final CopyOnWriteArrayList<Consumer<JSONObject>> dataListeners = new CopyOnWriteArrayList<>();
+  private final CopyOnWriteArrayList<Consumer<JSONObject>> ackListeners = new CopyOnWriteArrayList<>();
 
   private final ServerSocket serverSocket;
   private final Thread acceptThread;
@@ -111,6 +112,12 @@ public final class Node {
   public static Node start(String label, String mesh, byte[] rootPublicKey,
       Certificate certificate, Signer identity, int port) throws IOException {
     return new Node(label, mesh, rootPublicKey, certificate, identity, port);
+  }
+
+  // Package-visible test seam: swap in tunables with explicit values so the
+  // liveness/idle sweep can be exercised without setting process environment.
+  void useTunablesForTest(Tunables t) {
+    this.tunables = t;
   }
 
   /** @return the port this node is listening on */
@@ -171,10 +178,11 @@ public final class Node {
 
     String peer = hs.session().peerCertificate().label();
     PeerLink link = new PeerLink(peer, socket, new TransportSession(hs.session()), true);
-    registerLink(peer, link);
-    Thread reader = new Thread(link::readLoop, "bonemesh-read-" + label + "-" + peer);
-    reader.setDaemon(true);
-    reader.start();
+    if(registerLink(peer, link)) {
+      Thread reader = new Thread(link::readLoop, "bonemesh-read-" + label + "-" + peer);
+      reader.setDaemon(true);
+      reader.start();
+    }
     return peer;
   }
 
@@ -186,11 +194,46 @@ public final class Node {
    * @return <code>true</code> if the message was handed to a next hop
    */
   public boolean send(String to, JSONObject payload) {
+    return sendInternal(to, payload, Messages.DEFAULT_TTL).ok;
+  }
+
+  /**
+   * Sends an application payload and returns its message id, so a caller can
+   * correlate the ack or nak later delivered to {@link #addAckListener} against
+   * the message it answers (protocol.md &sect;7).
+   *
+   * @param to the destination label
+   * @param payload the application payload
+   * @return the message id
+   */
+  public String sendMid(String to, JSONObject payload) {
+    return sendInternal(to, payload, Messages.DEFAULT_TTL).mid;
+  }
+
+  // Package-visible: send with an explicit initial TTL so a test can force a
+  // relay to exhaust the hop limit and emit a NAK. Returns the message id.
+  String sendWithTtl(String to, JSONObject payload, int ttl) {
+    return sendInternal(to, payload, ttl).mid;
+  }
+
+  private SendResult sendInternal(String to, JSONObject payload, int ttl) {
     String mid = Messages.newMid(rng);
     boolean all = true;
-    for(JSONObject msg : Chunker.split(mid, label, to, Messages.DEFAULT_TTL, payload))
+    for(JSONObject msg : Chunker.split(mid, label, to, ttl, payload))
       all = forward(msg) && all;
-    return all;
+    return new SendResult(mid, all);
+  }
+
+  private record SendResult(String mid, boolean ok) { }
+
+  /**
+   * Registers a listener for ack and nak messages addressed to this node (the
+   * origin), each delivered as the raw inner JSON.
+   *
+   * @param listener the listener
+   */
+  public void addAckListener(Consumer<JSONObject> listener) {
+    ackListeners.add(listener);
   }
 
   private boolean forward(JSONObject dataMessage) {
@@ -215,18 +258,34 @@ public final class Node {
   }
 
   // Periodically probes each neighbor (for RTT) and advertises reachability
-  // (for route learning). Keeps the mesh's routing tables converging.
+  // (for route learning), and runs the per-link liveness/idle sweep. Keeps the
+  // mesh's routing tables converging.
   private void heartbeatLoop() {
     try {
       while(running) {
         Thread.sleep(HEARTBEAT_INTERVAL_MILLIS);
-        for(Map.Entry<String, PeerLink> e : links.entrySet()) {
-          PeerLink link = e.getValue();
-          link.send(Messages.probe(System.currentTimeMillis()));
-          link.send(Messages.disco(routing.advertiseTo(link.peer)));
-        }
+        long now = System.currentTimeMillis();
+        for(Map.Entry<String, PeerLink> e : links.entrySet())
+          sweepLink(now, e.getValue());
       }
     } catch(InterruptedException ignored) { }
+  }
+
+  // Once-per-heartbeat maintenance for one link: tear it down if it is
+  // probe-timeout dead (F3) or data-idle past the idle timeout (F4, disabled at
+  // idleMillis==0), otherwise send it a probe and a route advertisement.
+  private void sweepLink(long now, PeerLink link) {
+    if(now - link.lastInboundMillis > tunables.probeTimeoutMillis) {
+      link.close();
+      return;
+    }
+    if(tunables.idleMillis > 0 && now - link.lastDataMillis > tunables.idleMillis) {
+      link.send(Messages.bye("idle"));
+      link.close();
+      return;
+    }
+    link.send(Messages.probe(now));
+    link.send(Messages.disco(routing.advertiseTo(link.peer)));
   }
 
   private void acceptLoop() {
@@ -257,19 +316,44 @@ public final class Node {
 
       String peer = hs.session().peerCertificate().label();
       PeerLink link = new PeerLink(peer, socket, new TransportSession(hs.session()), false);
-      registerLink(peer, link);
-      link.readLoop();
+      if(registerLink(peer, link)) link.readLoop();
     } catch(Exception e) {
       closeQuietly(socket);
     }
   }
 
-  private void registerLink(String peer, PeerLink link) {
-    PeerLink previous = links.put(key(peer), link);
-    if(previous != null && previous != link) previous.close();
+  // Installs a new link for peer, returning true if it was kept. On a collision
+  // with an existing link (protocol.md §3): if the two links were initiated by
+  // the same side it is a reconnect (last writer wins); if by opposite sides it
+  // is a genuine dial collision, and both ends deterministically keep the
+  // session initiated by the lexicographically-lower label, so the pair
+  // converges on exactly one session.
+  private boolean registerLink(String peer, PeerLink link) {
+    PeerLink toClose = null;
+    boolean keepNew = true;
+    synchronized(links) {
+      PeerLink previous = links.get(key(peer));
+      if(previous != null && previous.initiator != link.initiator) {
+        boolean selfWins = key(label).compareTo(key(peer)) < 0;
+        keepNew = link.initiator == selfWins;
+      }
+      if(keepNew) {
+        links.put(key(peer), link);
+        if(previous != null && previous != link) toClose = previous;
+      }
+    }
+    if(!keepNew) {
+      // This new link lost the tiebreak; drop it and keep the existing one. Its
+      // close() is identity-guarded (it was never in the map), so it cannot
+      // withdraw the surviving link's routes.
+      link.close();
+      return false;
+    }
+    if(toClose != null) toClose.close();
     // A fresh neighbor starts with an optimistic small latency until probes
     // refine it; that is enough for it to be a routable next hop.
     routing.observeNeighbor(peer, 1);
+    return true;
   }
 
   // Handles one decrypted inner message.
@@ -278,26 +362,44 @@ public final class Node {
     switch(type) {
       case "data": {
         int chunkIndex = inner.has("chunk") ? inner.getJSONObject("chunk").getInt("i") : -1;
-        // Dedup per (mid, chunk) so the chunks of one message are not mistaken
-        // for duplicates of each other.
-        if(dedup.seenBefore(inner.getString("mid") + ":" + chunkIndex)) return;
+        String mid = inner.getString("mid");
+        // Dedup per (mid, chunk) with a type prefix so a relayed ack, which
+        // carries the same mid as the data it answers, cannot be mistaken for a
+        // duplicate of that data.
+        if(dedup.seenBefore("d:" + mid + ":" + chunkIndex)) return;
+        String from = inner.optString("from", "");
         Router.Decision d = router.route(inner);
         switch(d.action()) {
           case DELIVER:
+            // Ack once the full message is reassembled (one ack per completed
+            // application message), routed back toward the origin.
             reassembler.offer(inner).ifPresent(payload -> {
               for(Consumer<JSONObject> l : dataListeners) l.accept(payload);
+              if(!from.isEmpty() && !from.equalsIgnoreCase(label))
+                routeControl(Messages.ackTo(mid, label, from, Messages.DEFAULT_TTL));
             });
             break;
           case FORWARD:
             forward(d.message());
             break;
+          case DROP_TTL:
+            // F6/D4: the relay that dropped it names ITSELF as the failing hop.
+            emitNak(mid, from, "ttl");
+            break;
+          case UNREACHABLE:
+            emitNak(mid, from, "no-route");
+            break;
           default:
-            // DROP_TTL / UNREACHABLE: the origin learns via the absence of an
-            // ack; explicit NAK routing is a refinement.
             break;
         }
         break;
       }
+      case "ack":
+        handleControl(inner, "a:");
+        break;
+      case "nak":
+        handleControl(inner, "n:");
+        break;
       case "probe":
         PeerLink link = links.get(key(peer));
         if(link != null) link.send(Messages.echo(inner.getLong("token")));
@@ -314,6 +416,47 @@ public final class Node {
       default:
         break;
     }
+  }
+
+  // Relays or delivers an ack/nak (routed back toward the origin like data). A
+  // type-prefixed dedup key keeps a relayed ack from colliding with the data it
+  // answers. ack/nak are never themselves ack'd or nak'd.
+  private void handleControl(JSONObject msg, String prefix) {
+    String mid = msg.getString("mid");
+    if(dedup.seenBefore(prefix + mid)) return;
+    String to = msg.optString("to", "");
+    if(to.equalsIgnoreCase(label)) {
+      deliverAck(msg);
+      return;
+    }
+    int ttl = msg.getInt("ttl") - 1;
+    if(ttl <= 0) return; // drop silently; no nak-of-nak
+    String nh = routing.nextHop(to);
+    if(nh == null) return;
+    PeerLink link = links.get(key(nh));
+    if(link != null) link.send(new JSONObject(msg.toString()).put("ttl", ttl));
+  }
+
+  // Sends a NAK back toward the origin naming this node as the failing hop.
+  // Best-effort: if the NAK itself cannot be routed it is dropped (no recursion).
+  private void emitNak(String mid, String origin, String reason) {
+    if(origin == null || origin.isEmpty() || origin.equalsIgnoreCase(label)) return;
+    routeControl(Messages.nak(mid, label, origin, label, reason, Messages.DEFAULT_TTL));
+  }
+
+  // Sends a freshly-built ack/nak toward its destination, dropping silently if
+  // there is no route (never producing a control-of-control).
+  private void routeControl(JSONObject msg) {
+    String to = msg.getString("to");
+    String nh = routing.nextHop(to);
+    if(nh == null) return;
+    PeerLink link = links.get(key(nh));
+    if(link != null) link.send(msg);
+  }
+
+  // Hands an ack/nak addressed to this node to the ack listeners.
+  private void deliverAck(JSONObject msg) {
+    for(Consumer<JSONObject> l : ackListeners) l.accept(msg);
   }
 
   private static void writeRaw(OutputStream out, byte[] bytes) throws IOException {
@@ -396,7 +539,13 @@ public final class Node {
           JSONObject carrier = FrameCodec.readFrame(in, FrameCodec.TRANSPORT_CAP);
           JSONObject inner = session.open(carrier);
           lastInboundMillis = System.currentTimeMillis();
-          if("data".equals(inner.optString("type", ""))) lastDataMillis = System.currentTimeMillis();
+          String t = inner.optString("type", "");
+          if("data".equals(t)) lastDataMillis = System.currentTimeMillis();
+          if("bye".equals(t)) {
+            // Peer is closing this session gracefully; tear it down and stop.
+            close();
+            return;
+          }
           handleInner(peer, inner);
         }
       } catch(Exception e) {
@@ -407,9 +556,13 @@ public final class Node {
     // Closes the link and withdraws its routes — but the route withdrawal only
     // fires if this link is still the registered one for peer. A reconnect may
     // have displaced it, and a stale link's death must not withdraw the live
-    // link's routes.
+    // link's routes. The map mutation shares the links monitor with
+    // registerLink so a register/close race cannot resurrect a removed peer.
     void close() {
-      boolean wasCurrent = links.remove(key(peer), this);
+      boolean wasCurrent;
+      synchronized(links) {
+        wasCurrent = links.remove(key(peer), this);
+      }
       if(wasCurrent) routing.removeNeighbor(peer);
       closeQuietly(socket);
     }

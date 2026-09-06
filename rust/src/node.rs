@@ -54,6 +54,7 @@ struct Inner {
     tun: Tunables,
     links: Mutex<HashMap<String, Arc<Mutex<Link>>>>,
     listeners: Mutex<Vec<Sender<Value>>>,
+    ack_listeners: Mutex<Vec<Sender<Value>>>,
     table: Mutex<routing::Table>,
     dedup: Mutex<routing::Dedup>,
     stop: AtomicBool,
@@ -111,6 +112,7 @@ impl Node {
             tun: load_tunables(),
             links: Mutex::new(HashMap::new()),
             listeners: Mutex::new(Vec::new()),
+            ack_listeners: Mutex::new(Vec::new()),
             table: Mutex::new(routing::Table::new(&label)),
             dedup: Mutex::new(routing::Dedup::new(4096)),
             stop: AtomicBool::new(false),
@@ -167,19 +169,42 @@ impl Node {
         // Handshake done: drop the dial read-timeout so it cannot masquerade
         // as a liveness timer; liveness is the probe-timeout's job.
         write.set_read_timeout(None).ok();
-        register(&self.inner, &peer, write, reader, Transport::new(hs.session()), true);
+        let _ = register(&self.inner, &peer, write, reader, Transport::new(hs.session()), true);
         Ok(peer)
     }
 
-    /// Routes an application payload toward any reachable destination.
+    /// Routes an application payload toward any reachable destination. Returns
+    /// true if the message was handed to a next hop.
     pub fn send(&self, to: &str, payload: Value) -> bool {
+        self.send_mid(to, payload).is_some()
+    }
+
+    /// Send that also returns the message id, so a caller can correlate the
+    /// ack/nak delivered to `add_ack_listener` (protocol.md §7). Returns None if
+    /// there is no route.
+    pub fn send_mid(&self, to: &str, payload: Value) -> Option<String> {
+        self.send_with_ttl(to, payload, message::DEFAULT_TTL)
+    }
+
+    /// Send with an explicit initial TTL — used by tests to force a relay to
+    /// exhaust the hop limit and emit a NAK.
+    pub fn send_with_ttl(&self, to: &str, payload: Value, ttl: i64) -> Option<String> {
         let mid = message::new_mid();
-        let msg = message::data(&mid, &self.inner.config.label, to, message::DEFAULT_TTL, payload);
-        let nh = self.inner.table.lock().unwrap().next_hop(to);
-        match nh {
-            Some(nh) => send_to_link(&self.inner, &nh, &msg),
-            None => false,
+        let msg = message::data(&mid, &self.inner.config.label, to, ttl, payload);
+        let nh = self.inner.table.lock().unwrap().next_hop(to)?;
+        if send_to_link(&self.inner, &nh, &msg) {
+            Some(mid)
+        } else {
+            None
         }
+    }
+
+    /// Registers an ack listener; ack and nak messages addressed to this node
+    /// (the origin) are sent on the returned channel as the raw inner value.
+    pub fn add_ack_listener(&self) -> std::sync::mpsc::Receiver<Value> {
+        let (tx, rx) = channel();
+        self.inner.ack_listeners.lock().unwrap().push(tx);
+        rx
     }
 
     /// A snapshot of learned destinations to their next hop.
@@ -212,13 +237,18 @@ fn respond(inner: &Arc<Inner>, stream: TcpStream) -> Result<(), String> {
     // Handshake done: drop the accept read-timeout so it cannot masquerade
     // as a liveness timer; liveness is the probe-timeout's job.
     write.set_read_timeout(None).ok();
-    register(inner, &peer, write, reader, Transport::new(hs.session()), false);
+    let _ = register(inner, &peer, write, reader, Transport::new(hs.session()), false);
     Ok(())
 }
 
-// Registers a link and spawns its reader thread. A displaced link (reconnect)
-// is closed so its socket and reader thread do not linger; its deregister is
-// identity-guarded, so its death cannot withdraw the new link's routes.
+// Registers a new link for peer and starts its reader. Returns true if the new
+// link was kept. On a collision it applies the simultaneous-dial tiebreak
+// (protocol.md §3): same-initiator links are a reconnect (last writer wins);
+// opposite-initiator links are a genuine dial collision, and both ends
+// deterministically keep the session initiated by the lexicographically-lower
+// label, so the pair converges on exactly one session. A displaced link is shut
+// down; its deregister is identity-guarded, so its death cannot withdraw the
+// surviving link's routes.
 fn register(
     inner: &Arc<Inner>,
     peer: &str,
@@ -226,7 +256,7 @@ fn register(
     reader: BufReader<TcpStream>,
     transport: Transport,
     initiator: bool,
-) {
+) -> bool {
     let now = now_millis();
     let link = Arc::new(Mutex::new(Link {
         write,
@@ -236,11 +266,33 @@ fn register(
         last_inbound: now,
         last_data: now,
     }));
-    let displaced = inner.links.lock().unwrap().insert(peer.to_lowercase(), link.clone());
+
+    let (keep_new, displaced) = {
+        let mut links = inner.links.lock().unwrap();
+        let prev = links.get(&peer.to_lowercase()).cloned();
+        let keep_new = match &prev {
+            Some(p) if p.lock().unwrap().initiator != initiator => {
+                // Dial collision: keep the session the lower-labelled node
+                // initiated. Both ends compute the same winner.
+                let self_wins = inner.config.label.to_lowercase() < peer.to_lowercase();
+                initiator == self_wins
+            }
+            _ => true, // no collision, or a same-initiator reconnect (last wins)
+        };
+        if keep_new {
+            links.insert(peer.to_lowercase(), link.clone());
+        }
+        (keep_new, prev)
+    };
+
+    if !keep_new {
+        // The new link lost the tiebreak; drop it and keep the existing one.
+        link.lock().unwrap().write.shutdown(std::net::Shutdown::Both).ok();
+        return false;
+    }
     if let Some(old) = displaced {
         if !Arc::ptr_eq(&old, &link) {
-            let l = old.lock().unwrap();
-            l.write.shutdown(std::net::Shutdown::Both).ok();
+            old.lock().unwrap().write.shutdown(std::net::Shutdown::Both).ok();
         }
     }
     inner.table.lock().unwrap().observe_neighbor(peer, 1); // optimistic seed
@@ -248,6 +300,7 @@ fn register(
     let inner = inner.clone();
     let peer = peer.to_string();
     thread::spawn(move || read_loop(inner, peer, reader, link));
+    true
 }
 
 fn read_loop(inner: Arc<Inner>, peer: String, mut reader: BufReader<TcpStream>, link: Arc<Mutex<Link>>) {
@@ -279,6 +332,11 @@ fn read_loop(inner: Arc<Inner>, peer: String, mut reader: BufReader<TcpStream>, 
                 Err(_) => continue,
             }
         };
+        if inner_msg["type"] == "bye" {
+            // Peer is closing this session gracefully; tear it down and stop.
+            deregister(&inner, &peer, &link);
+            return;
+        }
         handle_inner(&inner, &peer, inner_msg);
     }
 }
@@ -307,6 +365,8 @@ fn handle_inner(inner: &Arc<Inner>, peer: &str, msg: Value) {
             }
         }
         Some("data") => handle_data(inner, msg),
+        Some("ack") => handle_control(inner, msg, "a:"),
+        Some("nak") => handle_control(inner, msg, "n:"),
         _ => {}
     }
 }
@@ -314,26 +374,94 @@ fn handle_inner(inner: &Arc<Inner>, peer: &str, msg: Value) {
 fn handle_data(inner: &Arc<Inner>, msg: Value) {
     let mid = msg["mid"].as_str().unwrap_or("");
     let chunk_idx = msg["chunk"]["i"].as_i64().unwrap_or(-1);
-    if inner.dedup.lock().unwrap().seen(&format!("{}:{}", mid, chunk_idx)) {
+    if inner.dedup.lock().unwrap().seen(&format!("d:{}:{}", mid, chunk_idx)) {
         return;
     }
     let to = msg["to"].as_str().unwrap_or("");
-    if to.to_lowercase() == inner.config.label.to_lowercase() {
+    let from = msg["from"].as_str().unwrap_or("");
+    let self_label = inner.config.label.to_lowercase();
+    if to.to_lowercase() == self_label {
         let payload = msg["payload"].clone();
         for tx in inner.listeners.lock().unwrap().iter() {
             let _ = tx.send(payload.clone());
+        }
+        // F6: acknowledge receipt back toward the origin.
+        if !from.is_empty() && from.to_lowercase() != self_label {
+            route_control(
+                inner,
+                &message::ack_to(mid, &inner.config.label, from, message::DEFAULT_TTL),
+            );
         }
         return;
     }
     let ttl = msg["ttl"].as_i64().unwrap_or(0) - 1;
     if ttl <= 0 {
-        return; // DROP_TTL, silently
+        // F6/D4: the relay that dropped it names itself as the failing hop.
+        emit_nak(inner, mid, from, "ttl");
+        return;
+    }
+    let nh = inner.table.lock().unwrap().next_hop(to);
+    match nh {
+        Some(nh) => {
+            let mut fwd = msg.clone();
+            fwd["ttl"] = json!(ttl);
+            send_to_link(inner, &nh, &fwd);
+        }
+        None => emit_nak(inner, mid, from, "no-route"),
+    }
+}
+
+// Relays or delivers an ack/nak (routed back toward the origin like data). A
+// type-prefixed dedup key keeps a relayed ack from colliding with the data it
+// answers (same mid). ack/nak are never themselves ack'd or nak'd.
+fn handle_control(inner: &Arc<Inner>, msg: Value, prefix: &str) {
+    let mid = msg["mid"].as_str().unwrap_or("");
+    if inner.dedup.lock().unwrap().seen(&format!("{}{}", prefix, mid)) {
+        return;
+    }
+    let to = msg["to"].as_str().unwrap_or("");
+    if to.to_lowercase() == inner.config.label.to_lowercase() {
+        deliver_ack(inner, msg);
+        return;
+    }
+    let ttl = msg["ttl"].as_i64().unwrap_or(0) - 1;
+    if ttl <= 0 {
+        return; // drop silently; no nak-of-nak
     }
     let nh = inner.table.lock().unwrap().next_hop(to);
     if let Some(nh) = nh {
         let mut fwd = msg.clone();
         fwd["ttl"] = json!(ttl);
         send_to_link(inner, &nh, &fwd);
+    }
+}
+
+// Sends a NAK back toward the origin naming this node as the failing hop.
+// Best-effort: if the NAK itself cannot be routed it is dropped (no recursion).
+fn emit_nak(inner: &Arc<Inner>, mid: &str, origin: &str, reason: &str) {
+    if origin.is_empty() || origin.to_lowercase() == inner.config.label.to_lowercase() {
+        return;
+    }
+    route_control(
+        inner,
+        &message::nak(mid, &inner.config.label, origin, &inner.config.label, reason, message::DEFAULT_TTL),
+    );
+}
+
+// Sends a freshly-built ack/nak toward its destination, dropping silently if
+// there is no route (never producing a control-of-control).
+fn route_control(inner: &Arc<Inner>, msg: &Value) {
+    let to = msg["to"].as_str().unwrap_or("");
+    let nh = inner.table.lock().unwrap().next_hop(to);
+    if let Some(nh) = nh {
+        send_to_link(inner, &nh, msg);
+    }
+}
+
+// Hands an ack/nak addressed to this node to the ack listeners.
+fn deliver_ack(inner: &Arc<Inner>, msg: Value) {
+    for tx in inner.ack_listeners.lock().unwrap().iter() {
+        let _ = tx.send(msg.clone());
     }
 }
 
@@ -363,13 +491,37 @@ fn heartbeat(inner: Arc<Inner>) {
         if inner.stop.load(Ordering::SeqCst) {
             return;
         }
-        let peers: Vec<String> = inner.links.lock().unwrap().keys().cloned().collect();
-        for peer in peers {
-            send_to_link(&inner, &peer, &message::probe(now_millis()));
-            let adv = inner.table.lock().unwrap().advertise_to(&peer);
-            send_to_link(&inner, &peer, &message::disco(adv));
+        let now = now_millis();
+        let pairs: Vec<(String, Arc<Mutex<Link>>)> = {
+            let links = inner.links.lock().unwrap();
+            links.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        for (peer, link) in pairs {
+            sweep_link(&inner, now, &peer, &link);
         }
     }
+}
+
+// Once-per-heartbeat maintenance for one link: tear it down if it is
+// probe-timeout dead (F3) or data-idle past the idle timeout (F4, disabled at
+// idle_ms==0), otherwise send it a probe and a route advertisement.
+fn sweep_link(inner: &Arc<Inner>, now: i64, peer: &str, link: &Arc<Mutex<Link>>) {
+    let (last_inbound, last_data) = {
+        let l = link.lock().unwrap();
+        (l.last_inbound, l.last_data)
+    };
+    if now - last_inbound > inner.tun.probe_timeout_ms {
+        deregister(inner, peer, link);
+        return;
+    }
+    if inner.tun.idle_ms > 0 && now - last_data > inner.tun.idle_ms {
+        send_to_link(inner, peer, &message::bye(Some("idle")));
+        deregister(inner, peer, link);
+        return;
+    }
+    send_to_link(inner, peer, &message::probe(now));
+    let adv = inner.table.lock().unwrap().advertise_to(peer);
+    send_to_link(inner, peer, &message::disco(adv));
 }
 
 fn now_millis() -> i64 {
@@ -432,6 +584,38 @@ mod lifecycle_tests {
             tun: load_tunables(),
             links: Mutex::new(HashMap::new()),
             listeners: Mutex::new(Vec::new()),
+            ack_listeners: Mutex::new(Vec::new()),
+            table: Mutex::new(routing::Table::new("self")),
+            dedup: Mutex::new(routing::Dedup::new(16)),
+            stop: AtomicBool::new(false),
+        })
+    }
+
+    // A bare Inner with a chosen probe timeout and idle timeout, for the
+    // heartbeat-sweep feature tests (F3/F4).
+    fn inner_with_tun(probe_timeout_ms: i64, idle_ms: i64) -> Arc<Inner> {
+        Arc::new(Inner {
+            config: Config {
+                label: "self".into(),
+                mesh: "m".into(),
+                root_public: vec![],
+                cert: Value::Null,
+                id_private: [0u8; 32],
+            },
+            tun: Tunables {
+                probe_timeout_ms,
+                idle_ms,
+                retry_base_ms: 500,
+                retry_cap_ms: 30000,
+                retry_max_ms: 60000,
+                rekey_ms: 3600000,
+                rekey_frames: 65536,
+                rekey_timeout_ms: 10000,
+                keylog_path: String::new(),
+            },
+            links: Mutex::new(HashMap::new()),
+            listeners: Mutex::new(Vec::new()),
+            ack_listeners: Mutex::new(Vec::new()),
             table: Mutex::new(routing::Table::new("self")),
             dedup: Mutex::new(routing::Dedup::new(16)),
             stop: AtomicBool::new(false),
@@ -526,5 +710,92 @@ mod lifecycle_tests {
             (0, 500, 30000, 60000)
         );
         assert_eq!((d.rekey_ms, d.rekey_frames, d.rekey_timeout_ms), (3600000, 65536, 10000));
+    }
+
+    // F1: on a dial collision both ends keep the session initiated by the
+    // lower-labelled node, regardless of which link registered first. self="self":
+    // against a higher peer ("zzz") self keeps its own-initiated link; against a
+    // lower peer ("aaa") it keeps the one it accepted.
+    #[test]
+    fn tiebreak_keeps_lower_label_initiated_session() {
+        for (peer, want_initiator) in [("zzz", true), ("aaa", false)] {
+            for first_initiator in [true, false] {
+                let inner = inner_with_tun(1_000_000, 0);
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let (c1, _s1) = tcp_pair(&listener);
+                let (c2, _s2) = tcp_pair(&listener);
+                let r1 = BufReader::new(c1.try_clone().unwrap());
+                let r2 = BufReader::new(c2.try_clone().unwrap());
+                register(&inner, peer, c1, r1, dummy_transport(), first_initiator);
+                register(&inner, peer, c2, r2, dummy_transport(), !first_initiator);
+                let lk = inner.links.lock().unwrap().get(peer).cloned().unwrap();
+                let got = lk.lock().unwrap().initiator;
+                assert_eq!(
+                    got, want_initiator,
+                    "peer={peer} first_initiator={first_initiator}: wrong survivor"
+                );
+            }
+        }
+    }
+
+    // F3: a link silent past the probe timeout is torn down and its routes
+    // withdrawn; a fresh link is kept.
+    #[test]
+    fn probe_timeout_closes_silent_link() {
+        let inner = inner_with_tun(100, 0);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (c1, _s1) = tcp_pair(&listener); // hold _s1 so the socket stays open
+        let r1 = BufReader::new(c1.try_clone().unwrap());
+        register(&inner, "peer", c1, r1, dummy_transport(), true);
+        let lk = inner.links.lock().unwrap().get("peer").cloned().unwrap();
+
+        sweep_link(&inner, now_millis(), "peer", &lk); // fresh: kept
+        assert!(inner.links.lock().unwrap().contains_key("peer"), "fresh link wrongly torn down");
+
+        lk.lock().unwrap().last_inbound = now_millis() - 5000; // now silent past the timeout
+        sweep_link(&inner, now_millis(), "peer", &lk);
+        assert!(!inner.links.lock().unwrap().contains_key("peer"), "probe-dead link not torn down");
+        assert!(
+            inner.table.lock().unwrap().next_hop("peer").is_none(),
+            "neighbor not withdrawn after probe-timeout death"
+        );
+    }
+
+    // F4: with idle teardown enabled, a link with no data past the idle timeout
+    // is torn down; disabled (idle_ms==0), the same idle link stays up.
+    #[test]
+    fn idle_teardown_only_when_enabled() {
+        let enabled = inner_with_tun(1_000_000, 100);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (c1, _s1) = tcp_pair(&listener);
+        let r1 = BufReader::new(c1.try_clone().unwrap());
+        register(&enabled, "peer", c1, r1, dummy_transport(), true);
+        let lk = enabled.links.lock().unwrap().get("peer").cloned().unwrap();
+        {
+            let mut l = lk.lock().unwrap();
+            l.last_inbound = now_millis(); // not probe-dead
+            l.last_data = now_millis() - 5000; // idle
+        }
+        sweep_link(&enabled, now_millis(), "peer", &lk);
+        assert!(
+            !enabled.links.lock().unwrap().contains_key("peer"),
+            "idle link not torn down when idle teardown is enabled"
+        );
+
+        let disabled = inner_with_tun(1_000_000, 0);
+        let (c2, _s2) = tcp_pair(&listener);
+        let r2 = BufReader::new(c2.try_clone().unwrap());
+        register(&disabled, "peer", c2, r2, dummy_transport(), true);
+        let lk2 = disabled.links.lock().unwrap().get("peer").cloned().unwrap();
+        {
+            let mut l = lk2.lock().unwrap();
+            l.last_inbound = now_millis();
+            l.last_data = now_millis() - 5000;
+        }
+        sweep_link(&disabled, now_millis(), "peer", &lk2);
+        assert!(
+            disabled.links.lock().unwrap().contains_key("peer"),
+            "idle teardown fired even though it is disabled (idle_ms=0)"
+        );
     }
 }

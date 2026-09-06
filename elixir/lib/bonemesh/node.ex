@@ -38,6 +38,19 @@ defmodule Bonemesh.Node do
   @doc "Sends an application payload toward `to`. Returns true if routed."
   def send(node, to, payload), do: GenServer.call(node, {:send, to, payload})
 
+  @doc """
+  Sends like `send/3` but returns `{:ok, mid}` (the message id, for correlating
+  the ack/nak delivered to an ack listener) or `:error` if unroutable.
+  """
+  def send_mid(node, to, payload), do: GenServer.call(node, {:send_mid, to, payload})
+
+  @doc "Sends with an explicit initial TTL (used by tests to force a relay NAK)."
+  def send_with_ttl(node, to, payload, ttl),
+    do: GenServer.call(node, {:send_with_ttl, to, payload, ttl})
+
+  @doc "Registers a pid to receive `{:bonemesh_ack, inner}` for ack/nak addressed here."
+  def add_ack_listener(node, pid), do: GenServer.cast(node, {:add_ack_listener, pid})
+
   @doc "A snapshot of the routing table: destination => next-hop label."
   def routes(node), do: GenServer.call(node, :routes)
 
@@ -69,7 +82,8 @@ defmodule Bonemesh.Node do
       links: %{},
       dedup: {MapSet.new(), :queue.new()},
       reassembler: %{},
-      listeners: []
+      listeners: [],
+      ack_listeners: []
     }
 
     config = Map.take(state, [:mesh, :root_public, :cert, :id_public, :id_private])
@@ -98,20 +112,26 @@ defmodule Bonemesh.Node do
   end
 
   def handle_call({:send, to, payload}, _from, s) do
-    mid = Message.new_mid()
-    msgs = Message.split(mid, s.label, to, Message.default_ttl(), payload)
-
-    {ok, s} =
-      Enum.reduce(msgs, {true, s}, fn m, {acc, st} ->
-        {sent, st} = forward(st, m)
-        {sent and acc, st}
-      end)
-
+    {ok, _mid, s} = do_send(s, to, payload)
     {:reply, ok, s}
+  end
+
+  def handle_call({:send_mid, to, payload}, _from, s) do
+    {ok, mid, s} = do_send(s, to, payload)
+    {:reply, (if ok, do: {:ok, mid}, else: :error), s}
+  end
+
+  def handle_call({:send_with_ttl, to, payload, ttl}, _from, s) do
+    mid = Message.new_mid()
+    {ok, s} = forward(s, Message.data(mid, s.label, to, ttl, payload))
+    {:reply, (if ok, do: {:ok, mid}, else: :error), s}
   end
 
   @impl true
   def handle_cast({:add_listener, pid}, s), do: {:noreply, %{s | listeners: [pid | s.listeners]}}
+
+  def handle_cast({:add_ack_listener, pid}, s),
+    do: {:noreply, %{s | ack_listeners: [pid | s.ack_listeners]}}
 
   def handle_cast({:link_up, peer, pid}, s), do: {:noreply, register_link_pid(s, peer, pid, false)}
 
@@ -133,7 +153,12 @@ defmodule Bonemesh.Node do
           s
       end
 
-    {:noreply, handle_inner(s, peer, inner)}
+    # F4: a peer's graceful close tears down that link (pid-guarded), no reply.
+    if inner["type"] == "bye" do
+      {:noreply, teardown(s, key, pid)}
+    else
+      {:noreply, handle_inner(s, peer, inner)}
+    end
   end
 
   # Withdraw routes on a link's death only if it is still the current link for
@@ -155,22 +180,52 @@ defmodule Bonemesh.Node do
   @impl true
   def handle_info(:heartbeat, s) do
     now = System.system_time(:millisecond)
-
-    for {label, %{pid: pid}} <- s.links do
-      Kernel.send(pid, {:send, Message.probe(now)})
-      Kernel.send(pid, {:send, Message.disco(Routing.advertise_to(s.routing, label))})
-    end
-
+    s = Enum.reduce(Map.to_list(s.links), s, fn {label, link}, acc -> sweep_link(acc, now, label, link) end)
     {:noreply, s}
   end
 
   def handle_info(_msg, s), do: {:noreply, s}
 
+  # Once-per-heartbeat maintenance for one link: tear it down if probe-timeout
+  # dead (F3) or data-idle past the idle timeout (F4, disabled at idle_ms==0),
+  # otherwise send it a probe and a route advertisement.
+  defp sweep_link(s, now, label, %{pid: pid} = link) do
+    cond do
+      now - link.last_inbound > s.tun.probe_timeout_ms ->
+        teardown(s, label, pid)
+
+      s.tun.idle_ms > 0 and now - link.last_data > s.tun.idle_ms ->
+        Kernel.send(pid, {:send, Message.bye("idle")})
+        teardown(s, label, pid)
+
+      true ->
+        Kernel.send(pid, {:send, Message.probe(now)})
+        Kernel.send(pid, {:send, Message.disco(Routing.advertise_to(s.routing, label))})
+        s
+    end
+  end
+
+  # Tears down a link: closes its process and withdraws its routes, but only if
+  # it is still the registered link for its peer (pid-guarded against a
+  # concurrent replacement).
+  defp teardown(s, key, pid) do
+    case s.links[key] do
+      %{pid: ^pid} ->
+        Kernel.send(pid, :close)
+        %{s | links: Map.delete(s.links, key), routing: Routing.remove_neighbor(s.routing, key)}
+
+      _ ->
+        s
+    end
+  end
+
   # --- Internals ---
 
   defp handle_inner(s, _peer, %{"type" => "data"} = m) do
     chunk_index = get_in(m, ["chunk", "i"]) || -1
-    key = m["mid"] <> ":" <> Integer.to_string(chunk_index)
+    # Type-prefixed dedup key so a relayed ack/nak carrying the same mid as the
+    # data it answers does not collide with it (protocol.md §7).
+    key = "d:" <> m["mid"] <> ":" <> Integer.to_string(chunk_index)
 
     if seen?(s.dedup, key) do
       s
@@ -179,6 +234,9 @@ defmodule Bonemesh.Node do
       route_data(s, m)
     end
   end
+
+  defp handle_inner(s, _peer, %{"type" => "ack"} = m), do: handle_control(s, m, "a:")
+  defp handle_inner(s, _peer, %{"type" => "nak"} = m), do: handle_control(s, m, "n:")
 
   defp handle_inner(s, peer, %{"type" => "probe", "token" => token}) do
     send_to_link(s, peer, Message.echo(token))
@@ -204,20 +262,90 @@ defmodule Bonemesh.Node do
       case Message.reassemble(s.reassembler, m) do
         {:complete, payload, acc} ->
           for pid <- s.listeners, do: Kernel.send(pid, {:bonemesh_data, payload})
-          %{s | reassembler: acc}
+          s = %{s | reassembler: acc}
+          # F6: acknowledge receipt back toward the origin.
+          from = m["from"]
+
+          if is_binary(from) and String.downcase(from) != String.downcase(s.label) do
+            route_control(s, Message.ack_to(m["mid"], s.label, from, Message.default_ttl()))
+          else
+            s
+          end
 
         {:incomplete, acc} ->
           %{s | reassembler: acc}
       end
     else
       ttl = m["ttl"] - 1
+      origin = m["from"]
 
-      if ttl > 0 do
-        {_sent, s} = forward(s, Map.put(m, "ttl", ttl))
-        s
-      else
-        s
+      cond do
+        # F6/D4: the relay that dropped it names itself as the failing hop.
+        ttl <= 0 -> emit_nak(s, m["mid"], origin, "ttl")
+        Routing.next_hop(s.routing, m["to"]) == nil -> emit_nak(s, m["mid"], origin, "no-route")
+        true -> elem(forward(s, Map.put(m, "ttl", ttl)), 1)
       end
+    end
+  end
+
+  # Delivers or relays a freshly-arrived payload; builds the mid and threads
+  # state. Returns {routed?, mid, state}.
+  defp do_send(s, to, payload) do
+    mid = Message.new_mid()
+    msgs = Message.split(mid, s.label, to, Message.default_ttl(), payload)
+
+    {ok, s} =
+      Enum.reduce(msgs, {true, s}, fn m, {acc, st} ->
+        {sent, st} = forward(st, m)
+        {sent and acc, st}
+      end)
+
+    {ok, mid, s}
+  end
+
+  # Relays or delivers an ack/nak (routed back toward the origin like data). A
+  # type-prefixed dedup key keeps a relayed ack from colliding with the data it
+  # answers. ack/nak are never themselves ack'd or nak'd.
+  defp handle_control(s, m, prefix) do
+    key = prefix <> m["mid"]
+
+    cond do
+      seen?(s.dedup, key) ->
+        s
+
+      String.downcase(m["to"]) == String.downcase(s.label) ->
+        s = %{s | dedup: remember(s.dedup, key)}
+        for pid <- s.ack_listeners, do: Kernel.send(pid, {:bonemesh_ack, m})
+        s
+
+      true ->
+        s = %{s | dedup: remember(s.dedup, key)}
+        ttl = m["ttl"] - 1
+
+        if ttl > 0 and Routing.next_hop(s.routing, m["to"]) != nil do
+          elem(forward(s, Map.put(m, "ttl", ttl)), 1)
+        else
+          s
+        end
+    end
+  end
+
+  # emit_nak sends a NAK back toward the origin naming this node as the failing
+  # hop; best-effort, dropped if unroutable (no recursion).
+  defp emit_nak(s, mid, origin, reason) do
+    if is_binary(origin) and String.downcase(origin) != String.downcase(s.label) do
+      route_control(s, Message.nak(mid, s.label, origin, s.label, reason, Message.default_ttl()))
+    else
+      s
+    end
+  end
+
+  # route_control sends a freshly-built ack/nak toward its destination, dropping
+  # silently if there is no route.
+  defp route_control(s, m) do
+    case Routing.next_hop(s.routing, m["to"]) do
+      nil -> s
+      next -> elem(send_to_link(s, next, m), 1)
     end
   end
 
@@ -274,23 +402,45 @@ defmodule Bonemesh.Node do
   defp register_link_pid(s, peer, pid, initiator) do
     key = String.downcase(peer)
     now = System.system_time(:millisecond)
-    # A reconnect displaces an existing link: tell the old link process to close
-    # so its socket does not linger. Its {:link_down} is pid-guarded, so its
-    # death cannot withdraw this new link's routes.
-    case s.links[key] do
-      %{pid: old} when old != pid -> Kernel.send(old, :close)
-      _ -> :ok
+    existing = s.links[key]
+
+    # F1 simultaneous-dial tiebreak: if the two links were initiated by opposite
+    # sides it is a genuine collision, and both ends deterministically keep the
+    # session initiated by the lexicographically-lower label, so the pair
+    # converges on one session. Same-initiator is a reconnect: last writer wins.
+    keep_new =
+      case existing do
+        %{initiator: prev} when prev != initiator ->
+          self_wins = String.downcase(s.label) < key
+          initiator == self_wins
+
+        _ ->
+          true
+      end
+
+    if keep_new do
+      # A reconnect (or a collision the new link won) displaces the old link:
+      # tell it to close so its socket does not linger. Its {:link_down} is
+      # pid-guarded, so its death cannot withdraw this new link's routes.
+      case existing do
+        %{pid: old} when old != pid -> Kernel.send(old, :close)
+        _ -> :ok
+      end
+
+      entry = %{
+        pid: pid,
+        initiator: initiator,
+        established_at: now,
+        last_inbound: now,
+        last_data: now
+      }
+
+      %{s | links: Map.put(s.links, key, entry), routing: Routing.observe_neighbor(s.routing, peer, 1)}
+    else
+      # The new link lost the tiebreak; close it and keep the existing one.
+      Kernel.send(pid, :close)
+      s
     end
-
-    entry = %{
-      pid: pid,
-      initiator: initiator,
-      established_at: now,
-      last_inbound: now,
-      last_data: now
-    }
-
-    %{s | links: Map.put(s.links, key, entry), routing: Routing.observe_neighbor(s.routing, peer, 1)}
   end
 
   # A neighbor link: owns the socket + transport session, relays inbound inner

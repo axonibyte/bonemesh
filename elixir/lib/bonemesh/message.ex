@@ -22,6 +22,13 @@ defmodule Bonemesh.Message do
   def ack(mid), do: %{"type" => "ack", "mid" => mid}
 
   @doc """
+  An acknowledgement routed back toward the origin (protocol.md §7): `to` is the
+  origin, `from` this node, `ttl` the hop limit.
+  """
+  def ack_to(mid, from, to, ttl),
+    do: %{"type" => "ack", "mid" => mid, "from" => from, "to" => to, "ttl" => ttl}
+
+  @doc """
   A negative acknowledgement naming the hop that failed and why, routed back
   toward the origin like data (to/from/ttl) (protocol.md §7).
   """
