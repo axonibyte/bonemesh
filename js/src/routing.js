@@ -46,6 +46,7 @@ export class Table {
     const v = via.toLowerCase();
     if (d === this.self || d === v) return;
     if (!this.neighbors.has(v)) return;
+    if (this.neighbors.has(d)) return; // dest is a direct neighbor; no routed path needed
     if (advertisedCost >= POISON_THRESHOLD) {
       const r = this.routes.get(d);
       if (r && r.via === v) this.routes.delete(d);

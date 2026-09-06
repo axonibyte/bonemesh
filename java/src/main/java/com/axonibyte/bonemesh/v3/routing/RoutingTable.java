@@ -106,6 +106,7 @@ public final class RoutingTable {
     if(dest.equalsIgnoreCase(selfLabel)) return;         // never route to ourselves
     if(dest.equalsIgnoreCase(viaNeighbor)) return;       // that is just the neighbor itself
     if(!neighbors.containsKey(viaNeighbor)) return;      // only learn via known neighbors
+    if(isNeighbor(dest)) return;                         // a direct neighbor needs no routed path
     if(advertisedCost >= POISON_THRESHOLD) {             // poisoned: withdraw if we used this via
       Route existing = routes.get(key(dest));
       if(existing != null && existing.via.equalsIgnoreCase(viaNeighbor)) routes.remove(key(dest));

@@ -109,6 +109,22 @@ func TestRemoveNeighborWithdrawsItsRoutes(t *testing.T) {
 	}
 }
 
+// A destination that is a direct neighbor must never get a learned route — a
+// shadow route would be poison-reversed back to its source, clobbering the
+// legitimate neighbor advertisement and breaking multi-relay convergence.
+func TestNoRouteInstalledForADirectNeighbor(t *testing.T) {
+	tbl := NewTable("self")
+	tbl.ObserveNeighbor("b", 10)
+	tbl.ObserveNeighbor("c", 10)
+	tbl.LearnRoute("c", "b", 1) // c is already a direct neighbor
+	if _, ok := tbl.RouteTable()["c"]; ok {
+		t.Fatal("must not install a route to a direct neighbor")
+	}
+	if nh, _ := tbl.NextHop("c"); nh != "c" {
+		t.Fatalf("nextHop(c) should be the direct neighbor c, got %q", nh)
+	}
+}
+
 func TestEwmaSmoothing(t *testing.T) {
 	tbl := NewTable("self")
 	tbl.ObserveNeighbor("b", 100) // first sample: ewma = 100

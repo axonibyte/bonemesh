@@ -82,6 +82,20 @@ public class RoutingTest {
     assertEquals("gamma", rt.nextHop("delta"));
   }
 
+  // A direct neighbor must never get a learned route: a shadow route would be
+  // poison-reversed back to its source, clobbering the legitimate neighbor
+  // advertisement and breaking multi-relay convergence (seen in a mixed diamond).
+  @Test void noRouteInstalledForADirectNeighbor() {
+    RoutingTable rt = new RoutingTable("self");
+    rt.observeNeighbor("beta", 10);
+    rt.observeNeighbor("gamma", 10);
+    rt.learnRoute("gamma", "beta", 1); // gamma is already a neighbor
+    // gamma is still reached directly, and is advertised to beta as a neighbor
+    // latency, not poison-reversed as an unreachable shadow route.
+    assertEquals("gamma", rt.nextHop("gamma"));
+    assertEquals(Long.valueOf(10L), rt.advertiseTo("beta").get("gamma"));
+  }
+
   @Test void deadNeighborWithdrawsItsRoutes() {
     RoutingTable rt = new RoutingTable("self");
     rt.observeNeighbor("beta", 10);

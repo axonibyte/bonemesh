@@ -103,6 +103,9 @@ func (t *Table) LearnRoute(dest, via string, advertisedCost int64) {
 	if _, ok := t.neighbors[v]; !ok {
 		return // never heard of this neighbor
 	}
+	if _, ok := t.neighbors[d]; ok {
+		return // dest is a direct neighbor; a routed path would only shadow it
+	}
 	if advertisedCost >= PoisonThreshold {
 		if r, ok := t.routes[d]; ok && r.via == v {
 			delete(t.routes, d) // poisoned by the neighbor we route through

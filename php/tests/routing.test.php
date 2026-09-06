@@ -76,6 +76,15 @@ test('remove neighbor withdraws its routes', function () {
     assertNull($t->nextHop('b'));
 });
 
+test('no route is installed for a direct neighbor', function () {
+    $t = new RoutingTable('self');
+    $t->observeNeighbor('b', 10);
+    $t->observeNeighbor('c', 10);
+    $t->learnRoute('c', 'b', 1); // c is already a neighbor
+    assertTrue(!isset($t->routeTable()['c']));
+    assertEq('c', $t->nextHop('c'));
+});
+
 test('EWMA smoothing (alpha 0.2)', function () {
     $t = new RoutingTable('self');
     $t->observeNeighbor('b', 100);

@@ -79,6 +79,18 @@ fn remove_neighbor_withdraws_its_routes() {
     assert_eq!(t.next_hop("b"), None);
 }
 
+// A direct neighbor must never get a learned route (a shadow route would be
+// poison-reversed back, breaking multi-relay convergence).
+#[test]
+fn no_route_installed_for_a_direct_neighbor() {
+    let mut t = Table::new("self");
+    t.observe_neighbor("b", 10);
+    t.observe_neighbor("c", 10);
+    t.learn_route("c", "b", 1); // c is already a neighbor
+    assert!(!t.route_table().contains_key("c"));
+    assert_eq!(t.next_hop("c").as_deref(), Some("c"));
+}
+
 #[test]
 fn ewma_smoothing() {
     let mut t = Table::new("self");

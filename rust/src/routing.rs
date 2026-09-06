@@ -81,6 +81,9 @@ impl Table {
         if !self.neighbors.contains_key(&v) {
             return;
         }
+        if self.neighbors.contains_key(&d) {
+            return; // dest is a direct neighbor; a routed path would only shadow it
+        }
         if advertised_cost >= POISON_THRESHOLD {
             if let Some((rv, _)) = self.routes.get(&d) {
                 if *rv == v {

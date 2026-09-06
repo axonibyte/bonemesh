@@ -74,6 +74,15 @@ test('remove neighbor withdraws its routes', () => {
   assert.equal(t.nextHop('b'), null);
 });
 
+test('no route is installed for a direct neighbor', () => {
+  const t = new Table('self');
+  t.observeNeighbor('b', 10);
+  t.observeNeighbor('c', 10);
+  t.learnRoute('c', 'b', 1); // c is already a neighbor
+  assert.equal(t.routeTable().c, undefined);
+  assert.equal(t.nextHop('c'), 'c');
+});
+
 test('EWMA smoothing (alpha 0.2)', () => {
   const t = new Table('self');
   t.observeNeighbor('b', 100);

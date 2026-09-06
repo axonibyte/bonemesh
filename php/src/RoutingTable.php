@@ -61,6 +61,9 @@ final class RoutingTable
         if (!isset($this->neighbors[$v])) {
             return;
         }
+        if (isset($this->neighbors[$d])) {
+            return; // dest is a direct neighbor; a routed path would only shadow it
+        }
         if ($advertisedCost >= self::POISON_THRESHOLD) {
             if (isset($this->routes[$d]) && $this->routes[$d]['via'] === $v) {
                 unset($this->routes[$d]);

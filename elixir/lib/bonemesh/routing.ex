@@ -44,6 +44,7 @@ defmodule Bonemesh.Routing do
       d == t.self -> t
       d == v -> t
       not Map.has_key?(t.neighbors, v) -> t
+      Map.has_key?(t.neighbors, d) -> t
       adv_cost >= @unreachable -> withdraw_if_via(t, d, v)
       true -> maybe_install(t, d, v, saturating(adv_cost, round(t.neighbors[v])))
     end
