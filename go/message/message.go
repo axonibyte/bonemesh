@@ -14,7 +14,7 @@ import (
 const DefaultTTL = 16
 
 // Validate checks a message against a named schema. Returns "" if valid, else a
-// reason tag. Schemas: bmx1, envelope, data, ack.
+// reason tag. Schemas: bmx1, envelope, data, ack, nak, bye.
 func Validate(schema string, f map[string]any) string {
 	switch schema {
 	case "bmx1":
@@ -25,6 +25,10 @@ func Validate(schema string, f map[string]any) string {
 		return validateData(f)
 	case "ack":
 		return validateAck(f)
+	case "nak":
+		return validateNak(f)
+	case "bye":
+		return validateBye(f)
 	default:
 		return "unknown-schema"
 	}
@@ -99,6 +103,47 @@ func validateAck(f map[string]any) string {
 	return midReason(f["mid"])
 }
 
+// validateNak checks a NAK: routed back toward the origin like data
+// (to/from/ttl), naming the failing hop and a reason. The reason string is
+// required but not enum-checked, so a future reason value is not a wire break.
+func validateNak(f map[string]any) string {
+	if s, _ := f["type"].(string); s != "nak" {
+		return "type"
+	}
+	if r := midReason(f["mid"]); r != "" {
+		return r
+	}
+	if s, ok := f["hop"].(string); !ok || s == "" {
+		return "missing-field"
+	}
+	if s, ok := f["reason"].(string); !ok || s == "" {
+		return "missing-field"
+	}
+	if _, ok := f["to"].(string); !ok {
+		return "missing-field"
+	}
+	if _, ok := f["from"].(string); !ok {
+		return "missing-field"
+	}
+	ttl, ok := asInt(f["ttl"])
+	if !ok {
+		return "missing-field"
+	}
+	if ttl < 1 || ttl > 255 {
+		return "ttl-range"
+	}
+	return ""
+}
+
+// validateBye checks a graceful session-close control — link-local, so only its
+// type is required; an optional reason string is not validated further.
+func validateBye(f map[string]any) string {
+	if s, _ := f["type"].(string); s != "bye" {
+		return "type"
+	}
+	return ""
+}
+
 func asInt(v any) (int64, bool) {
 	n, ok := v.(json.Number)
 	if !ok {
@@ -148,6 +193,28 @@ func Data(mid, from, to string, ttl int, payload any) map[string]any {
 // Ack builds an acknowledgement.
 func Ack(mid string) map[string]any {
 	return map[string]any{"type": "ack", "mid": mid}
+}
+
+// AckTo builds an acknowledgement routed back toward the origin (protocol.md
+// §7): to is the origin, from is this node, ttl the hop limit.
+func AckTo(mid, from, to string, ttl int) map[string]any {
+	return map[string]any{"type": "ack", "mid": mid, "from": from, "to": to, "ttl": ttl}
+}
+
+// Nak builds a negative acknowledgement naming the hop that failed and why,
+// routed back toward the origin (protocol.md §7).
+func Nak(mid, from, to, hop, reason string, ttl int) map[string]any {
+	return map[string]any{"type": "nak", "mid": mid, "hop": hop, "reason": reason, "from": from, "to": to, "ttl": ttl}
+}
+
+// Bye builds a graceful session-close control. A reason is optional; pass "" to
+// omit it (defaulting to a plain shutdown).
+func Bye(reason string) map[string]any {
+	m := map[string]any{"type": "bye"}
+	if reason != "" {
+		m["reason"] = reason
+	}
+	return m
 }
 
 // Echo builds an echo response to a probe.

@@ -26,7 +26,7 @@ if ! command -v tc >/dev/null 2>&1 || ! command -v iptables >/dev/null 2>&1 || [
   exit 0
 fi
 
-jar="$repo/java/build/libs/bonemesh.jar"
+cabin="$repo/go/bonemesh-ca"
 mesh="tier6-mesh"
 marker="tier6-delivered-ok"
 work=$(mktemp -d)
@@ -40,8 +40,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-ca() { java -cp "$jar" com.axonibyte.bonemesh.v3.tools.BoneMeshCA "$@" >/dev/null 2>&1; }
-[ -f "$jar" ] || (cd "$repo/java" && ./gradlew --no-daemon --quiet shadowJar)
+ca() { "$cabin" "$@" >/dev/null 2>&1; }
+[ -x "$cabin" ] || (cd "$repo/go" && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o bonemesh-ca ./cmd/bonemesh-ca)
 
 free_port() {
   p=34800

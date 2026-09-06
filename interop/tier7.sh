@@ -19,7 +19,7 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/.." && pwd)
-jar="$repo/java/build/libs/bonemesh.jar"
+cabin="$repo/go/bonemesh-ca"
 mesh="tier7-mesh"
 marker="tier7-delivered-ok"
 seed="${BONEMESH_FUZZ_SEED:-424242}"
@@ -27,7 +27,7 @@ iters="${BONEMESH_FUZZ_ITERS:-120}"
 work=$(mktemp -d)
 trap 'rm -rf "$work"; kill $(jobs -p) 2>/dev/null || true' EXIT
 
-ca() { java -cp "$jar" com.axonibyte.bonemesh.v3.tools.BoneMeshCA "$@" >/dev/null 2>&1; }
+ca() { "$cabin" "$@" >/dev/null 2>&1; }
 
 echo "building the fuzzer"
 (cd "$repo/interop/tier7" && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go126 build -o fuzzer . 2>/dev/null) \
@@ -35,7 +35,7 @@ echo "building the fuzzer"
 fuzzer="$repo/interop/tier7/fuzzer"
 
 echo "provisioning the mesh root (seed=$seed iters=$iters)"
-[ -f "$jar" ] || (cd "$repo/java" && ./gradlew --no-daemon --quiet shadowJar)
+[ -x "$cabin" ] || (cd "$repo/go" && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o bonemesh-ca ./cmd/bonemesh-ca)
 ca init-root --out "$work/ca"
 printf '{"probe":"%s"}' "$marker" > "$work/msg.json"
 

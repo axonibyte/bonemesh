@@ -23,6 +23,10 @@ type Session struct {
 	SendKey    []byte
 	ReceiveKey []byte
 	PeerCert   map[string]any
+	// H is the final transcript hash of the handshake — a per-session
+	// identifier (both ends agree on it) used to label key-log entries
+	// (security.md §8).
+	H []byte
 }
 
 // Handshake is a single-use exchange threaded through the step methods.
@@ -144,7 +148,7 @@ func (h *Handshake) ReadMessage2WriteMessage3(msg2 []byte) (out []byte, err erro
 	authI := h.sealIdentity()
 	out = line(map[string]any{"t": "bmx3", "auth": b64(authI)})
 	i2r, r2i := h.ks.Split()
-	h.session = &Session{SendKey: i2r, ReceiveKey: r2i, PeerCert: peerCert}
+	h.session = &Session{SendKey: i2r, ReceiveKey: r2i, PeerCert: peerCert, H: append([]byte{}, h.ks.H...)}
 	return out, nil
 }
 
@@ -165,7 +169,7 @@ func (h *Handshake) ReadMessage3(msg3 []byte) (err error) {
 		return err
 	}
 	i2r, r2i := h.ks.Split()
-	h.session = &Session{SendKey: r2i, ReceiveKey: i2r, PeerCert: peerCert}
+	h.session = &Session{SendKey: r2i, ReceiveKey: i2r, PeerCert: peerCert, H: append([]byte{}, h.ks.H...)}
 	return nil
 }
 

@@ -12,6 +12,12 @@ defmodule InteropNode do
     File.write!(f["id-priv"], Base.encode64(private))
   end
 
+  # Feature tokens the harness health-probes to gate tier-10 scenarios (no
+  # capture — that is the Go driver's job).
+  def main(["caps" | _]) do
+    IO.puts("ack nak rekey idle probe-death dial-tiebreak keylog sessions acks")
+  end
+
   def main([mode | rest]) do
     f = flags(rest)
 
@@ -30,10 +36,12 @@ defmodule InteropNode do
         {:ok, node} = Bonemesh.Node.start_link([{:port, String.to_integer(f["port"])} | opts])
         out = f["out"]
         Bonemesh.Node.add_listener(node, spawn(fn -> collect(out) end))
+        observe(node, f)
         Process.sleep(seconds * 1000)
 
       "connect" ->
         {:ok, node} = Bonemesh.Node.start_link([{:port, 0} | opts])
+        observe(node, f)
         {:ok, _peer} = Bonemesh.Node.connect(node, f["host"], String.to_integer(f["port"]))
         payload = f["message"] |> File.read!() |> JSON.decode!()
         send_until(node, f["to"], payload, System.monotonic_time(:millisecond) + seconds * 1000)
@@ -48,6 +56,7 @@ defmodule InteropNode do
       "mesh" ->
         {:ok, node} = Bonemesh.Node.start_link([{:port, String.to_integer(Map.get(f, "port", "0"))} | opts])
         if f["out"], do: Bonemesh.Node.add_listener(node, spawn(fn -> collect(f["out"]) end))
+        observe(node, f)
 
         for peer <- String.split(Map.get(f, "peers", ""), ",", trim: true) do
           [host, port] = String.split(peer, ":", parts: 2)
@@ -66,6 +75,29 @@ defmodule InteropNode do
     if System.monotonic_time(:millisecond) < deadline do
       Process.sleep(500)
       mesh_loop(node, send_to, payload, routes_file, deadline)
+    end
+  end
+
+  # Wires the optional observability flags: --acks appends each received ack/nak
+  # inner as a JSON line; --sessions periodically dumps peer => %{epoch, th}.
+  defp observe(node, f) do
+    if f["acks"], do: Bonemesh.Node.add_ack_listener(node, spawn(fn -> collect_acks(f["acks"]) end))
+    if f["sessions"], do: spawn(fn -> dump_sessions(node, f["sessions"]) end)
+  end
+
+  defp collect_acks(out) do
+    receive do
+      {:bonemesh_ack, inner} ->
+        File.write!(out, JSON.encode!(inner) <> "\n", [:append])
+        collect_acks(out)
+    end
+  end
+
+  defp dump_sessions(node, file) do
+    if Process.alive?(node) do
+      File.write!(file, JSON.encode!(Bonemesh.Node.session_info(node)))
+      Process.sleep(300)
+      dump_sessions(node, file)
     end
   end
 

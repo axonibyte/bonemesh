@@ -144,6 +144,31 @@ func MLDSA65Generate() ([]byte, []byte) {
 	return pubB, privB
 }
 
+// MLDSA87Generate returns (publicKey, privateKey) as raw encodings — the mesh
+// root keypair.
+func MLDSA87Generate() ([]byte, []byte) {
+	pub, priv, err := mldsa87.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	pubB, _ := pub.MarshalBinary()
+	privB, _ := priv.MarshalBinary()
+	return pubB, privB
+}
+
+// MLDSA87Sign signs a message with an ML-DSA-87 private key (empty context).
+func MLDSA87Sign(privateKey, message []byte) []byte {
+	var priv mldsa87.PrivateKey
+	if err := priv.UnmarshalBinary(privateKey); err != nil {
+		panic(err)
+	}
+	sig := make([]byte, mldsa87.SignatureSize)
+	if err := mldsa87.SignTo(&priv, message, nil, false, sig); err != nil {
+		panic(err)
+	}
+	return sig
+}
+
 // MLDSA87Verify verifies an ML-DSA-87 signature (empty context) — the mesh root.
 func MLDSA87Verify(publicKey, message, signature []byte) bool {
 	var pub mldsa87.PublicKey

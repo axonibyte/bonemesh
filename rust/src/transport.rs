@@ -31,6 +31,30 @@ impl Transport {
         }
     }
 
+    /// The per-direction frame counters, so a node can decide when a rekey is
+    /// due (F5).
+    pub fn send_seq(&self) -> u64 {
+        self.send_seq
+    }
+    pub fn receive_seq(&self) -> u64 {
+        self.receive_seq
+    }
+
+    /// Installs a new outbound key and resets the send counter, called at the
+    /// rekey boundary immediately after sealing the last old-key frame in this
+    /// direction so the very next frame uses the new key at seq 0 (F5).
+    pub fn swap_send(&mut self, key: &[u8]) {
+        self.send_key = key.to_vec();
+        self.send_seq = 0;
+    }
+
+    /// Installs a new inbound key and resets the receive counter, called
+    /// immediately after opening the last old-key frame in this direction.
+    pub fn swap_receive(&mut self, key: &[u8]) {
+        self.receive_key = key.to_vec();
+        self.receive_seq = 0;
+    }
+
     /// Seals an inner message into a `{seq, ct}` carrier.
     pub fn seal(&mut self, inner: &Value) -> Value {
         let seq = self.send_seq;

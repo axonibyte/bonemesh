@@ -88,7 +88,7 @@ export class Handshake {
     const authI = this.#sealIdentity();
     const out = encode({ t: 'bmx3', auth: b64(authI) });
     const [i2r, r2i] = this.ks.split();
-    this.session = { sendKey: i2r, receiveKey: r2i, peerCert };
+    this.session = { sendKey: i2r, receiveKey: r2i, peerCert, h: Buffer.from(this.ks.h) };
     return out;
   }
 
@@ -96,7 +96,7 @@ export class Handshake {
   readMessage3(m) {
     const peerCert = this.#openIdentity(unb64(m.auth));
     const [i2r, r2i] = this.ks.split();
-    this.session = { sendKey: r2i, receiveKey: i2r, peerCert };
+    this.session = { sendKey: r2i, receiveKey: i2r, peerCert, h: Buffer.from(this.ks.h) };
   }
 
   #sealIdentity() {

@@ -53,13 +53,17 @@ elixir --version 2>/dev/null | tail -1 || true
 openssl version || true
 tc -V 2>/dev/null || true
 
-log "building the Java jar (bonemesh-ca + node) once, up front"
+log "building the Java jar (node + interop driver) once, up front"
 (cd java && ./gradlew --no-daemon --quiet shadowJar)
 
 # Pre-build the compiled interop binaries so the run phase never cold-builds them
 # inside a health probe (a slow cold build there reads as an unavailable driver).
-log "pre-building Go + Rust interop binaries and the tier-5 fault peer"
+# bonemesh-ca provisions the mesh for every tier; bonemesh-inspect is the
+# key-log decryptor tier 10 uses.
+log "pre-building Go + Rust interop binaries, the CA/inspector tools, and the tier-5 fault peer"
 (cd go && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o interop_node ./cmd/interop_node)
+(cd go && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o bonemesh-ca ./cmd/bonemesh-ca)
+(cd go && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o bonemesh-inspect ./cmd/bonemesh-inspect)
 (cd interop/tier5 && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o faultpeer .)
 (cd interop/tier7 && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o fuzzer .)
 (cd rust && cargo build --offline --quiet --bin interop_node)

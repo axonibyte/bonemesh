@@ -20,6 +20,9 @@ pub struct Session {
     pub send_key: Vec<u8>,
     pub receive_key: Vec<u8>,
     pub peer_cert: Value,
+    /// Final transcript hash of the handshake — a per-session identifier (both
+    /// ends agree on it) used to label key-log entries (security.md §8).
+    pub h: [u8; 32],
 }
 
 /// A single-use handshake, threaded through the step methods. The role
@@ -143,7 +146,7 @@ impl Handshake {
         let out = line(&json!({"t":"bmx3","auth":B64.encode(&auth_i)}));
 
         let (i2r, r2i) = self.ks.split();
-        self.session = Some(Session { send_key: i2r.to_vec(), receive_key: r2i.to_vec(), peer_cert });
+        self.session = Some(Session { send_key: i2r.to_vec(), receive_key: r2i.to_vec(), peer_cert, h: self.ks.h });
         Ok(out)
     }
 
@@ -153,7 +156,7 @@ impl Handshake {
         let auth = b64(&m["auth"])?;
         let peer_cert = self.open_identity(&auth)?;
         let (i2r, r2i) = self.ks.split();
-        self.session = Some(Session { send_key: r2i.to_vec(), receive_key: i2r.to_vec(), peer_cert });
+        self.session = Some(Session { send_key: r2i.to_vec(), receive_key: i2r.to_vec(), peer_cert, h: self.ks.h });
         Ok(())
     }
 

@@ -28,6 +28,7 @@ import java.util.Arrays;
 
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.json.JSONParserConfiguration;
 import org.json.JSONTokener;
 
 /**
@@ -80,14 +81,30 @@ public final class FrameCodec {
     if(first == '[') return Verdict.reject("not-an-object");
     if(first != '{') return Verdict.reject("invalid-json");
 
+    // Two-step parse so this classifier agrees byte-for-byte with the strict
+    // RFC 8259 parsers the other five implementations use (Go encoding/json,
+    // serde_json, JSON.parse, json_decode, Elixir JSON). org.json's default
+    // JSONTokener is lenient — it accepts unquoted keys, single-quoted strings,
+    // trailing commas, leading-zero numbers, and NaN, which those parsers all
+    // reject. Step 1 uses the lenient tokener only to locate the first object's
+    // end, preserving the "trailing-data" verdict (org.json strict mode reports
+    // trailing bytes as a generic error, losing that distinction). Step 2
+    // re-parses the object in strict mode so lenient-only syntax is rejected as
+    // invalid-json.
     JSONTokener tokener = new JSONTokener(str);
-    JSONObject obj;
     try {
-      obj = new JSONObject(tokener);
+      new JSONObject(tokener);
     } catch(JSONException e) {
       return Verdict.reject("invalid-json");
     }
     if(tokener.nextClean() != 0) return Verdict.reject("trailing-data");
+
+    JSONObject obj;
+    try {
+      obj = new JSONObject(str, new JSONParserConfiguration().withStrictMode());
+    } catch(JSONException e) {
+      return Verdict.reject("invalid-json");
+    }
     return Verdict.accept(obj);
   }
 

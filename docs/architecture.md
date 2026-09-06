@@ -25,7 +25,7 @@ a shared test harness.
 | `spec/` | The normative protocol (`protocol.md`), security design (`security.md`), the shared test corpus (`corpus/`), and a Go conformance runner (`conformance/`). |
 | `java/` | The Java implementation — the original library and the v3 reference. |
 | `go/`, `rust/`, `js/`, `php/`, `elixir/` | The other five full implementations. |
-| `interop/` | The multiprotocol test harness: the live matrix, tiers 5–9, and the neutral per-language node drivers. |
+| `interop/` | The multiprotocol test harness: the live matrix, tiers 5–10 (plus the gated tier 11 soak), and the neutral per-language node drivers. |
 | `docs/` | This guide, the user guide, the plan, and the decision/defect registries. |
 
 **The governing principle is wire-compatibility, not shared code.** Each
@@ -189,7 +189,7 @@ conformance against the shared corpus; source-as-data checks; contract /
 state-machine tests. New assertions are mutation-checked (break the code, confirm
 the test fails, restore).
 
-**Shared, in `interop/` (tiers 5–9), written once and driving every
+**Shared, in `interop/` (tiers 5–10, plus the gated tier 11 soak), written once and driving every
 implementation as a black box:**
 
 - **Matrix** (`run-matrix.sh`) — every (responder, initiator) pair, both
@@ -239,18 +239,18 @@ The recipe, mirrored by the five non-reference ports:
 3. Add a `<lang>/.reaper.toml` tenant (digest-pinned image, offline/vendored
    build where possible) and gate the unit suite there.
 4. Drop an `interop/drivers/<name>.sh` speaking the neutral contract; it joins
-   the matrix and tiers 5–9 automatically.
+   the matrix and tiers 5–10 automatically.
 
 ---
 
 ## 7. Known limitations
 
 - Trust is hop-by-hop; there is no end-to-end payload encryption in v3 (a
-  deliberate non-goal — `security.md` §7).
-- `ack`/`nak`/`bye` message types are defined for forward-compatibility but the
-  reference nodes do not currently emit them; delivery failure is signalled by
-  the absence of an ack, not an explicit NAK.
+  deliberate non-goal — `security.md` §7, decision #13). This is explicit future
+  scope, not a deficiency: the `data` envelope reserves room for a future
+  end-to-end layer.
 - Tier 6 requires Linux `tc`/netem + iptables, so it runs on the interop guest,
   not the FreeBSD driver; Tier 8 needs at least two routing implementations
   present. Both skip loudly where their prerequisites are absent.
-- Long-horizon stability (methodology tiers 10–11) is not yet proven.
+- The long-horizon soak (tier 11) is gated behind `BONEMESH_LONG_SOAK` and run
+  per release, not in the standard battery; see [`testing.md`](testing.md).

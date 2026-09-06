@@ -4,9 +4,11 @@
 // independent Go key schedule, confirming both languages reach the same
 // transport keys.
 //
-// ML-KEM cross-decapsulation and ML-DSA signatures are deferred interop items
-// (see spec/corpus/transcripts/README.md): ss_kem is taken from the vector, and
-// the schedule freeze from sub-unit 3a plus the X25519 check here cover the rest.
+// This test scopes itself to the X25519 half: ss_kem is taken from the vector
+// here, and the schedule freeze from sub-unit 3a plus the X25519 check cover the
+// rest. ML-KEM cross-decapsulation and ML-DSA signatures are proven separately
+// and cross-language by spec/corpus/transcripts/pqc-interop.json (see the
+// pqc_check binaries and spec/corpus/transcripts/README.md).
 package handshake
 
 import (

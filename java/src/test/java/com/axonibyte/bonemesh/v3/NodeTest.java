@@ -17,11 +17,17 @@
 package com.axonibyte.bonemesh.v3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -112,6 +118,53 @@ public class NodeTest {
     assertTrue(await(betaGot, 8000), "beta never reassembled the large payload");
   }
 
+  @Test void deliveredMessageIsAcknowledgedToTheOrigin() throws Exception {
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+
+    java.util.concurrent.atomic.AtomicReference<JSONObject> ack = new java.util.concurrent.atomic.AtomicReference<>();
+    CountDownLatch got = new CountDownLatch(1);
+    alpha.addAckListener(a -> { ack.set(a); got.countDown(); });
+
+    alpha.connect("127.0.0.1", beta.port());
+    String mid = alpha.sendMid("beta", new JSONObject().put("m", "hi"));
+
+    assertTrue(await(got, 5000), "origin never received an ack for its delivered message");
+    assertEquals("ack", ack.get().optString("type"), "expected an ack");
+    assertEquals(mid, ack.get().optString("mid"), "ack mid must match the sent mid");
+  }
+
+  @Test void nakNamesTheFailingRelayNotTheDestination() throws Exception {
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+    Node gamma = node("gamma");
+
+    // Line alpha <-> beta <-> gamma. Sending toward gamma with ttl=1 makes beta
+    // (the relay) exhaust the hop limit — the NAK must name beta, not gamma
+    // (defect D4).
+    alpha.connect("127.0.0.1", beta.port());
+    gamma.connect("127.0.0.1", beta.port());
+
+    long deadline = System.currentTimeMillis() + 15000;
+    while(System.currentTimeMillis() < deadline && !"beta".equals(alpha.routeTable().get("gamma")))
+      Thread.sleep(100);
+    assertEquals("beta", alpha.routeTable().get("gamma"), "alpha never learned a route to gamma via beta");
+
+    java.util.concurrent.atomic.AtomicReference<JSONObject> nak = new java.util.concurrent.atomic.AtomicReference<>();
+    CountDownLatch got = new CountDownLatch(1);
+    alpha.addAckListener(a -> { if("nak".equals(a.optString("type"))) { nak.set(a); got.countDown(); } });
+
+    String mid = alpha.sendWithTtl("gamma", new JSONObject().put("m", "doomed"), 1);
+
+    assertTrue(await(got, 5000), "origin never received a NAK for the TTL-dropped message");
+    assertEquals("beta", nak.get().optString("hop"),
+        "the NAK must name the relay beta, not the destination (the D4 bug names the destination)");
+    assertEquals("ttl", nak.get().optString("reason"), "nak reason should be ttl");
+    assertEquals(mid, nak.get().optString("mid"), "nak mid must match the sent mid");
+  }
+
   @Test void threeNodeLineRelaysAcrossTheMiddleHop() throws Exception {
     setUpRoot();
     Node alpha = node("alpha");
@@ -140,5 +193,108 @@ public class NodeTest {
     // accessor the interop convergence tier reads.
     assertEquals("beta", alpha.routeTable().get("gamma"),
         "alpha's route to gamma should be via beta");
+  }
+
+  // F2: a message sent while its destination is unroutable is delivered once a
+  // route appears, on a later heartbeat drain.
+  @Test void retryDeliversAfterRouteAppears() throws Exception {
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+    alpha.useTunablesForTest(Tunables.forTestRetry(50L, 60000L));
+
+    CountDownLatch got = new CountDownLatch(1);
+    beta.addDataListener(p -> { if("queued".equals(p.optString("m"))) got.countDown(); });
+
+    alpha.sendMid("beta", new JSONObject().put("m", "queued")); // no route yet -> queued
+    alpha.connect("127.0.0.1", beta.port());                    // route appears
+
+    assertTrue(await(got, 8000), "a queued message was not delivered after the route appeared");
+  }
+
+  // F5: under a low frame threshold the session initiator rekeys the live link;
+  // both ends advance their rekey epoch and delivery continues across the swap.
+  @Test void rekeyUnderTrafficAdvancesEpochAndKeepsDelivering() throws Exception {
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+    alpha.useTunablesForTest(Tunables.forTestRekey(6L));
+    beta.useTunablesForTest(Tunables.forTestRekey(6L));
+
+    CountDownLatch got = new CountDownLatch(1);
+    beta.addDataListener(p -> { if("after-rekey".equals(p.optString("m"))) got.countDown(); });
+
+    alpha.connect("127.0.0.1", beta.port());
+
+    long deadline = System.currentTimeMillis() + 15000;
+    while(System.currentTimeMillis() < deadline
+        && (rekeyEpoch(alpha, "beta") < 1 || rekeyEpoch(beta, "alpha") < 1))
+      Thread.sleep(200);
+    assertTrue(rekeyEpoch(alpha, "beta") >= 1, "initiator never rekeyed");
+    assertTrue(rekeyEpoch(beta, "alpha") >= 1, "responder never completed a rekey");
+
+    deadline = System.currentTimeMillis() + 10000;
+    while(System.currentTimeMillis() < deadline) {
+      if(alpha.send("beta", new JSONObject().put("m", "after-rekey"))) break;
+      Thread.sleep(100);
+    }
+    assertTrue(await(got, 5000), "delivery broke across the rekey");
+  }
+
+  // M5: with BONEMESH_KEYLOG set, both ends of a session write the same
+  // directional keys and transcript hash — proof the emitted keys are the real
+  // shared session keys and the role->direction mapping is correct.
+  @Test void keylogEmitsAgreeingDirectionalKeys() throws Exception {
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+    Path fa = Files.createTempFile("bonemesh-a", ".keylog");
+    Path fb = Files.createTempFile("bonemesh-b", ".keylog");
+    fa.toFile().deleteOnExit();
+    fb.toFile().deleteOnExit();
+    alpha.useTunablesForTest(Tunables.forTestKeylog(fa.toString()));
+    beta.useTunablesForTest(Tunables.forTestKeylog(fb.toString()));
+
+    alpha.connect("127.0.0.1", beta.port());
+    long deadline = System.currentTimeMillis() + 5000;
+    while(System.currentTimeMillis() < deadline && (Files.size(fa) == 0 || Files.size(fb) == 0))
+      Thread.sleep(50);
+
+    Map<String, String[]> a = parseKeylog(fa);
+    Map<String, String[]> b = parseKeylog(fb);
+    for(String dir : new String[] { "I2R", "R2I" }) {
+      assertNotNull(a.get(dir), "missing " + dir + " entry on alpha");
+      assertNotNull(b.get(dir), "missing " + dir + " entry on beta");
+      assertEquals(64, a.get(dir)[1].length(), dir + " key is not a 32-byte hex value");
+      assertEquals(a.get(dir)[1], b.get(dir)[1],
+          dir + " key disagrees between ends (role->direction mapping wrong)");
+      assertEquals(a.get(dir)[0], b.get(dir)[0], dir + " transcript-hash disagrees");
+    }
+    assertNotEquals(a.get("I2R")[1], a.get("R2I")[1], "I2R and R2I keys are identical");
+  }
+
+  // Parses epoch-0 key-log lines "BMX3_<DIR>_TRAFFIC_0 <hex th> <hex key>" into
+  // dir -> {th, key}.
+  private static Map<String, String[]> parseKeylog(Path path) throws Exception {
+    Map<String, String[]> out = new HashMap<>();
+    for(String ln : Files.readAllLines(path)) {
+      String[] parts = ln.trim().split("\\s+");
+      if(parts.length != 3 || !parts[0].endsWith("_TRAFFIC_0")) continue;
+      String dir = parts[0].substring("BMX3_".length(), parts[0].length() - "_TRAFFIC_0".length());
+      out.put(dir, new String[] { parts[1], parts[2] });
+    }
+    return out;
+  }
+
+  // Reads a peer link's completed-rekey count through the private links map.
+  private static int rekeyEpoch(Node n, String peer) throws Exception {
+    java.lang.reflect.Field lf = Node.class.getDeclaredField("links");
+    lf.setAccessible(true);
+    java.util.Map<?, ?> links = (java.util.Map<?, ?>) lf.get(n);
+    Object link = links.get(peer.toLowerCase(java.util.Locale.ROOT));
+    if(link == null) return -1;
+    java.lang.reflect.Method m = link.getClass().getDeclaredMethod("rekeyEpoch");
+    m.setAccessible(true);
+    return (int) m.invoke(link);
   }
 }

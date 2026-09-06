@@ -46,6 +46,34 @@ final class Transport
         return json_decode($pt, true);
     }
 
+    // Per-direction frame counters, so the node can decide when a rekey is due (F5).
+    public function sendSeq(): int
+    {
+        return $this->sendSeq;
+    }
+
+    public function receiveSeq(): int
+    {
+        return $this->receiveSeq;
+    }
+
+    // Install a new outbound key and reset the send counter to 0, called at the
+    // rekey boundary immediately after sealing the last old-key frame in this
+    // direction so the next frame uses the new key at seq 0 (F5).
+    public function swapSend(string $key): void
+    {
+        $this->sendKey = $key;
+        $this->sendSeq = 0;
+    }
+
+    // Install a new inbound key and reset the receive counter, called right
+    // after opening the last old-key frame in this direction.
+    public function swapReceive(string $key): void
+    {
+        $this->receiveKey = $key;
+        $this->receiveSeq = 0;
+    }
+
     private static function nonce(int $seq): string
     {
         return "\0\0\0\0" . pack('P', $seq);

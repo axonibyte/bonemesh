@@ -28,9 +28,14 @@ func main() {
 		{"interior-newline-splits-frame", "transport", b64([]byte("{\"a\":\n1}\n")), "reject", "invalid-json"},
 		{"invalid-utf8", "transport", b64([]byte{'{', '"', 'a', '"', ':', '"', 0xff, '"', '}', '\n'}), "reject", "invalid-utf8"},
 		{"trailing-garbage-after-object", "transport", b64([]byte("{\"a\":1} X\n")), "reject", "trailing-data"},
+		{"lenient-unquoted-key", "transport", b64([]byte("{a:1}\n")), "reject", "invalid-json"},
+		{"lenient-single-quoted-string", "transport", b64([]byte("{\"a\":'b'}\n")), "reject", "invalid-json"},
+		{"lenient-trailing-comma", "transport", b64([]byte("{\"a\":1,}\n")), "reject", "invalid-json"},
+		{"lenient-leading-zero", "transport", b64([]byte("{\"a\":01}\n")), "reject", "invalid-json"},
+		{"lenient-nan-literal", "transport", b64([]byte("{\"a\":NaN}\n")), "reject", "invalid-json"},
 	}
 	doc := map[string]any{
-		"description": "Frame acceptance/rejection (protocol.md section 2). Each case gives 'bytes_b64' (RFC 4648 base64 of the raw wire bytes), the frame 'kind' ('handshake' cap 16384, 'transport' cap 65536), and 'expect' ('accept'|'reject') with a 'reason' tag. A frame reader must reach the same verdict. 'accept' = exactly one newline-terminated JSON object within the cap.",
+		"description": "Frame acceptance/rejection (protocol.md section 2). Each case gives 'bytes_b64' (RFC 4648 base64 of the raw wire bytes), the frame 'kind' ('handshake' cap 32768, 'transport' cap 65536), and 'expect' ('accept'|'reject') with a 'reason' tag. A frame reader must reach the same verdict. 'accept' = exactly one newline-terminated JSON object within the cap. The object must be strict RFC 8259 JSON: the 'lenient-*' cases (unquoted keys, single-quoted strings, trailing commas, leading-zero numbers, NaN) are inputs a lenient parser accepts but a conforming reader must reject as invalid-json, so all implementations agree on exactly which frames are well formed.",
 		"cases":       cases,
 		"size_cases": map[string]any{
 			"description":   "The runner also generates frames exactly at the cap (accept) and one byte over (reject, reason 'oversize') from these caps.",

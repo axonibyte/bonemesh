@@ -30,11 +30,13 @@ public final class Session {
   private final byte[] sendKey;
   private final byte[] receiveKey;
   private final Certificate peerCertificate;
+  private final byte[] transcriptHash;
 
-  Session(byte[] sendKey, byte[] receiveKey, Certificate peerCertificate) {
+  Session(byte[] sendKey, byte[] receiveKey, Certificate peerCertificate, byte[] transcriptHash) {
     this.sendKey = sendKey;
     this.receiveKey = receiveKey;
     this.peerCertificate = peerCertificate;
+    this.transcriptHash = transcriptHash;
   }
 
   /** @return the key this node encrypts outbound transport frames with */
@@ -50,5 +52,14 @@ public final class Session {
   /** @return the peer's verified membership certificate */
   public Certificate peerCertificate() {
     return peerCertificate;
+  }
+
+  /**
+   * @return the final transcript hash of the handshake — a per-session
+   *         identifier both ends agree on, used to label key-log entries
+   *         (security.md &sect;8)
+   */
+  public byte[] transcriptHash() {
+    return transcriptHash.clone();
   }
 }

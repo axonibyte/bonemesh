@@ -148,7 +148,7 @@ defmodule Bonemesh.Handshake do
         {auth_i, ks} = seal_identity(ks, s)
         msg = line(%{"t" => "bmx3", "auth" => Base.encode64(auth_i)})
         {i2r, r2i} = KeySchedule.split(ks)
-        session = %{send_key: i2r, receive_key: r2i, peer_cert: peer_cert}
+        session = %{send_key: i2r, receive_key: r2i, peer_cert: peer_cert, h: ks.h}
         {:ok, msg, %{s | ks: ks, session: session, peer_cert: peer_cert}}
     end
   end
@@ -172,7 +172,7 @@ defmodule Bonemesh.Handshake do
 
       {:ok, peer_cert, ks} ->
         {i2r, r2i} = KeySchedule.split(ks)
-        session = %{send_key: r2i, receive_key: i2r, peer_cert: peer_cert}
+        session = %{send_key: r2i, receive_key: i2r, peer_cert: peer_cert, h: ks.h}
         {:ok, %{s | ks: ks, session: session, peer_cert: peer_cert}}
     end
   end

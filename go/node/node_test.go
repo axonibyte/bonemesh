@@ -94,3 +94,46 @@ func TestThreeNodeLineRelay(t *testing.T) {
 		t.Fatalf("alpha's route to gamma should be via beta, got %q", nh)
 	}
 }
+
+// The destination of a delivered message returns an ack that reaches the
+// origin's ack listener, correlated by the mid SendM returned (protocol.md §7).
+func TestAckReachesOriginListener(t *testing.T) {
+	root, rootPriv := newRoot(t)
+	alpha, err := node.Start(config(t, root, rootPriv, "alpha"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beta, err := node.Start(config(t, root, rootPriv, "beta"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer alpha.Kill()
+	defer beta.Kill()
+
+	acks := alpha.AckListener()
+	if _, err := alpha.Connect("127.0.0.1", beta.Port()); err != nil {
+		t.Fatal(err)
+	}
+
+	var mid string
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		var ok bool
+		if mid, ok = alpha.SendM("beta", map[string]any{"m": "hi"}); ok {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	select {
+	case a := <-acks:
+		if a["type"] != "ack" {
+			t.Fatalf("expected an ack, got %v", a["type"])
+		}
+		if a["mid"] != mid {
+			t.Fatalf("ack mid %v does not match sent mid %q", a["mid"], mid)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("origin never received an ack for its delivered message")
+	}
+}

@@ -221,10 +221,12 @@ black box over TCP:
 - **Validation gate:** revert each registry defect in a scratch branch and
   confirm the harness rediscovers it.
 
-Tiers 10–11 (long-running soak over accumulated state; human-reviewed
-transcripts/topology visualizations) are named as future work — the plan states
-explicitly that the suite does not yet prove long-horizon stability, per the
-"name what a test does not prove" rule.
+Tier 10 (feature-behavior) is delivered in 3.1.0 and runs in the standard
+battery; tier 11 (long-running seeded soak over accumulated state, with a
+human-reviewed transcript bundle) is delivered but gated behind an explicit
+`BONEMESH_LONG_SOAK` flag, so the routine suite still names what it does not
+prove — long-horizon stability is proven only on demand, per the "name what a
+test does not prove" rule. See [testing.md](testing.md).
 
 ## 5. Testing ownership matrix
 
@@ -239,7 +241,8 @@ explicitly that the suite does not yet prove long-horizon stability, per the
 | 7 seeded fuzz | shared | `interop/` |
 | 8 concurrency/convergence | shared | `interop/` |
 | 9 simulated meshes | shared | `interop/` |
-| 10–11 | future work, named as such | — |
+| 10 feature-behavior (3.1.0 lifecycle) | shared, in battery | `interop/tier10.sh` |
+| 11 long-horizon soak | shared, gated (`BONEMESH_LONG_SOAK`) | `interop/tier11.sh` |
 
 Per-tenant suites stay lean by the portfolio rule: a per-language test exists
 only for defects the shared black-box suite cannot see (internal API misuse,

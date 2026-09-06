@@ -1,5 +1,5 @@
 {
-  "description": "Message schema validation (protocol.md section 4, security.md section 4). Each case names the 'schema' the 'frame' object is validated against and whether it is 'valid' or 'invalid' (with a 'reason'). Schemas: 'bmx1' (handshake message 1), 'envelope' (transport carrier), 'data'/'ack' (inner plaintext types). A conforming validator must agree on every verdict.",
+  "description": "Message schema validation (protocol.md section 4, security.md section 4). Each case names the 'schema' the 'frame' object is validated against and whether it is 'valid' or 'invalid' (with a 'reason'). Schemas: 'bmx1' (handshake message 1), 'envelope' (transport carrier), 'data'/'ack'/'nak'/'bye' (inner plaintext types). A conforming validator must agree on every verdict. Note: validators check structure, not the semantic value of 'reason' — an unrecognized reason string is accepted (forward-compatible, per the versioning rule in protocol.md section 8).",
   "cases": [
     { "name": "bmx1-ok", "schema": "bmx1", "expect": "valid",
       "frame": { "t": "bmx1", "v": 3, "mesh": "acme", "e": "AAAA", "k": "BBBB", "n": "CCCC" } },
@@ -41,6 +41,30 @@
     { "name": "ack-ok", "schema": "ack", "expect": "valid",
       "frame": { "type": "ack", "mid": "0123456789abcdef0123456789abcdef" } },
     { "name": "ack-wrong-type", "schema": "ack", "expect": "invalid", "reason": "type",
-      "frame": { "type": "data", "mid": "0123456789abcdef0123456789abcdef" } }
+      "frame": { "type": "data", "mid": "0123456789abcdef0123456789abcdef" } },
+
+    { "name": "nak-ok", "schema": "nak", "expect": "valid",
+      "frame": { "type": "nak", "mid": "0123456789abcdef0123456789abcdef", "hop": "beta", "reason": "ttl", "to": "alpha", "from": "beta", "ttl": 16 } },
+    { "name": "nak-ok-unknown-reason", "schema": "nak", "expect": "valid",
+      "frame": { "type": "nak", "mid": "0123456789abcdef0123456789abcdef", "hop": "beta", "reason": "some-future-reason", "to": "alpha", "from": "beta", "ttl": 16 } },
+    { "name": "nak-wrong-type", "schema": "nak", "expect": "invalid", "reason": "type",
+      "frame": { "type": "data", "mid": "0123456789abcdef0123456789abcdef", "hop": "beta", "reason": "ttl", "to": "alpha", "from": "beta", "ttl": 16 } },
+    { "name": "nak-bad-mid", "schema": "nak", "expect": "invalid", "reason": "mid-format",
+      "frame": { "type": "nak", "mid": "0123", "hop": "beta", "reason": "ttl", "to": "alpha", "from": "beta", "ttl": 16 } },
+    { "name": "nak-missing-hop", "schema": "nak", "expect": "invalid", "reason": "missing-field",
+      "frame": { "type": "nak", "mid": "0123456789abcdef0123456789abcdef", "reason": "ttl", "to": "alpha", "from": "beta", "ttl": 16 } },
+    { "name": "nak-missing-reason", "schema": "nak", "expect": "invalid", "reason": "missing-field",
+      "frame": { "type": "nak", "mid": "0123456789abcdef0123456789abcdef", "hop": "beta", "to": "alpha", "from": "beta", "ttl": 16 } },
+    { "name": "nak-ttl-range", "schema": "nak", "expect": "invalid", "reason": "ttl-range",
+      "frame": { "type": "nak", "mid": "0123456789abcdef0123456789abcdef", "hop": "beta", "reason": "ttl", "to": "alpha", "from": "beta", "ttl": 0 } },
+
+    { "name": "bye-ok", "schema": "bye", "expect": "valid",
+      "frame": { "type": "bye", "reason": "idle" } },
+    { "name": "bye-ok-no-reason", "schema": "bye", "expect": "valid",
+      "frame": { "type": "bye" } },
+    { "name": "bye-ok-unknown-reason", "schema": "bye", "expect": "valid",
+      "frame": { "type": "bye", "reason": "some-future-reason" } },
+    { "name": "bye-wrong-type", "schema": "bye", "expect": "invalid", "reason": "type",
+      "frame": { "type": "data" } }
   ]
 }

@@ -1,4 +1,4 @@
-# Root interop tenant: the multiprotocol suite (methodology tiers 5–9), run on a
+# Root interop tenant: the multiprotocol suite (methodology tiers 5–10), run on a
 # networked Linux guest with tc/netem. Host execution — commands run directly on
 # the VM as root — because the suite orchestrates many node processes and shapes
 # loopback traffic, which a single sandboxed container cannot. The manifest sits
@@ -16,7 +16,7 @@ cmd = "sh interop/guest-setup.sh"
 [run]
 # Validate the guest reproduces the live matrix and tier 5, then run tier 6
 # (netem). Redirect + re-raise so the real exit status survives a dash /bin/sh.
-cmd = "{ sh interop/run-matrix.sh && sh interop/tier5.sh && sh interop/tier6.sh && sh interop/tier7.sh && sh interop/tier8.sh && sh interop/tier9.sh; } > \"$REAPER_OUT\"/interop.log 2>&1; s=$?; cat \"$REAPER_OUT\"/interop.log; exit $s"
+cmd = "{ sh interop/run-matrix.sh && sh interop/tier5.sh && sh interop/tier6.sh && sh interop/tier7.sh && sh interop/tier8.sh && sh interop/tier9.sh && sh interop/tier10.sh; } > \"$REAPER_OUT\"/interop.log 2>&1; s=$?; cat \"$REAPER_OUT\"/interop.log; exit $s"
 
 [sync]
 # Never copy host-built, arch-specific artifacts onto the guest: a FreeBSD
@@ -26,6 +26,8 @@ cmd = "{ sh interop/run-matrix.sh && sh interop/tier5.sh && sh interop/tier6.sh 
 # large/regenerated build trees to keep the sync fast.
 exclude = [
   "/go/interop_node",
+  "/go/bonemesh-ca",
+  "/go/bonemesh-inspect",
   "/interop/tier5/faultpeer",
   "/interop/tier7/fuzzer",
   "/rust/target/",

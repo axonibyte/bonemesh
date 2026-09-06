@@ -113,7 +113,7 @@ final class Handshake
         $authI = $this->sealIdentity();
         $out = Frame::encode(['t' => 'bmx3', 'auth' => base64_encode($authI)]);
         [$i2r, $r2i] = $this->ks->split();
-        $this->session = ['sendKey' => $i2r, 'receiveKey' => $r2i, 'peerCert' => $peerCert];
+        $this->session = ['sendKey' => $i2r, 'receiveKey' => $r2i, 'peerCert' => $peerCert, 'h' => $this->ks->h];
         return $out;
     }
 
@@ -121,7 +121,7 @@ final class Handshake
     {
         $peerCert = $this->openIdentity(self::b64Field($m, 'auth'));
         [$i2r, $r2i] = $this->ks->split();
-        $this->session = ['sendKey' => $r2i, 'receiveKey' => $i2r, 'peerCert' => $peerCert];
+        $this->session = ['sendKey' => $r2i, 'receiveKey' => $i2r, 'peerCert' => $peerCert, 'h' => $this->ks->h];
     }
 
     private function sealIdentity(): string

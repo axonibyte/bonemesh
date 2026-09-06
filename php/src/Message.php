@@ -8,7 +8,8 @@ final class Message
 {
     public const DEFAULT_TTL = 16;
 
-    // Returns null if valid, else a reason tag. Schemas: bmx1, envelope, data, ack.
+    // Returns null if valid, else a reason tag. Schemas: bmx1, envelope, data,
+    // ack, nak, bye.
     public static function validate(string $schema, array $f): ?string
     {
         return match ($schema) {
@@ -16,6 +17,8 @@ final class Message
             'envelope' => self::validateEnvelope($f),
             'data' => self::validateData($f),
             'ack' => self::validateAck($f),
+            'nak' => self::validateNak($f),
+            'bye' => self::validateBye($f),
             default => 'unknown-schema',
         };
     }
@@ -90,6 +93,45 @@ final class Message
         return self::midReason($f['mid'] ?? null);
     }
 
+    // A NAK is routed back toward the origin like data (to/from/ttl) and names
+    // the failing hop and a reason. The reason string is required but its value
+    // is not enum-checked, so a future reason value is not a wire break.
+    private static function validateNak(array $f): ?string
+    {
+        if (($f['type'] ?? null) !== 'nak') {
+            return 'type';
+        }
+        if ($r = self::midReason($f['mid'] ?? null)) {
+            return $r;
+        }
+        if (!is_string($f['hop'] ?? null) || ($f['hop'] ?? '') === '') {
+            return 'missing-field';
+        }
+        if (!is_string($f['reason'] ?? null) || ($f['reason'] ?? '') === '') {
+            return 'missing-field';
+        }
+        if (!is_string($f['to'] ?? null) || !is_string($f['from'] ?? null)) {
+            return 'missing-field';
+        }
+        if (!isset($f['ttl']) || !is_int($f['ttl'])) {
+            return 'missing-field';
+        }
+        if ($f['ttl'] < 1 || $f['ttl'] > 255) {
+            return 'ttl-range';
+        }
+        return null;
+    }
+
+    // A graceful session-close control — link-local, so only its type is
+    // required; an optional reason string is not validated further.
+    private static function validateBye(array $f): ?string
+    {
+        if (($f['type'] ?? null) !== 'bye') {
+            return 'type';
+        }
+        return null;
+    }
+
     // Strict standard-alphabet base64: length a multiple of four, padding only
     // at the end — matching the other implementations' strict decoders.
     private static function base64Reason($v): ?string
@@ -128,6 +170,31 @@ final class Message
     public static function ack(string $mid): array
     {
         return ['type' => 'ack', 'mid' => $mid];
+    }
+
+    // An acknowledgement routed back toward the origin (protocol.md §7): to is
+    // the origin, from is this node, ttl the hop limit.
+    public static function ackTo(string $mid, string $from, string $to, int $ttl): array
+    {
+        return ['type' => 'ack', 'mid' => $mid, 'from' => $from, 'to' => $to, 'ttl' => $ttl];
+    }
+
+    // A negative acknowledgement naming the hop that failed and why, routed
+    // back toward the origin (protocol.md §7).
+    public static function nak(string $mid, string $from, string $to, string $hop, string $reason, int $ttl): array
+    {
+        return ['type' => 'nak', 'mid' => $mid, 'hop' => $hop, 'reason' => $reason, 'from' => $from, 'to' => $to, 'ttl' => $ttl];
+    }
+
+    // A graceful session-close control. A reason is optional; omit it (null)
+    // for a plain shutdown.
+    public static function bye(?string $reason = null): array
+    {
+        $m = ['type' => 'bye'];
+        if ($reason !== null && $reason !== '') {
+            $m['reason'] = $reason;
+        }
+        return $m;
     }
 
     public static function echo(int $token): array

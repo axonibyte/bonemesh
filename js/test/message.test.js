@@ -3,7 +3,7 @@
 // corpus is checked by bin/interop_checks.js.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validate, data, ack, newMid, DEFAULT_TTL } from '../src/message.js';
+import { validate, data, ack, nak, bye, newMid, DEFAULT_TTL } from '../src/message.js';
 
 const MID = '0123456789abcdef0123456789abcdef';
 
@@ -32,6 +32,19 @@ test('schema verdicts', () => {
     ['ack', { type: 'nack', mid: MID }, 'type'],
     ['ack', { type: 'ack', mid: 'NOTHEX0000000000000000000000000x' }, 'mid-format'],
 
+    ['nak', { type: 'nak', mid: MID, hop: 'b', reason: 'ttl', to: 'a', from: 'b', ttl: 16 }, null],
+    ['nak', { type: 'nak', mid: MID, hop: 'b', reason: 'anything-new', to: 'a', from: 'b', ttl: 16 }, null],
+    ['nak', { type: 'data', mid: MID, hop: 'b', reason: 'ttl', to: 'a', from: 'b', ttl: 16 }, 'type'],
+    ['nak', { type: 'nak', mid: 'short', hop: 'b', reason: 'ttl', to: 'a', from: 'b', ttl: 16 }, 'mid-format'],
+    ['nak', { type: 'nak', mid: MID, reason: 'ttl', to: 'a', from: 'b', ttl: 16 }, 'missing-field'],
+    ['nak', { type: 'nak', mid: MID, hop: 'b', to: 'a', from: 'b', ttl: 16 }, 'missing-field'],
+    ['nak', { type: 'nak', mid: MID, hop: 'b', reason: 'ttl', to: 'a', from: 'b', ttl: 0 }, 'ttl-range'],
+
+    ['bye', { type: 'bye', reason: 'idle' }, null],
+    ['bye', { type: 'bye' }, null],
+    ['bye', { type: 'bye', reason: 'anything-new' }, null],
+    ['bye', { type: 'data' }, 'type'],
+
     ['mystery', {}, 'unknown-schema'],
   ];
   for (const [schema, msg, want] of cases) {
@@ -42,6 +55,9 @@ test('schema verdicts', () => {
 test('builders produce valid messages', () => {
   assert.equal(validate('data', data(newMid(), 'a', 'b', DEFAULT_TTL, { k: 'v' })), null);
   assert.equal(validate('ack', ack(newMid())), null);
+  assert.equal(validate('nak', nak(newMid(), 'a', 'b', 'beta', 'ttl', DEFAULT_TTL)), null);
+  assert.equal(validate('bye', bye('idle')), null);
+  assert.equal(validate('bye', bye()), null);
 });
 
 test('newMid is well-formed and unique', () => {

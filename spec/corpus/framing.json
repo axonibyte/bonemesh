@@ -54,9 +54,44 @@
       "bytes_b64": "eyJhIjoxfSBYCg==",
       "expect": "reject",
       "reason": "trailing-data"
+    },
+    {
+      "name": "lenient-unquoted-key",
+      "kind": "transport",
+      "bytes_b64": "e2E6MX0K",
+      "expect": "reject",
+      "reason": "invalid-json"
+    },
+    {
+      "name": "lenient-single-quoted-string",
+      "kind": "transport",
+      "bytes_b64": "eyJhIjonYid9Cg==",
+      "expect": "reject",
+      "reason": "invalid-json"
+    },
+    {
+      "name": "lenient-trailing-comma",
+      "kind": "transport",
+      "bytes_b64": "eyJhIjoxLH0K",
+      "expect": "reject",
+      "reason": "invalid-json"
+    },
+    {
+      "name": "lenient-leading-zero",
+      "kind": "transport",
+      "bytes_b64": "eyJhIjowMX0K",
+      "expect": "reject",
+      "reason": "invalid-json"
+    },
+    {
+      "name": "lenient-nan-literal",
+      "kind": "transport",
+      "bytes_b64": "eyJhIjpOYU59Cg==",
+      "expect": "reject",
+      "reason": "invalid-json"
     }
   ],
-  "description": "Frame acceptance/rejection (protocol.md section 2). Each case gives 'bytes_b64' (RFC 4648 base64 of the raw wire bytes), the frame 'kind' ('handshake' cap 16384, 'transport' cap 65536), and 'expect' ('accept'|'reject') with a 'reason' tag. A frame reader must reach the same verdict. 'accept' = exactly one newline-terminated JSON object within the cap.",
+  "description": "Frame acceptance/rejection (protocol.md section 2). Each case gives 'bytes_b64' (RFC 4648 base64 of the raw wire bytes), the frame 'kind' ('handshake' cap 32768, 'transport' cap 65536), and 'expect' ('accept'|'reject') with a 'reason' tag. A frame reader must reach the same verdict. 'accept' = exactly one newline-terminated JSON object within the cap. The object must be strict RFC 8259 JSON: the 'lenient-*' cases (unquoted keys, single-quoted strings, trailing commas, leading-zero numbers, NaN) are inputs a lenient parser accepts but a conforming reader must reject as invalid-json, so all implementations agree on exactly which frames are well formed.",
   "size_cases": {
     "description": "The runner also generates frames exactly at the cap (accept) and one byte over (reject, reason 'oversize') from these caps.",
     "handshake_cap": 32768,

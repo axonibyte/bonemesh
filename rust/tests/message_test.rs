@@ -2,7 +2,7 @@
 // (spec/corpus/messages.json); the full set is checked cross-language by
 // interop/check-messages-rust.sh.
 
-use bonemesh::message::validate;
+use bonemesh::message::{self, validate};
 use serde_json::json;
 
 const MID: &str = "0123456789abcdef0123456789abcdef";
@@ -47,4 +47,60 @@ fn ack_valid() {
 #[test]
 fn ack_wrong_type() {
     assert_eq!(validate("ack", &json!({"type":"data","mid":MID})), Some("type"));
+}
+
+// nak: routed like data, plus hop + reason. The reason value is not enum-checked.
+#[test]
+fn nak_valid() {
+    assert_eq!(validate("nak", &json!({"type":"nak","mid":MID,"hop":"beta","reason":"ttl","to":"alpha","from":"beta","ttl":16})), None);
+}
+#[test]
+fn nak_unknown_reason_valid() {
+    assert_eq!(validate("nak", &json!({"type":"nak","mid":MID,"hop":"beta","reason":"some-future-reason","to":"alpha","from":"beta","ttl":16})), None);
+}
+#[test]
+fn nak_wrong_type() {
+    assert_eq!(validate("nak", &json!({"type":"data","mid":MID,"hop":"beta","reason":"ttl","to":"alpha","from":"beta","ttl":16})), Some("type"));
+}
+#[test]
+fn nak_bad_mid() {
+    assert_eq!(validate("nak", &json!({"type":"nak","mid":"0123","hop":"beta","reason":"ttl","to":"alpha","from":"beta","ttl":16})), Some("mid-format"));
+}
+#[test]
+fn nak_missing_hop() {
+    assert_eq!(validate("nak", &json!({"type":"nak","mid":MID,"reason":"ttl","to":"alpha","from":"beta","ttl":16})), Some("missing-field"));
+}
+#[test]
+fn nak_missing_reason() {
+    assert_eq!(validate("nak", &json!({"type":"nak","mid":MID,"hop":"beta","to":"alpha","from":"beta","ttl":16})), Some("missing-field"));
+}
+#[test]
+fn nak_ttl_range() {
+    assert_eq!(validate("nak", &json!({"type":"nak","mid":MID,"hop":"beta","reason":"ttl","to":"alpha","from":"beta","ttl":0})), Some("ttl-range"));
+}
+
+// bye: link-local; reason optional and free-form.
+#[test]
+fn bye_valid_with_reason() {
+    assert_eq!(validate("bye", &json!({"type":"bye","reason":"idle"})), None);
+}
+#[test]
+fn bye_valid_no_reason() {
+    assert_eq!(validate("bye", &json!({"type":"bye"})), None);
+}
+#[test]
+fn bye_unknown_reason_valid() {
+    assert_eq!(validate("bye", &json!({"type":"bye","reason":"some-future-reason"})), None);
+}
+#[test]
+fn bye_wrong_type() {
+    assert_eq!(validate("bye", &json!({"type":"data"})), Some("type"));
+}
+
+// Builders round-trip through their own validators.
+#[test]
+fn builders_produce_valid_messages() {
+    assert_eq!(validate("nak", &message::nak(MID, "alpha", "beta", "beta", "ttl", 16)), None);
+    assert_eq!(validate("bye", &message::bye(Some("idle"))), None);
+    assert_eq!(validate("bye", &message::bye(None)), None);
 }

@@ -1,11 +1,17 @@
 # BoneMesh v3 — protocol
 
-**Status: DRAFT for review.** Companion to [`security.md`](security.md), which
-owns identity, the BMX handshake, and the threat model. This document owns
+**Status: normative as of 3.1.0.** Companion to [`security.md`](security.md),
+which owns identity, the BMX handshake, and the threat model. This document owns
 framing, the connection/session model, message types, discovery, routing, and
 the delivery semantics — including the real fixes for the protocol-level v2
-defects (D3, D4, D7) that M1 could only guard against in Java. Constants marked
-**[PIN]** freeze with the Go reference implementation and corpus.
+defects (D3, D4, D7). The wire contract here is **frozen**: it is implemented by
+all six reference implementations and enforced by the shared corpus (`corpus/`).
+Constants formerly marked **[PIN]** are resolved inline against that corpus. The
+session-lifecycle and tooling behaviors that 3.0.0 specified but deferred —
+simultaneous-dial resolution, retry/backoff, probe-timeout liveness, idle
+teardown, session rekey, ack/NAK emission, and the key-log hook — are all
+**delivered as of 3.1.0** across every implementation and exercised by interop
+tier 10; each is described as live where it appears.
 
 Read [`v2-behavior.md`](v2-behavior.md) first if you need the baseline; this
 document is largely a delta against it.
@@ -26,15 +32,28 @@ not depend on a two-party handshake, so they are testable and pinned now.
 | Transport frame max (default) | 65536 bytes; configurable up to an implementation ceiling ≥ 65536 |
 | `mid` (message id) | 128-bit value, lowercase hex, 32 chars |
 | `ttl` default | 16; range 1–255; decremented per relay hop |
-| AEAD nonce | per-direction 96-bit counter, **big-endian**, starts at 0, +1 per frame, never reused |
-| Simultaneous-dial tiebreak | keep the session whose **initiator label is lexicographically lower** (byte-wise on the lowercased UTF-8 label) |
-| Retry backoff | 500 ms, doubling, capped at 30 s, per destination (from M1) |
+| AEAD nonce | 96-bit: 4 zero bytes then the per-direction 64-bit **little-endian** sequence counter; starts at 0, +1 per frame, never reused (matches `security.md` §5 and corpus `transport-frame.json`) |
 
-Operational tunables (defaults; may vary per deployment without breaking
-interop): probe interval 5 s, latency EWMA α = 0.2, probe timeout 15 s, dedup
-window 4096 recent `mid`s per peer, session idle timeout 120 s. These affect
-behavior, not the wire contract, so two nodes with different values still
-interoperate.
+Operational tunables (local behavior, not the wire contract, so two nodes with
+different values still interoperate): heartbeat/probe interval **1 s** (the value
+all six reference nodes use), latency EWMA **α = 0.2**, dedup window **4096**
+recent `mid`s per peer. The 3.1.0 features add more, all read once from the
+environment at node start and all with defaults chosen so a peer never has to
+assume anything about them: `BONEMESH_PROBE_TIMEOUT_MS` (15000), `BONEMESH_IDLE_MS`
+(0 = disabled), `BONEMESH_RETRY_BASE_MS`/`_CAP_MS`/`_MAX_MS` (500 / 30000 /
+60000; 0 disables retry), `BONEMESH_REKEY_MS`/`_FRAMES`/`_TIMEOUT_MS`
+(3600000 / 65536 / 10000), and `BONEMESH_KEYLOG` (unset = off).
+
+**Delivered in 3.1.0.** The following were specified in 3.0.0 but deferred; they
+are now implemented across all six reference implementations and are backward-
+compatible additions (they do not bump `v`): deterministic **simultaneous-dial**
+resolution — keep the session whose initiator label is lexicographically lower
+(§3); **retry/backoff** on undeliverable messages (§7); probe-timeout-based
+**liveness death** and idle **session teardown** (§7, `security.md` §6); periodic
+session **rekey** (`security.md` §6); **ack/NAK** emission with per-hop failure
+attribution (§7); and the **key-log debug hook** with the `bonemesh-inspect`
+tool (`security.md` §8). A peer that predates any of these still interoperates:
+unknown inner types are ignored, and every new behavior degrades safely.
 
 ---
 
@@ -54,7 +73,7 @@ the handshake are in `security.md`; everything else is here.
   This keeps the v2 property that the bytes on the wire are JSON.
 - **Every frame has a hard maximum size** (defect **D7**). A reader that has not
   seen a newline within the limit closes the connection rather than growing an
-  unbounded buffer. Limits `[PIN]`:
+  unbounded buffer. Limits (frozen, §0; corpus `framing.json`):
   - handshake frames: **32 KiB** (a bmx2 with ML-DSA cert + signatures runs near 20 KB);
   - transport frames: default **64 KiB**, configurable up to a ceiling.
 - Application payloads larger than a transport frame are **chunked** by the
@@ -72,8 +91,9 @@ the handshake are in `security.md`; everything else is here.
 - On startup or when a route requires a neighbor it has no session to, a node
   **dials** and runs BMX as initiator. Simultaneous dials (both ends open at
   once) are resolved deterministically: the session whose initiator label is
-  lexicographically lower is kept `[PIN]`, the other torn down, so a pair
-  converges on exactly one session.
+  lexicographically lower is kept, the other torn down, so a pair converges on
+  exactly one session. (Implemented across all six as of 3.1.0; both ends
+  compute the same winner, so they agree on which session to drop.)
 - After the handshake, both directions send transport frames freely. There is
   no per-message connection setup — the v2 connect/handshake/teardown cost is
   paid once per session, not once per message.
@@ -100,11 +120,11 @@ plaintext object always has a `type` and a `mid`:
 | `probe` / `echo` | Latency measurement pair (§5). |
 | `bye` | Graceful session close. |
 
-`mid` is a **message id**: `[PIN]` a 128-bit random value, unique per
-application message (all chunks of one message share it). Message ids give v3
-what v2 never had — **dedup** (a re-delivered `mid` already seen is dropped) and
-**ack correlation** (an `ack` names the `mid` it answers). A replay window of
-recently-seen `mid`s per peer bounds the dedup memory `[PIN]`.
+`mid` is a **message id**: a 128-bit random value (lowercase hex, 32 chars; §0),
+unique per application message (all chunks of one message share it). Message ids
+give v3 what v2 never had — **dedup** (a re-delivered `mid` already seen is
+dropped) and **ack correlation** (an `ack` names the `mid` it answers). A replay
+window of recently-seen `mid`s per peer (4096; §0) bounds the dedup memory.
 
 ### 4.1 Application data
 
@@ -128,10 +148,11 @@ measures **real round-trip time**:
 
 - Periodically, and on session open, a node sends `probe` carrying a local
   timestamp token; the neighbor immediately returns `echo` with the same token.
-  The initiator's RTT sample is `now − token_send_time`. `[PIN]` probe interval.
+  The initiator's RTT sample is `now − token_send_time`. The reference nodes
+  probe once per **1 s** heartbeat (§0).
 - A neighbor's link latency is an **exponentially-weighted moving average** of
-  RTT samples `[PIN α]`, not a single reading, so a transient spike does not
-  dominate. It is a real duration in milliseconds.
+  RTT samples (**α = 0.2**, §0), not a single reading, so a transient spike does
+  not dominate. It is a real duration in milliseconds.
 - `disco` messages advertise, per known destination, the **path cost** = sum of
   per-hop EWMA latencies along the best known path. Because identity and public
   keys now come from the authenticated handshake (`security.md`), discovery no
@@ -162,34 +183,51 @@ measures **real round-trip time**:
 
 ## 7. Acknowledgement and liveness (defect D4)
 
+Implemented across all six as of 3.1.0. The `ack` and `nak` inner types
+(schemas in `corpus/messages.json`) are emitted by the reference nodes; a peer
+that does not recognize them ignores them (§8), so a mixed-version mesh degrades
+safely. The origin observes them through an ack listener; the boolean return of
+`send` is unchanged.
+
 - **Receipt acks.** The destination of a `data` message returns an `ack` naming
   its `mid`, routed back toward `from`. Acks are correlated by `mid` (v2 could
   not correlate at all).
 - **Failure attribution is per hop (defect D4).** Because each hop is its own
   authenticated session, a delivery failure is attributed to **the specific next
   hop that failed**, never to the final destination. When a relay cannot pass a
-  message on (next-hop session dead, `ttl == 0`), it returns a **NAK naming the
-  failing hop and the `mid`**, which propagates back to the origin. A dead relay
-  now marks *the relay* dead, not the destination it happened to be carrying a
-  message toward.
+  message on it returns a **NAK naming the failing hop, a reason, and the
+  `mid`**, which propagates back to the origin: `ttl` (hop limit exhausted, hop =
+  the relay itself), `no-route` (no next hop, hop = the relay itself), or
+  `link-dead` (the onward write failed, hop = the dead next-hop label). A dead
+  relay marks *the relay* dead, not the destination it happened to be carrying a
+  message toward. `ack`/`nak` are never themselves ack'd, nak'd, or retried.
 - **Liveness.** A neighbor is alive while its session is up and its probes echo;
-  it is marked dead when the session drops or probes time out `[PIN]`. Dead
+  it is marked dead when the session drops or when no authenticated frame
+  arrives within `BONEMESH_PROBE_TIMEOUT_MS` (default 15 s) — so a peer whose
+  socket stays open but has stopped responding is still declared dead. Dead
   neighbors are withdrawn from the routing tables and their routes poisoned to
   neighbors.
-- **Retry/backoff.** Undeliverable messages with retry requested follow the
-  exponential bounded backoff introduced in M1 (D6): 500 ms doubling to a 30 s
-  cap `[PIN]`, per destination, so one dead peer never busy-loops or
-  head-of-line-blocks the rest.
+- **Retry/backoff.** All six queue an undeliverable message (no route, or a
+  failed first-hop write) per destination and retry it on each heartbeat with
+  exponential backoff — 500 ms doubling to a 30 s cap — until it lands or its
+  lifetime (`BONEMESH_RETRY_MAX_MS`, default 60 s; 0 disables) is spent, at which
+  point the origin is told via a synthesized `nak{reason:"expired"}` on its ack
+  listener. One dead peer never busy-loops or head-of-line-blocks the rest, and
+  `send`'s boolean is unchanged (queueing is additive).
 
 ## 8. Versioning and negotiation
 
 - The handshake carries `v: 3` (`security.md` §4). A node that receives a
-  handshake with a `v` it does not implement rejects it with a defined
-  `unsupported-version` close reason `[PIN]` rather than failing opaquely.
+  handshake with a `v` it does not implement rejects it, closing the connection,
+  rather than failing opaquely. The machine-readable close reasons are the
+  pinned enum on the `bye` control (`corpus/messages.json`): `shutdown`, `idle`,
+  `rekey-failed`, `protocol-error`, plus `unsupported-version` for this
+  version-mismatch case (reported in logs; a pre-session rejection carries no
+  session in which to send a `bye`).
 - Minor, backward-compatible additions (new optional inner `type`s, new optional
   fields) do **not** bump `v`; an implementation ignores inner types it does not
-  recognize, except that an unrecognized `type` on a `data`-bearing frame is an
-  error `[PIN]`. Wire-breaking changes bump `v`.
+  recognize, except that an unrecognized `type` where a `data` message is
+  expected is an error. Wire-breaking changes bump `v`.
 - This is the thing v2 had no notion of; it exists so two implementations at
   different versions have defined behavior instead of undefined.
 

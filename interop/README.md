@@ -47,6 +47,29 @@ every driver.
   base64 of the raw ML-DSA-87 root public key; `cert` is the JSON membership
   certificate; `id-pub`/`id-priv` are base64 of the raw ML-DSA-65 node keys;
   `message` is a JSON payload object.
+- `mesh` is a third mode used by the convergence tier: it dials several
+  `--peers` (`host:port,host:port`), optionally streams `--message` to
+  `--send-to`, and dumps its routing table to `--routes`.
+
+### Observability flags (all optional; tier 10)
+
+Every driver additionally accepts a `caps` subcommand and these flags on
+`listen`/`connect`/`mesh`; a driver that does not support a feature simply omits
+its token from `caps`, and a tier that needs it skips that driver loudly.
+
+```
+<driver> caps                 # prints the space-separated feature tokens it supports
+--acks F                      # append each received ack/nak inner message as one JSON line
+--sessions F                  # rewrite {peer: {"epoch": N, "th": "<hex prefix>"}} as sessions change
+--capture F                   # (Go only) tee every transport carrier as {"dir","frame"} NDJSON
+```
+
+`--acks` observes ack/NAK delivery; `--sessions` exposes the rekey epoch and the
+transcript-hash label (both ends of a session agree on `th`, so a dial collision
+that converged shows one entry with a shared `th`); `--capture` feeds
+`bonemesh-inspect` for the key-log round-trip. `--out` continues to carry
+application payloads only. `BONEMESH_KEYLOG=<path>` makes a node write its
+directional transport keys (security.md §8).
 
 Current drivers: `drivers/java.sh`, `drivers/elixir.sh`, `drivers/rust.sh`,
 `drivers/go.sh`, `drivers/js.sh`, `drivers/php.sh`. The matrix confirms all
@@ -120,6 +143,12 @@ interop is covered by the six-language matrix on the driver (which has OTP 28).
 
 Runs on the driver (six languages) and as the `bonemesh-interop` reaper tenant
 (five languages under netem; tier 8 needs both Java and Elixir, so it runs on
-the driver and skips on the guest). Methodology tiers 5–9 are all implemented.
-Tiers 10–11 (long-horizon soak, human-reviewed transcripts) remain future work,
-as the plan states.
+the driver and skips on the guest). Methodology tiers 5–10 are all implemented
+and in the standard battery: tier 10 (`tier10.sh`) is the feature-behavior tier
+covering the 3.1.0 session-lifecycle features (ack, NAK/D4 attribution, rekey
+under traffic, idle teardown, probe-timeout death, key-log round-trip). Tier 11
+(`tier11.sh`) is the long-horizon seeded soak; it is implemented but deliberately
+**not** in the standard battery — it runs only behind an explicit
+`BONEMESH_LONG_SOAK=1` (or `--long-soak`) gate and writes a human-reviewed
+transcript bundle. See [docs/testing.md](../docs/testing.md) for the full tier
+map and how to run the soak.
