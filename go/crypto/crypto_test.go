@@ -106,3 +106,26 @@ func TestMLDSA65VerifyRejectsTamper(t *testing.T) {
 		t.Fatal("signature verified against the wrong message")
 	}
 }
+
+func TestMLDSA87SignVerify(t *testing.T) {
+	pub, priv := MLDSA87Generate()
+	msg := []byte("mesh root over a certificate")
+	sig := MLDSA87Sign(priv, msg)
+	if !MLDSA87Verify(pub, msg, sig) {
+		t.Fatal("valid ML-DSA-87 signature did not verify")
+	}
+}
+
+func TestMLDSA87VerifyRejectsTamper(t *testing.T) {
+	pub, priv := MLDSA87Generate()
+	msg := []byte("mesh root over a certificate")
+	sig := MLDSA87Sign(priv, msg)
+	sig[10] ^= 0x01
+	if MLDSA87Verify(pub, msg, sig) {
+		t.Fatal("tampered ML-DSA-87 signature verified")
+	}
+	other, _ := MLDSA87Generate()
+	if MLDSA87Verify(other, msg, MLDSA87Sign(priv, msg)) {
+		t.Fatal("signature verified under the wrong root public key")
+	}
+}

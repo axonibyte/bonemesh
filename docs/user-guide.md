@@ -41,15 +41,15 @@ A node needs three things to join a mesh: the **root public key**, its
 ## 2. Provisioning a mesh
 
 Provisioning is done once with the bundled certificate authority, `bonemesh-ca`
-(a tool in the Java implementation). Its output — keys and certificates as
-base64 and JSON files — is implementation-neutral: a certificate issued here is
-accepted by a node in any language.
+(a small Go command under `go/cmd/bonemesh-ca`). Its output — keys and
+certificates as base64 and JSON files — is implementation-neutral: a
+certificate issued here is accepted by a node in any language.
 
-Build the tool (needs a JDK 25 toolchain), then create a root:
+Build the tool (needs a Go toolchain), then create a root:
 
 ```sh
-cd java && ./gradlew shadowJar          # produces build/libs/bonemesh.jar
-CA="java -cp build/libs/bonemesh.jar com.axonibyte.bonemesh.v3.tools.BoneMeshCA"
+cd go && go build -o bonemesh-ca ./cmd/bonemesh-ca
+CA="./bonemesh-ca"
 
 $CA init-root --out ./ca                # writes ca/root.pub and ca/root.priv
 ```

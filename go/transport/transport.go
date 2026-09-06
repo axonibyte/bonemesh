@@ -71,6 +71,14 @@ func SealCiphertext(key []byte, seq uint64, plaintext []byte) []byte {
 	return crypto.AEADSeal(key, nonce(seq), nil, plaintext)
 }
 
+// OpenCiphertext decrypts a transport-envelope ciphertext with an explicit key
+// and sequence number — the counterpart to SealCiphertext, for consumers (the
+// bonemesh-inspect tool) that hold keys directly and cannot use the strict
+// in-order Transport.Open. Returns (plaintext, true) on success.
+func OpenCiphertext(key []byte, seq uint64, ct []byte) ([]byte, bool) {
+	return crypto.AEADOpen(key, nonce(seq), nil, ct)
+}
+
 func nonce(seq uint64) []byte {
 	n := make([]byte, 12)
 	binary.LittleEndian.PutUint64(n[4:], seq)

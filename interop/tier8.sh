@@ -24,14 +24,14 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/.." && pwd)
-jar="$repo/java/build/libs/bonemesh.jar"
+cabin="$repo/go/bonemesh-ca"
 mesh="tier8-mesh"
 marker="tier8-delivered-ok"
 work=$(mktemp -d)
 trap 'rm -rf "$work"; kill $(jobs -p) 2>/dev/null || true; pkill -f "$mesh" 2>/dev/null || true' EXIT
 
-ca() { java -cp "$jar" com.axonibyte.bonemesh.v3.tools.BoneMeshCA "$@" >/dev/null 2>&1; }
-[ -f "$jar" ] || (cd "$repo/java" && ./gradlew --no-daemon --quiet shadowJar)
+ca() { "$cabin" "$@" >/dev/null 2>&1; }
+[ -x "$cabin" ] || (cd "$repo/go" && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o bonemesh-ca ./cmd/bonemesh-ca)
 
 # Every implementation routes, so any usable driver can play any role.
 usable=""

@@ -44,6 +44,16 @@ was.
    `node.connect(host, port)`, `node.send(to, payload)`, and
    `node.addDataListener(...)`. Payloads are still `org.json.JSONObject`.
 
+## Provisioning tooling
+
+The mesh certificate authority is `bonemesh-ca`, a Go command
+(`go build -o bonemesh-ca ./cmd/bonemesh-ca` from `go/`). Its subcommands
+(`init-root`, `keygen`, `issue`, `verify`) and file formats are unchanged from
+the earlier Java `BoneMeshCA` CLI, which has been retired; certificates issued
+by either verify interchangeably, so any keys or certs already minted remain
+valid. A companion `bonemesh-inspect` decrypts a captured transport stream
+against a `BONEMESH_KEYLOG` file for debugging (security.md §8).
+
 ## What a v2 user keeps
 
 - JSON application payloads — the object you send is delivered unchanged.

@@ -26,6 +26,8 @@ cmd = "{ sh interop/run-matrix.sh && sh interop/tier5.sh && sh interop/tier6.sh 
 # large/regenerated build trees to keep the sync fast.
 exclude = [
   "/go/interop_node",
+  "/go/bonemesh-ca",
+  "/go/bonemesh-inspect",
   "/interop/tier5/faultpeer",
   "/interop/tier7/fuzzer",
   "/rust/target/",

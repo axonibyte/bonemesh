@@ -1,6 +1,7 @@
-// Command bmconf is the BoneMesh conformance tool. Today it validates the
-// static corpus in-process; once a v3 node exists (M4) it will also drive a
-// running node over TCP and check its behavior against the same corpus.
+// Command bmconf is the BoneMesh conformance tool. It validates the static
+// corpus in-process and points at the live cross-node conformance suite. Both
+// subcommands are pointers to where the assertions actually run, rather than
+// duplicating them here.
 package main
 
 import (
@@ -21,8 +22,15 @@ func main() {
 		fmt.Println("The corpus is exercised by `go test ./...` in this module.")
 		fmt.Println("See canon/, framing/, and schema/ for the corpus-driven suites.")
 	case "drive":
-		fmt.Fprintln(os.Stderr, "drive: not implemented yet — needs a v3 node to speak to (M4).")
-		os.Exit(1)
+		// Live conformance — completing real handshakes and transport with a
+		// running node in every language and checking the observed behavior — is
+		// the job of the interop harness, which drives each implementation as a
+		// black box through the neutral driver contract.
+		fmt.Println("Live cross-node conformance runs in the interop harness, not here.")
+		fmt.Println("See interop/README.md and interop/run-matrix.sh (the matrix), plus")
+		fmt.Println("interop/tier5..tier10 for fault, degraded-network, fuzz, convergence,")
+		fmt.Println("churn, and feature-behavior conformance. Run it via the interop reaper")
+		fmt.Println("tenant (the root .reaper.toml).")
 	default:
 		usage()
 		os.Exit(2)
@@ -32,5 +40,5 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: bmconf <corpus|drive>")
 	fmt.Fprintln(os.Stderr, "  corpus  explain how the static corpus is validated")
-	fmt.Fprintln(os.Stderr, "  drive   (pending M4) drive a running node over TCP")
+	fmt.Fprintln(os.Stderr, "  drive   point to the live cross-node conformance suite (interop/)")
 }

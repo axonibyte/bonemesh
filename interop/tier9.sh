@@ -28,14 +28,14 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/.." && pwd)
-jar="$repo/java/build/libs/bonemesh.jar"
+cabin="$repo/go/bonemesh-ca"
 mesh="tier9-mesh"
 rounds="${BONEMESH_SIM_ROUNDS:-24}"
 seed="${BONEMESH_SIM_SEED:-90210}"
 work=$(mktemp -d)
 trap 'rm -rf "$work"; kill $(jobs -p) 2>/dev/null || true; pkill -f "$mesh" 2>/dev/null || true' EXIT
 
-ca() { java -cp "$jar" com.axonibyte.bonemesh.v3.tools.BoneMeshCA "$@" >/dev/null 2>&1; }
+ca() { "$cabin" "$@" >/dev/null 2>&1; }
 
 # --- invariant checks (pure, over out-files) ----------------------------------
 # no intruder-* tag anywhere; used both for the real logs and the self-test.
@@ -59,7 +59,7 @@ fi
 echo "oracle self-test passed: invariant checks fire on known-bad logs"
 
 echo "provisioning meshes (real root + a foreign root; seed=$seed rounds=$rounds)"
-[ -f "$jar" ] || (cd "$repo/java" && ./gradlew --no-daemon --quiet shadowJar)
+[ -x "$cabin" ] || (cd "$repo/go" && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o bonemesh-ca ./cmd/bonemesh-ca)
 ca init-root --out "$work/ca"
 ca init-root --out "$work/ca-foreign"
 
