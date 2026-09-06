@@ -1,28 +1,30 @@
 # BoneMesh v3 — security design
 
-**Status: DRAFT for review.** This is a design, not a ratified spec. The
-construction is deliberately conventional — it is a reassembly of well-analyzed
-parts (hybrid X25519+ML-KEM key agreement, ML-DSA certificate identity, a
-Noise-style key schedule, ChaCha20-Poly1305) rather than novel cryptography.
-Bit-level constants marked **[PIN]** are settled when the Go reference
-implementation and the shared corpus are built (next M3 unit); changing them
-after that is a wire break. Review the *design* here before that happens.
+**Status: normative as of 3.0.0.** The design is ratified and the cryptographic
+wire contract is **frozen** — implemented by all six reference implementations
+and pinned by the shared corpus (`corpus/`). The construction is deliberately
+conventional — it is a reassembly of well-analyzed parts (hybrid X25519+ML-KEM
+key agreement, ML-DSA certificate identity, a Noise-style key schedule,
+ChaCha20-Poly1305) rather than novel cryptography. Constants formerly marked
+**[PIN]** are resolved inline against the corpus; the few genuinely-deferred
+items (the key-log debug format, periodic rekey) are called out where they
+appear.
 
 Companion document: [`protocol.md`](protocol.md) (framing, connections,
 routing). This document owns identity, membership, the handshake, and the
 threat model.
 
-**Constant status.** *Deterministic* values (algorithm identifiers, encodings,
-the certificate structure and its canonicalization) are **frozen** and enforced
-by the corpus — §11. The *key-schedule* values (protocol name, mix order, nonce
-construction, HKDF usage, split) are now **frozen too**: the shared vector
-`spec/corpus/transcripts/keyschedule.json` pins them, and the Java reference and
-the independent Go conformance implementation both reproduce it (M4 sub-unit 3a).
-The only still-provisional item is the **key-log text format** (§8), pinned when
-the transport lands. The *full handshake transcript* (the ML-KEM/ML-DSA message
-bytes end to end) freezes with a transcript vector when both implementations
-complete a live BMX handshake (M4 sub-unit 3b). This document never claims a
-crypto constant is interop-verified before code has exercised it.
+**Constant status.** All the wire-affecting values are now **frozen** and
+corpus-enforced: *deterministic* values (algorithm identifiers, encodings, the
+certificate structure and its canonicalization — §11); the *key-schedule* values
+(protocol name, mix order, nonce construction, HKDF usage, split), pinned by
+`spec/corpus/transcripts/keyschedule.json`; and the *full handshake transcript*
+(the end-to-end ML-KEM/ML-DSA message bytes), pinned by
+`handshake-agreement.json`, `pqc-interop.json`, and `transport-frame.json` and
+exercised live by the interop matrix across all six implementations. The only
+genuinely-deferred item is the **key-log debug format** (§8), which is specified
+but not implemented in 3.0.0. This document never claims a crypto constant is
+interop-verified before code has exercised it.
 
 ---
 
@@ -81,9 +83,9 @@ design value):
 - `nbf` / `exp` are Unix seconds; a certificate is valid only within the window.
   Short windows are the primary revocation mechanism — a compromised node stops
   being a member when its cert expires and the root declines to re-sign.
-- `sig` is the root's ML-DSA-87 signature over **`JCS(certificate without the
-  `sig` field)`**. `[PIN]` the exact pre-image (field set and JCS profile) is
-  frozen with the corpus.
+- `sig` is the root's ML-DSA-87 signature over **`CANON(certificate without the
+  `sig` field)`**. The exact pre-image (field set and canonicalization profile)
+  is frozen — fully specified in §11.1 and pinned by `spec/corpus/canon.json`.
 
 **Verification** (performed on every peer's certificate during the handshake):
 
@@ -204,10 +206,13 @@ reference and the Go runner); the structure:
   a node's long-term identity key does **not** retroactively decrypt recorded
   sessions (forward secrecy). It does allow future impersonation until the
   certificate is revoked or expires.
-- Sessions rekey on a **[PIN]** interval (time- or message-count-bounded) by
-  running a fresh BMX handshake over the existing connection; the old transport
-  keys are discarded.
-- Idle sessions are tornd down after a timeout and re-handshaked on demand.
+- *Deferred in 3.0.0:* periodic session rekey on a time- or message-count-bounded
+  interval (by running a fresh BMX handshake over the existing connection and
+  discarding the old transport keys) is specified but not implemented in this
+  release. In 3.0.0 the only rekey trigger is AEAD-nonce-counter exhaustion (§5).
+- *Deferred in 3.0.0:* idle-session teardown-and-re-handshake-on-demand is
+  likewise specified but not yet implemented. Forward secrecy (above) depends on
+  neither — it follows from the per-session ephemeral agreement regardless.
 
 ## 7. Trust model and threat model
 
@@ -241,20 +246,28 @@ reference and the Go runner); the structure:
 
 ## 8. Debuggability under encryption
 
-The project's "objects readable in flight" value survives encryption via a
-development-only hook (decision #5), modeled on TLS `SSLKEYLOGFILE`:
+*Deferred in 3.0.0: the key-log hook and `bonemesh-inspect` tool described in
+this section are specified but not implemented in this release — they are the
+design for a later minor version. 3.0.0 ships no key-log or plaintext path;
+until they land, inspect payloads at the application boundary instead (log what
+you send and what a listener receives).*
+
+The project's "objects readable in flight" value is intended to survive
+encryption via a development-only hook (decision #5), modeled on TLS
+`SSLKEYLOGFILE`:
 
 - When (and only when) the environment variable **`BONEMESH_KEYLOG`** names a
-  writable path, a node appends, per session, the derived transport keys keyed
-  by the session's transcript hash, in a defined text format `[PIN]`.
+  writable path, a node will append, per session, the derived transport keys
+  keyed by the session's transcript hash, in a defined text format (to be pinned
+  when the hook is implemented).
 - The hook is **off by default**, and a node that has it on **logs a loud
   warning** on every session, because it defeats forward secrecy for anyone
   holding the file.
-- A bundled **`bonemesh-inspect`** tool reads a key-log plus a captured stream
-  and prints the decrypted JSON, so `tcpdump` + inspector reproduces v2's
+- A bundled **`bonemesh-inspect`** tool will read a key-log plus a captured
+  stream and print the decrypted JSON, so `tcpdump` + inspector reproduces v2's
   "watch the JSON go by" experience without a plaintext production mode.
 
-The inspector and key-log format are specified in `spec/` so **all six
+The inspector and key-log format are to be specified in `spec/` so that **all six
 implementations emit compatible logs** — an inspector built once reads a stream
 from a node in any language.
 
@@ -272,8 +285,9 @@ from a node in any language.
 
 ## 11. Pinned deterministic constants
 
-Frozen now; enforced by the corpus. (Handshake key-schedule labels remain
-provisional per the note at the top and §5.)
+Frozen and enforced by the corpus. (The handshake key-schedule labels are frozen
+too — see §5 and `keyschedule.json`; the earlier "provisional" caveat is
+superseded.)
 
 | Constant | Value |
 |---|---|
@@ -312,9 +326,9 @@ vectors is interoperable for certificate verification.
 
 ## Open items for review
 
-- **[PIN] constants** (HKDF labels, MixKey order confirmation, JCS field set,
-  key-log format, rekey interval) — frozen with the Go reference + corpus, the
-  next M3 unit. Flagged so the *design* can be reviewed first.
+- **Formerly-[PIN] constants** — HKDF labels, MixKey order, and the JCS field set
+  are now **frozen** and corpus-pinned (§5, §11). The **key-log format** (§8) and
+  periodic **rekey interval** (§6) remain **deferred** in 3.0.0.
 - **Parameter choices** — ML-DSA-65/-87 split and ML-KEM-768 are proposed;
   raise here if a different category is wanted before they are pinned.
 - **Revocation** — specified as an optional extension; promote to mandatory if

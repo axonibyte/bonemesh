@@ -305,11 +305,14 @@ For the full trust and threat model see [`spec/security.md`](../spec/security.md
 
 ## 8. Debugging encrypted traffic
 
-Because the protocol is JSON under channel encryption, it is meant to be
+Because the protocol is JSON under channel encryption, it is designed to be
 inspectable during development without weakening production. The security design
 specifies a session-key logging hook (in the spirit of `SSLKEYLOGFILE`) and a
-traffic inspector; see [`spec/security.md`](../spec/security.md) §8. Use those in
-development rather than disabling encryption.
+`bonemesh-inspect` tool for reading captured traffic; see
+[`spec/security.md`](../spec/security.md) §8. **These are deferred — specified
+but not implemented in 3.0.0** — so for now inspect payloads at the application
+boundary instead: log what you `send` and what your listener receives, rather
+than disabling encryption.
 
 For protocol-level questions, the shared test corpus under
 [`spec/corpus/`](../spec/corpus/) contains worked examples of canonical
