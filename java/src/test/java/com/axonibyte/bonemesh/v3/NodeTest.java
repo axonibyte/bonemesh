@@ -188,4 +188,62 @@ public class NodeTest {
     assertEquals("beta", alpha.routeTable().get("gamma"),
         "alpha's route to gamma should be via beta");
   }
+
+  // F2: a message sent while its destination is unroutable is delivered once a
+  // route appears, on a later heartbeat drain.
+  @Test void retryDeliversAfterRouteAppears() throws Exception {
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+    alpha.useTunablesForTest(Tunables.forTestRetry(50L, 60000L));
+
+    CountDownLatch got = new CountDownLatch(1);
+    beta.addDataListener(p -> { if("queued".equals(p.optString("m"))) got.countDown(); });
+
+    alpha.sendMid("beta", new JSONObject().put("m", "queued")); // no route yet -> queued
+    alpha.connect("127.0.0.1", beta.port());                    // route appears
+
+    assertTrue(await(got, 8000), "a queued message was not delivered after the route appeared");
+  }
+
+  // F5: under a low frame threshold the session initiator rekeys the live link;
+  // both ends advance their rekey epoch and delivery continues across the swap.
+  @Test void rekeyUnderTrafficAdvancesEpochAndKeepsDelivering() throws Exception {
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+    alpha.useTunablesForTest(Tunables.forTestRekey(6L));
+    beta.useTunablesForTest(Tunables.forTestRekey(6L));
+
+    CountDownLatch got = new CountDownLatch(1);
+    beta.addDataListener(p -> { if("after-rekey".equals(p.optString("m"))) got.countDown(); });
+
+    alpha.connect("127.0.0.1", beta.port());
+
+    long deadline = System.currentTimeMillis() + 15000;
+    while(System.currentTimeMillis() < deadline
+        && (rekeyEpoch(alpha, "beta") < 1 || rekeyEpoch(beta, "alpha") < 1))
+      Thread.sleep(200);
+    assertTrue(rekeyEpoch(alpha, "beta") >= 1, "initiator never rekeyed");
+    assertTrue(rekeyEpoch(beta, "alpha") >= 1, "responder never completed a rekey");
+
+    deadline = System.currentTimeMillis() + 10000;
+    while(System.currentTimeMillis() < deadline) {
+      if(alpha.send("beta", new JSONObject().put("m", "after-rekey"))) break;
+      Thread.sleep(100);
+    }
+    assertTrue(await(got, 5000), "delivery broke across the rekey");
+  }
+
+  // Reads a peer link's completed-rekey count through the private links map.
+  private static int rekeyEpoch(Node n, String peer) throws Exception {
+    java.lang.reflect.Field lf = Node.class.getDeclaredField("links");
+    lf.setAccessible(true);
+    java.util.Map<?, ?> links = (java.util.Map<?, ?>) lf.get(n);
+    Object link = links.get(peer.toLowerCase(java.util.Locale.ROOT));
+    if(link == null) return -1;
+    java.lang.reflect.Method m = link.getClass().getDeclaredMethod("rekeyEpoch");
+    m.setAccessible(true);
+    return (int) m.invoke(link);
+  }
 }

@@ -80,13 +80,17 @@ defmodule Bonemesh.Node do
       # last_inbound, last_data} (protocol.md §3 — the tiebreak/liveness/idle
       # features need who initiated each link and when it last carried traffic).
       links: %{},
+      # pending: dest => [%{inner, enqueued_at, next_at, delay}] — origin data
+      # messages awaiting bounded retry when their destination is not routable
+      # yet (F2, protocol.md §7).
+      pending: %{},
       dedup: {MapSet.new(), :queue.new()},
       reassembler: %{},
       listeners: [],
       ack_listeners: []
     }
 
-    config = Map.take(state, [:mesh, :root_public, :cert, :id_public, :id_private])
+    config = Map.take(state, [:mesh, :root_public, :cert, :id_public, :id_private, :tun])
     me = self()
     spawn_link(fn -> accept_loop(listen, me, config) end)
     :timer.send_interval(@heartbeat_ms, :heartbeat)
@@ -135,6 +139,17 @@ defmodule Bonemesh.Node do
 
   def handle_cast({:link_up, peer, pid}, s), do: {:noreply, register_link_pid(s, peer, pid, false)}
 
+  # A link reports its rekey epoch advanced (F5); record it on the link entry so
+  # tests and operators can observe rekeys. Pid-guarded against a stale link.
+  def handle_cast({:rekey_epoch, peer, pid, epoch}, s) do
+    key = String.downcase(peer)
+
+    case s.links[key] do
+      %{pid: ^pid} = e -> {:noreply, %{s | links: Map.put(s.links, key, %{e | rekey_epoch: epoch})}}
+      _ -> {:noreply, s}
+    end
+  end
+
   # An inbound frame proves the peer alive; stamp the link's liveness clock
   # (and its data clock if it was a data frame) — but only if the frame came
   # from the link that is currently registered for this peer.
@@ -181,6 +196,7 @@ defmodule Bonemesh.Node do
   def handle_info(:heartbeat, s) do
     now = System.system_time(:millisecond)
     s = Enum.reduce(Map.to_list(s.links), s, fn {label, link}, acc -> sweep_link(acc, now, label, link) end)
+    s = drain_retries(s, now)
     {:noreply, s}
   end
 
@@ -201,6 +217,8 @@ defmodule Bonemesh.Node do
       true ->
         Kernel.send(pid, {:send, Message.probe(now)})
         Kernel.send(pid, {:send, Message.disco(Routing.advertise_to(s.routing, label))})
+        # F5: nudge the link to consider a rekey (only an initiator link acts).
+        Kernel.send(pid, :maybe_rekey)
         s
     end
   end
@@ -278,12 +296,20 @@ defmodule Bonemesh.Node do
     else
       ttl = m["ttl"] - 1
       origin = m["from"]
+      next = Routing.next_hop(s.routing, m["to"])
 
       cond do
         # F6/D4: the relay that dropped it names itself as the failing hop.
-        ttl <= 0 -> emit_nak(s, m["mid"], origin, "ttl")
-        Routing.next_hop(s.routing, m["to"]) == nil -> emit_nak(s, m["mid"], origin, "no-route")
-        true -> elem(forward(s, Map.put(m, "ttl", ttl)), 1)
+        ttl <= 0 ->
+          emit_nak_hop(s, m["mid"], origin, s.label, "ttl")
+
+        next == nil ->
+          emit_nak_hop(s, m["mid"], origin, s.label, "no-route")
+
+        true ->
+          {sent, s} = forward(s, Map.put(m, "ttl", ttl))
+          # A dead next-hop link is named as the failing hop (F2/D4).
+          if sent, do: s, else: emit_nak_hop(s, m["mid"], origin, next, "link-dead")
       end
     end
   end
@@ -297,10 +323,88 @@ defmodule Bonemesh.Node do
     {ok, s} =
       Enum.reduce(msgs, {true, s}, fn m, {acc, st} ->
         {sent, st} = forward(st, m)
+        # F2: a chunk that could not be handed to a next hop is queued for retry.
+        st = if sent, do: st, else: enqueue_retry(st, m)
         {sent and acc, st}
       end)
 
     {ok, mid, s}
+  end
+
+  # enqueue_retry queues an origin data message for later retry, bounded to 64
+  # per destination. A no-op when retry is disabled (retry_max_ms == 0).
+  defp enqueue_retry(s, inner) do
+    if s.tun.retry_max_ms <= 0 do
+      s
+    else
+      key = String.downcase(inner["to"])
+      now = System.system_time(:millisecond)
+      q = Map.get(s.pending, key, [])
+
+      if length(q) >= 64 do
+        s
+      else
+        entry = %{inner: inner, enqueued_at: now, next_at: now + s.tun.retry_base_ms, delay: s.tun.retry_base_ms}
+        %{s | pending: Map.put(s.pending, key, q ++ [entry])}
+      end
+    end
+  end
+
+  # drain_retries re-attempts due pending sends once per heartbeat: a landed
+  # message is dropped, a still-stuck one backs off (delay doubles to the cap),
+  # and one past its lifetime is dropped and reported to the origin's ack
+  # listeners as a synthesized nak{reason:"expired"} (never on the wire).
+  defp drain_retries(s, now) do
+    Enum.reduce(s.pending, s, fn {dest, q}, acc ->
+      {kept, acc} =
+        Enum.reduce(q, {[], acc}, fn e, {keep, st} ->
+          if now < e.next_at do
+            {[e | keep], st}
+          else
+            {sent, st} = forward(st, e.inner)
+            expired = now - e.enqueued_at > st.tun.retry_max_ms
+
+            cond do
+              sent ->
+                {keep, st}
+
+              expired ->
+                st = deliver_ack(st, expired_nak(st, e.inner))
+                {keep, st}
+
+              true ->
+                delay = min(e.delay * 2, st.tun.retry_cap_ms)
+                {[%{e | delay: delay, next_at: now + delay} | keep], st}
+            end
+          end
+        end)
+
+      pending =
+        case Enum.reverse(kept) do
+          [] -> Map.delete(acc.pending, dest)
+          list -> Map.put(acc.pending, dest, list)
+        end
+
+      %{acc | pending: pending}
+    end)
+  end
+
+  defp expired_nak(s, inner) do
+    %{
+      "type" => "nak",
+      "mid" => inner["mid"],
+      "hop" => s.label,
+      "reason" => "expired",
+      "to" => s.label,
+      "from" => s.label,
+      "ttl" => Message.default_ttl()
+    }
+  end
+
+  # deliver_ack hands an ack/nak addressed to this node to the ack listeners.
+  defp deliver_ack(s, inner) do
+    for pid <- s.ack_listeners, do: Kernel.send(pid, {:bonemesh_ack, inner})
+    s
   end
 
   # Relays or delivers an ack/nak (routed back toward the origin like data). A
@@ -314,9 +418,7 @@ defmodule Bonemesh.Node do
         s
 
       String.downcase(m["to"]) == String.downcase(s.label) ->
-        s = %{s | dedup: remember(s.dedup, key)}
-        for pid <- s.ack_listeners, do: Kernel.send(pid, {:bonemesh_ack, m})
-        s
+        deliver_ack(%{s | dedup: remember(s.dedup, key)}, m)
 
       true ->
         s = %{s | dedup: remember(s.dedup, key)}
@@ -330,11 +432,12 @@ defmodule Bonemesh.Node do
     end
   end
 
-  # emit_nak sends a NAK back toward the origin naming this node as the failing
-  # hop; best-effort, dropped if unroutable (no recursion).
-  defp emit_nak(s, mid, origin, reason) do
+  # emit_nak_hop sends a NAK back toward the origin naming an explicit failing
+  # hop (this node for a local drop, the next-hop label for a dead onward link);
+  # best-effort, dropped if unroutable (no recursion).
+  defp emit_nak_hop(s, mid, origin, hop, reason) do
     if is_binary(origin) and String.downcase(origin) != String.downcase(s.label) do
-      route_control(s, Message.nak(mid, s.label, origin, s.label, reason, Message.default_ttl()))
+      route_control(s, Message.nak(mid, s.label, origin, hop, reason, Message.default_ttl()))
     else
       s
     end
@@ -378,19 +481,39 @@ defmodule Bonemesh.Node do
   end
 
   defp register_link(s, peer, socket, session) do
-    pid = start_link_process(self(), peer, socket, Transport.session(session))
+    pid = start_link_process(self(), peer, socket, Transport.session(session), true, link_cfg(s), s.tun)
     register_link_pid(s, peer, pid, true)
   end
 
+  # The handshake inputs a link process needs to drive a rekey (F5).
+  defp link_cfg(s), do: Map.take(s, [:mesh, :root_public, :cert, :id_public, :id_private])
+
   # Spawns a link process, transfers socket ownership to it, and releases it.
-  # The caller must currently own the socket.
-  defp start_link_process(node, peer, socket, session) do
+  # The caller must currently own the socket. The process carries its own link
+  # state (transport session, rekey machine, seq counters) since only it sees
+  # the per-direction sequence numbers the rekey trigger reads.
+  defp start_link_process(node, peer, socket, session, initiator, cfg, tun) do
+    ls = %{
+      node: node,
+      peer: peer,
+      socket: socket,
+      session: session,
+      initiator: initiator,
+      cfg: cfg,
+      tun: tun,
+      established_at: System.system_time(:millisecond),
+      rekey_hs: nil,
+      rekey_session: nil,
+      rekey_started_at: 0,
+      epoch: 0
+    }
+
     pid =
       spawn(fn ->
         receive do
           :go ->
             :inet.setopts(socket, active: :once)
-            link_loop(node, peer, socket, session)
+            link_loop(ls)
         end
       end)
 
@@ -432,7 +555,8 @@ defmodule Bonemesh.Node do
         initiator: initiator,
         established_at: now,
         last_inbound: now,
-        last_data: now
+        last_data: now,
+        rekey_epoch: 0
       }
 
       %{s | links: Map.put(s.links, key, entry), routing: Routing.observe_neighbor(s.routing, peer, 1)}
@@ -444,15 +568,29 @@ defmodule Bonemesh.Node do
   end
 
   # A neighbor link: owns the socket + transport session, relays inbound inner
-  # messages to the node, and seals outbound ones on request.
-  defp link_loop(node, peer, socket, session) do
+  # messages to the node, seals outbound ones on request, and drives its own
+  # rekey (F5) — it is the only place the per-direction sequence counters live.
+  defp link_loop(ls) do
+    socket = ls.socket
+
     receive do
       {:tcp, ^socket, line} ->
-        case safe_open(session, line) do
+        case safe_open(ls.session, line) do
           {:ok, inner, session} ->
-            GenServer.cast(node, {:inbound, peer, self(), inner})
+            ls = %{ls | session: session}
+
+            ls =
+              if inner["type"] == "rekey" do
+                # Rekey frames are handled locally (they own the session), never
+                # forwarded to the node.
+                handle_rekey(ls, inner)
+              else
+                GenServer.cast(ls.node, {:inbound, ls.peer, self(), inner})
+                ls
+              end
+
             :inet.setopts(socket, active: :once)
-            link_loop(node, peer, socket, session)
+            link_loop(ls)
 
           :error ->
             # A frame that violates the transport expectation (bad JSON or a
@@ -460,16 +598,19 @@ defmodule Bonemesh.Node do
             # swallowed — a swallowed error would wedge the link forever
             # (protocol.md §2). The node re-dials on demand.
             :gen_tcp.close(socket)
-            GenServer.cast(node, {:link_down, peer, self()})
+            GenServer.cast(ls.node, {:link_down, ls.peer, self()})
         end
 
       {:send, inner} ->
-        {carrier, session} = Transport.seal(session, inner)
+        {carrier, session} = Transport.seal(ls.session, inner)
         :gen_tcp.send(socket, Frame.encode(carrier))
-        link_loop(node, peer, socket, session)
+        link_loop(%{ls | session: session})
+
+      :maybe_rekey ->
+        link_loop(maybe_rekey(ls))
 
       {:tcp_closed, ^socket} ->
-        GenServer.cast(node, {:link_down, peer, self()})
+        GenServer.cast(ls.node, {:link_down, ls.peer, self()})
 
       :close ->
         # Displaced by a reconnect: shut down without withdrawing routes (the
@@ -477,9 +618,128 @@ defmodule Bonemesh.Node do
         :gen_tcp.close(socket)
 
       _ ->
-        link_loop(node, peer, socket, session)
+        link_loop(ls)
     end
   end
+
+  # maybe_rekey (F5) runs on each heartbeat nudge. It abandons a stalled pre-swap
+  # handshake at the rekey timeout (keeping the old keys — the safe degrade
+  # against a peer that ignores the rekey frames), and otherwise, on the session
+  # initiator only, starts a fresh BMX when the frame count or session age
+  # crosses the threshold.
+  defp maybe_rekey(ls) do
+    now = System.system_time(:millisecond)
+
+    cond do
+      ls.rekey_hs != nil ->
+        if now - ls.rekey_started_at > ls.tun.rekey_timeout_ms, do: %{ls | rekey_hs: nil}, else: ls
+
+      ls.rekey_session != nil ->
+        ls
+
+      not ls.initiator ->
+        ls
+
+      ls.session.send_seq >= ls.tun.rekey_frames or ls.session.receive_seq >= ls.tun.rekey_frames or
+          now - ls.established_at >= ls.tun.rekey_ms ->
+        c = ls.cfg
+        hs = Handshake.initiator(c.mesh, c.root_public, System.system_time(:second), c.cert, c.id_public, c.id_private)
+        {m1, hs} = Handshake.write_message1(hs)
+        session = seal_send(ls.session, ls.socket, rekey_msg(Message.new_mid(), 1, m1))
+        %{ls | session: session, rekey_hs: hs, rekey_started_at: now}
+
+      true ->
+        ls
+    end
+  end
+
+  # handle_rekey advances the tunneled-BMX rekey state machine (protocol.md §5 /
+  # security.md §6). Because a link process handles its messages sequentially,
+  # each seal-then-swap and open-then-swap is naturally atomic and ordered: a
+  # side swaps its send key right after sealing its last old-key frame, and its
+  # receive key right after opening the peer's.
+  defp handle_rekey(ls, %{"phase" => phase, "mid" => mid} = m) do
+    body = if is_binary(m["body"]), do: Base.decode64!(m["body"]), else: <<>>
+    c = ls.cfg
+    sock = ls.socket
+
+    case phase do
+      1 ->
+        hs = Handshake.responder(c.mesh, c.root_public, System.system_time(:second), c.cert, c.id_public, c.id_private)
+
+        case Handshake.read_message1_write_message2(hs, body) do
+          {:ok, m2, hs} ->
+            session = seal_send(ls.session, sock, rekey_msg(mid, 2, m2))
+            %{ls | session: session, rekey_hs: hs, rekey_started_at: System.system_time(:millisecond)}
+
+          {:error, _} ->
+            ls
+        end
+
+      2 ->
+        if ls.rekey_hs == nil do
+          ls
+        else
+          case Handshake.read_message2_write_message3(ls.rekey_hs, body) do
+            {:ok, m3, hs} ->
+              new = Handshake.session(hs)
+              session = seal_send(ls.session, sock, rekey_msg(mid, 3, m3))
+              session = Transport.swap_send(session, new.send_key)
+              %{ls | session: session, rekey_session: new, rekey_hs: nil}
+
+            {:error, _} ->
+              %{ls | rekey_hs: nil}
+          end
+        end
+
+      3 ->
+        if ls.rekey_hs == nil do
+          ls
+        else
+          case Handshake.read_message3(ls.rekey_hs, body) do
+            {:ok, hs} ->
+              new = Handshake.session(hs)
+              # The phase-3 frame we just opened was the last old-key inbound.
+              session = Transport.swap_receive(ls.session, new.receive_key)
+              session = seal_send(session, sock, rekey_msg(mid, 4, nil))
+              session = Transport.swap_send(session, new.send_key)
+              report_epoch(ls, ls.epoch + 1)
+              %{ls | session: session, rekey_hs: nil, epoch: ls.epoch + 1}
+
+            {:error, _} ->
+              %{ls | rekey_hs: nil}
+          end
+        end
+
+      4 ->
+        if ls.rekey_session == nil do
+          ls
+        else
+          session = Transport.swap_receive(ls.session, ls.rekey_session.receive_key)
+          report_epoch(ls, ls.epoch + 1)
+          %{ls | session: session, rekey_session: nil, epoch: ls.epoch + 1}
+        end
+
+      _ ->
+        ls
+    end
+  end
+
+  # Builds a rekey control message, tunneling the raw BMX bytes (phase 4 carries
+  # no body).
+  defp rekey_msg(mid, phase, nil), do: %{"type" => "rekey", "mid" => mid, "phase" => phase}
+  defp rekey_msg(mid, phase, body),
+    do: %{"type" => "rekey", "mid" => mid, "phase" => phase, "body" => Base.encode64(body)}
+
+  # Seals and writes a frame on the link, returning the advanced session.
+  defp seal_send(session, socket, inner) do
+    {carrier, session} = Transport.seal(session, inner)
+    :gen_tcp.send(socket, Frame.encode(carrier))
+    session
+  end
+
+  defp report_epoch(ls, epoch),
+    do: GenServer.cast(ls.node, {:rekey_epoch, ls.peer, self(), epoch})
 
   # Opens a transport frame, converting a malformed line or a transport error
   # into a single :error the caller acts on.
@@ -529,7 +789,7 @@ defmodule Bonemesh.Node do
          {:ok, hs} <- Handshake.read_message3(hs, m3) do
       session = Handshake.session(hs)
       peer = session.peer_cert["label"]
-      link = start_link_process(node, peer, socket, Transport.session(session))
+      link = start_link_process(node, peer, socket, Transport.session(session), false, link_cfg(s), s.tun)
       GenServer.cast(node, {:link_up, peer, link})
     else
       _ -> :gen_tcp.close(socket)

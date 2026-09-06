@@ -42,6 +42,16 @@ defmodule Bonemesh.Transport do
     end
   end
 
+  @doc """
+  Installs a new outbound key and resets the send counter to 0 (F5). Called at
+  the rekey boundary immediately after sealing the last old-key frame in this
+  direction, so the very next frame uses the new key at seq 0.
+  """
+  def swap_send(session, key), do: %{session | send_key: key, send_seq: 0}
+
+  @doc "Installs a new inbound key and resets the receive counter (F5)."
+  def swap_receive(session, key), do: %{session | receive_key: key, receive_seq: 0}
+
   @doc "Seals a transport-frame ciphertext (the single AEAD implementation)."
   def seal_ciphertext(key, seq, plaintext),
     do: Bonemesh.Crypto.aead_seal(key, nonce(seq), <<>>, plaintext)

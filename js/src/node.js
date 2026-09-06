@@ -83,6 +83,8 @@ export class Node {
     this.links = new Map();
     this.listeners = [];
     this.ackListeners = [];
+    // F2: per-destination bounded queue of origin data messages awaiting retry.
+    this.pending = new Map();
     this.server = null;
     this.table = new Table(config.label);
     this.dedup = new Dedup(4096);
@@ -99,7 +101,10 @@ export class Node {
     // it down if it is probe-timeout dead (F3) or idle (F4).
     node.hb = setInterval(() => {
       const now = nowMs();
-      for (const [label, link] of [...node.links]) node.sweepLink(now, label, link);
+      for (const [label, link] of [...node.links]) {
+        if (node.sweepLink(now, label, link)) node.maybeRekey(link, now);
+      }
+      node.drainRetries(now);
     }, 1000);
     return node;
   }
@@ -111,16 +116,91 @@ export class Node {
     if (now - link.lastInbound > this.tun.probeTimeoutMs) {
       this.#deregister(peer, link);
       link.socket.destroy();
-      return;
+      return false;
     }
     if (this.tun.idleMs > 0 && now - link.lastData > this.tun.idleMs) {
       this.#sendToLink(peer, message.bye('idle'));
       this.#deregister(peer, link);
       link.socket.destroy();
-      return;
+      return false;
     }
     this.#sendToLink(peer, message.probe(now));
     this.#sendToLink(peer, message.disco(this.table.advertiseTo(peer)));
+    return true;
+  }
+
+  // F5: drive the initiator side of a periodic rekey. Abandon a stalled
+  // pre-swap handshake at the rekey timeout (keeping the old keys — the safe
+  // degrade against a peer that ignores rekey), else, on the session initiator
+  // only, start a fresh BMX when the frame count or session age crosses the
+  // threshold. JS is single-threaded, so sealing phase 1 here cannot race.
+  maybeRekey(link, nowMillis) {
+    if (link.rekeyHs) {
+      if (nowMillis - link.rekeyStartedAt > this.tun.rekeyTimeoutMs) link.rekeyHs = null;
+      return;
+    }
+    if (link.rekeySession) return; // initiator swapped send, awaiting phase 4
+    if (!link.initiator) return;
+    const due = Number(link.transport.sendSeq_()) >= this.tun.rekeyFrames ||
+      Number(link.transport.receiveSeq_()) >= this.tun.rekeyFrames ||
+      nowMillis - link.establishedAt >= this.tun.rekeyMs;
+    if (!due) return;
+    const hs = Handshake.initiator(this.cfg.mesh, this.cfg.rootPublic, now(), this.cfg.cert, this.cfg.idPrivate);
+    const mid = message.newMid();
+    this.#writeOn(link, { type: 'rekey', mid, phase: 1, body: hs.writeMessage1().toString('base64') });
+    link.rekeyHs = hs;
+    link.rekeyMid = mid;
+    link.rekeyStartedAt = nowMillis;
+  }
+
+  // F2: re-attempt due pending sends once per heartbeat. A landed message is
+  // dropped, a still-stuck one backs off (delay doubles to the cap), and one
+  // past its lifetime is dropped and reported to the origin's ack listeners as
+  // a synthesized nak{reason:"expired"} (never on the wire).
+  drainRetries(now) {
+    for (const [dest, q] of [...this.pending]) {
+      const keep = [];
+      for (const p of q) {
+        if (now < p.nextAt) { keep.push(p); continue; }
+        const nh = this.table.nextHop(p.inner.to);
+        const delivered = nh ? this.#sendToLink(nh, p.inner) : false;
+        const expired = now - p.enqueuedAt > this.tun.retryMaxMs;
+        if (delivered) continue;
+        if (expired) {
+          for (const cb of this.ackListeners) {
+            try {
+              cb({ type: 'nak', mid: p.inner.mid, hop: this.cfg.label, reason: 'expired',
+                   to: this.cfg.label, from: this.cfg.label, ttl: message.DEFAULT_TTL });
+            } catch { /* listener errors are its own */ }
+          }
+          continue;
+        }
+        p.delay = Math.min(p.delay * 2, this.tun.retryCapMs);
+        p.nextAt = now + p.delay;
+        keep.push(p);
+      }
+      if (keep.length) this.pending.set(dest, keep);
+      else this.pending.delete(dest);
+    }
+  }
+
+  // Queue an origin data message for later retry, bounded to 64 per
+  // destination. A no-op when retry is disabled (retryMaxMs === 0).
+  #enqueueRetry(inner) {
+    if (this.tun.retryMaxMs <= 0) return;
+    const dest = String(inner.to).toLowerCase();
+    const q = this.pending.get(dest) || [];
+    if (q.length >= 64) return;
+    const now = nowMs();
+    q.push({ inner, enqueuedAt: now, nextAt: now + this.tun.retryBaseMs, delay: this.tun.retryBaseMs });
+    this.pending.set(dest, q);
+  }
+
+  // Seal and write directly on a link (rekey uses this so seal-then-swap is one
+  // synchronous step with nothing interleaved).
+  #writeOn(link, inner) {
+    if (inner.type === 'data') link.lastData = nowMs();
+    link.socket.write(encode(link.transport.seal(inner)));
   }
 
   port() { return this.server.address().port; }
@@ -169,10 +249,13 @@ export class Node {
 
   #sendWithTtl(to, payload, ttl) {
     const mid = message.newMid();
+    const msg = message.data(mid, this.cfg.label, to, ttl, payload);
     const nh = this.table.nextHop(to);
-    if (!nh) return { mid, ok: false };
-    const ok = this.#sendToLink(nh, message.data(mid, this.cfg.label, to, ttl, payload));
-    return { mid, ok };
+    if (!nh || !this.#sendToLink(nh, msg)) {
+      this.#enqueueRetry(msg); // F2: retry when a route/link appears
+      return { mid, ok: false };
+    }
+    return { mid, ok: true };
   }
 
   #sendToLink(label, inner) {
@@ -250,7 +333,7 @@ export class Node {
         link.socket.destroy();
         return;
       }
-      this.#handleInner(peer, inner);
+      this.#handleInner(peer, link, inner);
     });
   }
 
@@ -265,7 +348,7 @@ export class Node {
     }
   }
 
-  #handleInner(peer, msg) {
+  #handleInner(peer, link, msg) {
     switch (msg.type) {
       case 'probe':
         this.#sendToLink(peer, message.echo(msg.token));
@@ -287,6 +370,59 @@ export class Node {
       case 'nak':
         this.#handleControl(msg, 'n:');
         break;
+      case 'rekey':
+        this.#handleRekey(link, msg);
+        break;
+    }
+  }
+
+  // F5: advance the tunneled-BMX rekey state machine for one link. The BMX
+  // messages ride inside transport frames, so they arrive through the normal
+  // reader with no raw-stream race; each side swaps its send key immediately
+  // after sealing its last old-key frame and its receive key immediately after
+  // opening the peer's (protocol.md §5 / security.md §6).
+  #handleRekey(link, msg) {
+    const decodeFrame = (b64) => JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+    switch (msg.phase) {
+      case 1: { // responder: accept the fresh bmx1, reply bmx2
+        const hs = Handshake.responder(this.cfg.mesh, this.cfg.rootPublic, now(), this.cfg.cert, this.cfg.idPrivate);
+        let m2;
+        try { m2 = hs.readMessage1WriteMessage2(decodeFrame(msg.body)); } catch { return; }
+        link.rekeyHs = hs;
+        link.rekeyMid = msg.mid;
+        link.rekeyStartedAt = nowMs();
+        this.#writeOn(link, { type: 'rekey', mid: msg.mid, phase: 2, body: m2.toString('base64') });
+        break;
+      }
+      case 2: { // initiator: finish with bmx3, then swap its send key
+        if (!link.rekeyHs) return;
+        let m3;
+        try { m3 = link.rekeyHs.readMessage2WriteMessage3(decodeFrame(msg.body)); } catch { link.rekeyHs = null; return; }
+        const sess = link.rekeyHs.session;
+        this.#writeOn(link, { type: 'rekey', mid: msg.mid, phase: 3, body: m3.toString('base64') });
+        link.transport.swapSend(sess.sendKey); // last old-key frame sent above
+        link.rekeySession = sess;
+        link.rekeyHs = null;
+        break;
+      }
+      case 3: { // responder: verify bmx3, swap receive, send phase 4, swap send
+        if (!link.rekeyHs) return;
+        try { link.rekeyHs.readMessage3(decodeFrame(msg.body)); } catch { link.rekeyHs = null; return; }
+        const sess = link.rekeyHs.session;
+        link.transport.swapReceive(sess.receiveKey); // phase-3 was the last old-key inbound
+        this.#writeOn(link, { type: 'rekey', mid: msg.mid, phase: 4 });
+        link.transport.swapSend(sess.sendKey);
+        link.rekeyHs = null;
+        link.rekeyEpoch = (link.rekeyEpoch || 0) + 1;
+        break;
+      }
+      case 4: { // initiator: swap receive; rekey complete
+        if (!link.rekeySession) return;
+        link.transport.swapReceive(link.rekeySession.receiveKey);
+        link.rekeySession = null;
+        link.rekeyEpoch = (link.rekeyEpoch || 0) + 1;
+        break;
+      }
     }
   }
 
@@ -315,7 +451,11 @@ export class Node {
       this.#emitNak(msg.mid, from, 'no-route');
       return;
     }
-    this.#sendToLink(nh, { ...msg, ttl });
+    if (!this.#sendToLink(nh, { ...msg, ttl })) {
+      // The next-hop link died between routing and writing; name it as the
+      // failing hop so the origin learns which hop broke (F2/D4).
+      this.#emitNakHop(msg.mid, from, nh, 'link-dead');
+    }
   }
 
   // Relays or delivers an ack/nak (routed back toward the origin like data). A
@@ -337,10 +477,16 @@ export class Node {
   }
 
   // Sends a NAK back toward the origin naming this node as the failing hop.
-  // Best-effort: dropped if it cannot be routed (no recursion).
   #emitNak(mid, origin, reason) {
+    this.#emitNakHop(mid, origin, this.cfg.label, reason);
+  }
+
+  // Sends a NAK naming an explicit failing hop (this node for a local drop, the
+  // next-hop label for a dead onward link). Best-effort: dropped if it cannot
+  // be routed (no recursion).
+  #emitNakHop(mid, origin, hop, reason) {
     if (!origin || origin.toLowerCase() === this.cfg.label.toLowerCase()) return;
-    this.#routeControl(message.nak(mid, this.cfg.label, origin, this.cfg.label, reason, message.DEFAULT_TTL));
+    this.#routeControl(message.nak(mid, this.cfg.label, origin, hop, reason, message.DEFAULT_TTL));
   }
 
   // Sends a freshly-built ack/nak toward its destination, dropping silently if

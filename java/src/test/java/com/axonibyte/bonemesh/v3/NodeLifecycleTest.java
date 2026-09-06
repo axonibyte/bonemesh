@@ -18,6 +18,7 @@ package com.axonibyte.bonemesh.v3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Constructor;
@@ -26,10 +27,14 @@ import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
+import org.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import com.axonibyte.bonemesh.v3.cert.Certificate;
+import com.axonibyte.bonemesh.v3.message.Messages;
 import com.axonibyte.bonemesh.v3.routing.RoutingTable;
 
 /**
@@ -290,5 +295,60 @@ public final class NodeLifecycleTest {
         && t.retryMaxMillis == 60000L && t.rekeyMillis == 3600000L
         && t.rekeyFrames == 65536L && t.rekeyTimeoutMillis == 10000L,
         "tunable defaults must match the pinned wire-neutral values");
+  }
+
+  private static final String MID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; // 32 hex
+
+  private static void enqueueRetry(Node n, JSONObject inner) throws Exception {
+    Method m = Node.class.getDeclaredMethod("enqueueRetry", JSONObject.class);
+    m.setAccessible(true);
+    m.invoke(n, inner);
+  }
+
+  private static void drainRetries(Node n, long now) throws Exception {
+    Method m = Node.class.getDeclaredMethod("drainRetries", long.class);
+    m.setAccessible(true);
+    m.invoke(n, now);
+  }
+
+  private static Map<?, ?> pending(Node n) throws Exception {
+    Field f = Node.class.getDeclaredField("pending");
+    f.setAccessible(true);
+    return (Map<?, ?>) f.get(n);
+  }
+
+  // F2: a message that never becomes routable is dropped at its lifetime cap and
+  // the origin is told via a synthesized nak{reason:"expired"} on the ack listener.
+  @Test
+  void retryReportsExpiredToAckListener() throws Exception {
+    Node node = bareNode();
+    try {
+      node.useTunablesForTest(Tunables.forTestRetry(50L, 1L)); // 1 ms lifetime
+      AtomicReference<JSONObject> nak = new AtomicReference<>();
+      node.addAckListener(nak::set);
+      enqueueRetry(node, Messages.data(MID, "self", "ghost", Messages.DEFAULT_TTL, new JSONObject()));
+      // Drain at a timestamp past both the first-retry delay and the lifetime.
+      drainRetries(node, System.currentTimeMillis() + 1000);
+      assertTrue(pending(node).isEmpty(), "expired retry not dropped");
+      assertNotNull(nak.get(), "no expiry report delivered to the ack listener");
+      assertEquals("nak", nak.get().optString("type"));
+      assertEquals("expired", nak.get().optString("reason"));
+      assertEquals(MID, nak.get().optString("mid"));
+    } finally {
+      node.kill();
+    }
+  }
+
+  // F2 disabled: with retryMaxMillis==0 nothing is queued.
+  @Test
+  void retryDisabledQueuesNothing() throws Exception {
+    Node node = bareNode();
+    try {
+      node.useTunablesForTest(Tunables.forTestRetry(50L, 0L));
+      enqueueRetry(node, Messages.data(MID, "self", "ghost", Messages.DEFAULT_TTL, new JSONObject()));
+      assertTrue(pending(node).isEmpty(), "retry queued even though retry is disabled");
+    } finally {
+      node.kill();
+    }
   }
 }

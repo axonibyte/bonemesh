@@ -39,8 +39,8 @@ public final class TransportSession {
   private static final Base64.Encoder B64ENC = Base64.getEncoder();
   private static final Base64.Decoder B64DEC = Base64.getDecoder();
 
-  private final byte[] sendKey;
-  private final byte[] receiveKey;
+  private byte[] sendKey;
+  private byte[] receiveKey;
   private long sendSeq;
   private long receiveSeq;
 
@@ -52,6 +52,39 @@ public final class TransportSession {
   public TransportSession(Session session) {
     this.sendKey = session.sendKey();
     this.receiveKey = session.receiveKey();
+  }
+
+  /** @return the per-direction send counter (for deciding when to rekey, F5) */
+  public synchronized long sendSeq() {
+    return sendSeq;
+  }
+
+  /** @return the per-direction receive counter */
+  public synchronized long receiveSeq() {
+    return receiveSeq;
+  }
+
+  /**
+   * Installs a new outbound key and resets the send counter to 0, at the rekey
+   * boundary immediately after the last old-key frame in this direction has
+   * been sealed (F5).
+   *
+   * @param key the new 32-byte send key
+   */
+  public synchronized void swapSend(byte[] key) {
+    this.sendKey = key;
+    this.sendSeq = 0;
+  }
+
+  /**
+   * Installs a new inbound key and resets the receive counter, immediately
+   * after opening the last old-key frame in this direction (F5).
+   *
+   * @param key the new 32-byte receive key
+   */
+  public synchronized void swapReceive(byte[] key) {
+    this.receiveKey = key;
+    this.receiveSeq = 0;
   }
 
   /**

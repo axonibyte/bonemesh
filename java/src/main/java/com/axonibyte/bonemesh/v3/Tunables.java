@@ -48,18 +48,19 @@ final class Tunables {
     this.keylogPath = kl == null ? "" : kl;
   }
 
-  // Package-visible test seam: build tunables with explicit probe-timeout and
-  // idle values (the two the liveness/idle sweep reads) instead of the
-  // environment. The rest keep their pinned defaults.
-  private Tunables(long probeTimeoutMillis, long idleMillis) {
+  // Package-visible test seam: build tunables with explicit values instead of
+  // the environment (JDK 25 forbids reflective final-field writes).
+  private Tunables(long probeTimeoutMillis, long idleMillis, long retryBaseMillis,
+      long retryCapMillis, long retryMaxMillis, long rekeyMillis, long rekeyFrames,
+      long rekeyTimeoutMillis) {
     this.probeTimeoutMillis = probeTimeoutMillis;
     this.idleMillis = idleMillis;
-    this.retryBaseMillis = 500L;
-    this.retryCapMillis = 30000L;
-    this.retryMaxMillis = 60000L;
-    this.rekeyMillis = 3600000L;
-    this.rekeyFrames = 65536L;
-    this.rekeyTimeoutMillis = 10000L;
+    this.retryBaseMillis = retryBaseMillis;
+    this.retryCapMillis = retryCapMillis;
+    this.retryMaxMillis = retryMaxMillis;
+    this.rekeyMillis = rekeyMillis;
+    this.rekeyFrames = rekeyFrames;
+    this.rekeyTimeoutMillis = rekeyTimeoutMillis;
     this.keylogPath = "";
   }
 
@@ -68,8 +69,22 @@ final class Tunables {
     return new Tunables();
   }
 
+  // Explicit probe-timeout and idle; everything else at its pinned default.
   static Tunables forTest(long probeTimeoutMillis, long idleMillis) {
-    return new Tunables(probeTimeoutMillis, idleMillis);
+    return new Tunables(probeTimeoutMillis, idleMillis, 500L, 30000L, 60000L,
+        3600000L, 65536L, 10000L);
+  }
+
+  // Explicit retry base and lifetime (0 lifetime disables retry); everything
+  // else at its default.
+  static Tunables forTestRetry(long retryBaseMillis, long retryMaxMillis) {
+    return new Tunables(15000L, 0L, retryBaseMillis, 30000L, retryMaxMillis,
+        3600000L, 65536L, 10000L);
+  }
+
+  // Explicit rekey frame threshold; everything else at its default.
+  static Tunables forTestRekey(long rekeyFrames) {
+    return new Tunables(15000L, 0L, 500L, 30000L, 60000L, 3600000L, rekeyFrames, 10000L);
   }
 
   private static long envLong(String name, long fallback) {

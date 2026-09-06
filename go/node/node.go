@@ -9,6 +9,7 @@ package node
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"net"
 	"strconv"
@@ -50,6 +51,15 @@ type link struct {
 	// lastData is the unix-millis time of the last data frame sent over or
 	// received on this link (probe/echo/disco never count as activity).
 	lastData atomic.Int64
+	// Rekey state (F5), all guarded by mu. rekeyHS is the in-flight handshake
+	// before any key swap has happened (abandonable, keeping the old keys);
+	// rekeySession is the initiator's new session between swapping its send key
+	// (after phase 2) and swapping its receive key (on phase 4).
+	rekeyHS        *handshake.Handshake
+	rekeySession   *handshake.Session
+	rekeyMID       string
+	rekeyStartedAt int64
+	rekeyEpoch     int
 }
 
 // Node is a running mesh node.
@@ -61,9 +71,21 @@ type Node struct {
 	mu           sync.Mutex
 	listeners    []chan map[string]any
 	ackListeners []chan map[string]any
+	pending      map[string][]*pendingSend
 	table        *routing.Table
 	dedup        *routing.Dedup
 	done         chan struct{}
+}
+
+// pendingSend is an origin data message awaiting a retry: it could not be
+// handed to a next hop yet (no route, or the write failed). It is re-tried on
+// each heartbeat with exponential backoff until it lands or its lifetime is
+// spent (F2, protocol.md §7).
+type pendingSend struct {
+	inner      map[string]any
+	enqueuedAt int64
+	nextAt     int64
+	delay      int64
 }
 
 // Start starts a node listening on port (0 for ephemeral).
@@ -77,6 +99,7 @@ func Start(cfg Config, port int) (*Node, error) {
 		tun:      loadTunables(),
 		listener: l,
 		links:    make(map[string]*link),
+		pending:  make(map[string][]*pendingSend),
 		table:    routing.NewTable(cfg.Label),
 		dedup:    routing.NewDedup(4096),
 		done:     make(chan struct{}),
@@ -136,15 +159,107 @@ func (n *Node) Send(to string, payload any) bool {
 }
 
 // SendM is Send that also returns the message id, so a caller can correlate the
-// ack/nak delivered to AckListener (protocol.md §7).
+// ack/nak delivered to AckListener (protocol.md §7). If the destination is not
+// routable now (or the first-hop write fails) the message is queued for bounded
+// retry (F2) when retry is enabled; the boolean reports whether it was handed to
+// a next hop this instant, unchanged from before.
 func (n *Node) SendM(to string, payload any) (string, bool) {
 	mid := message.NewMID()
 	msg := message.Data(mid, n.cfg.Label, to, message.DefaultTTL, payload)
 	nh, ok := n.table.NextHop(to)
-	if !ok {
+	if !ok || !n.sendToLink(nh, msg) {
+		n.enqueueRetry(msg)
 		return mid, false
 	}
-	return mid, n.sendToLink(nh, msg)
+	return mid, true
+}
+
+// enqueueRetry queues an origin data message for later retry, bounded to 64 per
+// destination. A no-op when retry is disabled (retryMaxMS == 0).
+func (n *Node) enqueueRetry(inner map[string]any) {
+	if n.tun.retryMaxMS <= 0 {
+		return
+	}
+	to, _ := inner["to"].(string)
+	now := nowMillis()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	q := n.pending[lower(to)]
+	if len(q) >= 64 {
+		return // bounded: one unreachable destination cannot grow without limit
+	}
+	n.pending[lower(to)] = append(q, &pendingSend{
+		inner:      inner,
+		enqueuedAt: now,
+		nextAt:     now + n.tun.retryBaseMS,
+		delay:      n.tun.retryBaseMS,
+	})
+}
+
+// drainRetries re-attempts due pending sends once per heartbeat: a landed
+// message is dropped, a still-stuck one backs off (delay doubles to the cap),
+// and one past its lifetime is dropped and reported to the origin's ack
+// listener as a synthesized nak{reason:"expired"} (never on the wire).
+func (n *Node) drainRetries(now int64) {
+	n.mu.Lock()
+	type due struct {
+		dest string
+		p    *pendingSend
+	}
+	var dues []due
+	for dest, q := range n.pending {
+		for _, p := range q {
+			if now >= p.nextAt {
+				dues = append(dues, due{dest, p})
+			}
+		}
+	}
+	n.mu.Unlock()
+
+	for _, d := range dues {
+		to, _ := d.p.inner["to"].(string)
+		delivered := false
+		if nh, ok := n.table.NextHop(to); ok {
+			delivered = n.sendToLink(nh, d.p.inner)
+		}
+		expired := now-d.p.enqueuedAt > n.tun.retryMaxMS
+		if delivered || expired {
+			n.removePending(d.dest, d.p)
+			if !delivered && expired {
+				mid, _ := d.p.inner["mid"].(string)
+				n.deliverAck(map[string]any{
+					"type": "nak", "mid": mid, "hop": n.cfg.Label,
+					"reason": "expired", "to": n.cfg.Label, "from": n.cfg.Label,
+					"ttl": message.DefaultTTL,
+				})
+			}
+			continue
+		}
+		d.p.delay = min64(d.p.delay*2, n.tun.retryCapMS)
+		d.p.nextAt = now + d.p.delay
+	}
+}
+
+func (n *Node) removePending(dest string, p *pendingSend) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	q := n.pending[dest]
+	for i, e := range q {
+		if e == p {
+			n.pending[dest] = append(q[:i], q[i+1:]...)
+			break
+		}
+	}
+	if len(n.pending[dest]) == 0 {
+		delete(n.pending, dest)
+	}
+}
+
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // sendWithTTL is Send with an explicit initial TTL, used by tests to force a
@@ -275,7 +390,7 @@ func (n *Node) readLoop(peer string, r *bufio.Reader, lk *link) {
 			n.deregister(peer, lk)
 			return
 		}
-		n.handleInner(peer, inner)
+		n.handleInner(peer, lk, inner)
 	}
 }
 
@@ -315,8 +430,11 @@ func (n *Node) heartbeatLoop() {
 			}
 			n.mu.Unlock()
 			for _, p := range pairs {
-				n.sweepLink(now, p.peer, p.lk)
+				if n.sweepLink(now, p.peer, p.lk) {
+					n.maybeRekey(p.lk, now)
+				}
 			}
+			n.drainRetries(now)
 		}
 	}
 }
@@ -324,21 +442,23 @@ func (n *Node) heartbeatLoop() {
 // sweepLink runs the once-per-heartbeat maintenance for one link: tear it down
 // if it is probe-timeout dead (F3) or data-idle past the idle timeout (F4,
 // disabled at idleMS==0), otherwise send it a probe and a route advertisement.
-func (n *Node) sweepLink(now int64, peer string, lk *link) {
+// Returns true if the link was kept.
+func (n *Node) sweepLink(now int64, peer string, lk *link) bool {
 	if now-lk.lastInbound.Load() > n.tun.probeTimeoutMS {
 		n.deregister(peer, lk)
-		return
+		return false
 	}
 	if n.tun.idleMS > 0 && now-lk.lastData.Load() > n.tun.idleMS {
 		n.sendToLink(peer, message.Bye("idle"))
 		n.deregister(peer, lk)
-		return
+		return false
 	}
 	n.sendToLink(peer, message.Probe(now))
 	n.sendToLink(peer, message.Disco(n.table.AdvertiseTo(peer)))
+	return true
 }
 
-func (n *Node) handleInner(peer string, msg map[string]any) {
+func (n *Node) handleInner(peer string, lk *link, msg map[string]any) {
 	switch msg["type"] {
 	case "probe":
 		n.sendToLink(peer, message.Echo(asInt64(msg["token"])))
@@ -360,6 +480,8 @@ func (n *Node) handleInner(peer string, msg map[string]any) {
 		n.handleControl(msg, "a:")
 	case "nak":
 		n.handleControl(msg, "n:")
+	case "rekey":
+		n.handleRekey(lk, msg)
 	}
 }
 
@@ -398,7 +520,11 @@ func (n *Node) handleData(msg map[string]any) {
 		fwd[k] = v
 	}
 	fwd["ttl"] = ttl
-	n.sendToLink(nh, fwd)
+	if !n.sendToLink(nh, fwd) {
+		// The next-hop link died between routing and writing; name it as the
+		// failing hop so the origin learns which hop broke (F2/D4).
+		n.emitNakHop(mid, from, nh, "link-dead")
+	}
 }
 
 // handleControl relays or delivers an ack/nak (routed back toward the origin
@@ -434,10 +560,16 @@ func (n *Node) handleControl(msg map[string]any, prefix string) {
 // hop. Best-effort: if the NAK itself cannot be routed it is dropped (no
 // recursion).
 func (n *Node) emitNak(mid, origin, reason string) {
+	n.emitNakHop(mid, origin, n.cfg.Label, reason)
+}
+
+// emitNakHop sends a NAK naming an explicit failing hop (this node for a local
+// drop, the next-hop label for a dead onward link).
+func (n *Node) emitNakHop(mid, origin, hop, reason string) {
 	if origin == "" || lower(origin) == lower(n.cfg.Label) {
 		return
 	}
-	n.routeControl(message.Nak(mid, n.cfg.Label, origin, n.cfg.Label, reason, message.DefaultTTL))
+	n.routeControl(message.Nak(mid, n.cfg.Label, origin, hop, reason, message.DefaultTTL))
 }
 
 // routeControl sends a freshly-built ack/nak toward its destination, dropping
@@ -476,6 +608,117 @@ func (n *Node) deliverAck(msg map[string]any) {
 		}
 	}
 }
+
+// maybeRekey drives the initiator side of a periodic rekey (F5). It abandons a
+// stalled pre-swap handshake at the rekey timeout (keeping the old keys — the
+// safe degrade against a peer that does not understand rekey), and otherwise,
+// on the session initiator only, starts a fresh BMX when the frame count or
+// session age crosses the threshold. Runs under the link lock so the phase-1
+// frame is sealed with the current keys without racing another sender.
+func (n *Node) maybeRekey(lk *link, nowMs int64) {
+	lk.mu.Lock()
+	defer lk.mu.Unlock()
+	if lk.rekeyHS != nil {
+		if nowMs-lk.rekeyStartedAt > n.tun.rekeyTimeoutMS {
+			lk.rekeyHS = nil // no swap has happened yet; the old keys stand
+		}
+		return
+	}
+	if lk.rekeySession != nil {
+		return // initiator has swapped its send key and is awaiting phase 4
+	}
+	if !lk.initiator {
+		return // only the session's original initiator drives rekey
+	}
+	due := lk.transport.SendSeq() >= uint64(n.tun.rekeyFrames) ||
+		lk.transport.ReceiveSeq() >= uint64(n.tun.rekeyFrames) ||
+		nowMs-lk.establishedAt >= n.tun.rekeyMS
+	if !due {
+		return
+	}
+	hs := handshake.Initiator(n.cfg.Mesh, n.cfg.RootPublic, now(), n.cfg.Cert, n.cfg.IDPrivate)
+	mid := message.NewMID()
+	n.writeLocked(lk, map[string]any{"type": "rekey", "mid": mid, "phase": 1, "body": b64(hs.WriteMessage1())})
+	lk.rekeyHS = hs
+	lk.rekeyMID = mid
+	lk.rekeyStartedAt = nowMs
+}
+
+// handleRekey advances the tunneled-BMX rekey state machine for one link. The
+// BMX messages ride inside transport frames, so they arrive through the normal
+// reader with no raw-stream race; the key swaps happen at exact frame
+// boundaries (protocol.md §5 / security.md §6): each side swaps its send key
+// immediately after sealing its last old-key frame, and its receive key
+// immediately after opening the peer's.
+func (n *Node) handleRekey(lk *link, msg map[string]any) {
+	phase := asInt(msg["phase"])
+	mid, _ := msg["mid"].(string)
+	bodyStr, _ := msg["body"].(string)
+	body, _ := base64.StdEncoding.DecodeString(bodyStr)
+
+	lk.mu.Lock()
+	defer lk.mu.Unlock()
+	switch phase {
+	case 1: // responder: accept the fresh bmx1 and reply bmx2
+		hs := handshake.Responder(n.cfg.Mesh, n.cfg.RootPublic, now(), n.cfg.Cert, n.cfg.IDPrivate)
+		m2, err := hs.ReadMessage1WriteMessage2(body)
+		if err != nil {
+			return
+		}
+		lk.rekeyHS = hs
+		lk.rekeyMID = mid
+		lk.rekeyStartedAt = nowMillis()
+		n.writeLocked(lk, map[string]any{"type": "rekey", "mid": mid, "phase": 2, "body": b64(m2)})
+	case 2: // initiator: finish with bmx3, then swap its send key
+		if lk.rekeyHS == nil {
+			return
+		}
+		m3, err := lk.rekeyHS.ReadMessage2WriteMessage3(body)
+		if err != nil {
+			lk.rekeyHS = nil
+			return
+		}
+		sess := lk.rekeyHS.SessionResult()
+		n.writeLocked(lk, map[string]any{"type": "rekey", "mid": mid, "phase": 3, "body": b64(m3)})
+		lk.transport.SwapSend(sess.SendKey) // last old-key frame sent above
+		lk.rekeySession = sess
+		lk.rekeyHS = nil
+	case 3: // responder: verify bmx3, swap receive, send phase 4, swap send
+		if lk.rekeyHS == nil {
+			return
+		}
+		if err := lk.rekeyHS.ReadMessage3(body); err != nil {
+			lk.rekeyHS = nil
+			return
+		}
+		sess := lk.rekeyHS.SessionResult()
+		lk.transport.SwapReceive(sess.ReceiveKey) // phase-3 frame was the last old-key inbound
+		n.writeLocked(lk, map[string]any{"type": "rekey", "mid": mid, "phase": 4})
+		lk.transport.SwapSend(sess.SendKey)
+		lk.rekeyHS = nil
+		lk.rekeyEpoch++
+	case 4: // initiator: swap receive; rekey complete
+		if lk.rekeySession == nil {
+			return
+		}
+		lk.transport.SwapReceive(lk.rekeySession.ReceiveKey)
+		lk.rekeySession = nil
+		lk.rekeyEpoch++
+	}
+}
+
+// writeLocked seals and writes an inner message on a link the caller already
+// holds the lock for — used inside the rekey machine so a seal-then-swap is
+// atomic against other senders.
+func (n *Node) writeLocked(lk *link, inner map[string]any) {
+	if inner["type"] == "data" {
+		lk.lastData.Store(nowMillis())
+	}
+	carrier := lk.transport.Seal(inner)
+	_, _ = lk.conn.Write(frame.Encode(carrier))
+}
+
+func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
 
 func (n *Node) sendToLink(label string, inner map[string]any) bool {
 	n.mu.Lock()

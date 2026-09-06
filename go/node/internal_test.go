@@ -16,6 +16,7 @@ import (
 	"github.com/axonibyte/bonemesh/gonode/cert"
 	"github.com/axonibyte/bonemesh/gonode/crypto"
 	"github.com/axonibyte/bonemesh/gonode/handshake"
+	"github.com/axonibyte/bonemesh/gonode/message"
 	"github.com/axonibyte/bonemesh/gonode/routing"
 	"github.com/axonibyte/bonemesh/gonode/transport"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
@@ -23,12 +24,13 @@ import (
 
 func bareNode() *Node {
 	return &Node{
-		cfg:   Config{Label: "self", Mesh: "m"},
-		tun:   loadTunables(),
-		links: make(map[string]*link),
-		table: routing.NewTable("self"),
-		dedup: routing.NewDedup(16),
-		done:  make(chan struct{}),
+		cfg:     Config{Label: "self", Mesh: "m"},
+		tun:     loadTunables(),
+		links:   make(map[string]*link),
+		pending: make(map[string][]*pendingSend),
+		table:   routing.NewTable("self"),
+		dedup:   routing.NewDedup(16),
+		done:    make(chan struct{}),
 	}
 }
 
@@ -225,6 +227,132 @@ func TestIdleTeardownOnlyWhenEnabled(t *testing.T) {
 		t.Fatal("idle teardown fired even though it is disabled (idleMS=0)")
 	}
 	disabled.deregister("peer", lk2)
+}
+
+// F2: a message enqueued while its destination is unroutable is delivered once
+// a route appears, on a later heartbeat drain.
+func TestRetryDeliversAfterRouteAppears(t *testing.T) {
+	n := bareNode()
+	n.tun.retryMaxMS = 100000
+	msg := message.Data("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "self", "peer", message.DefaultTTL, map[string]any{"x": 1})
+	n.enqueueRetry(msg)
+	if len(n.pending["peer"]) != 1 {
+		t.Fatalf("message not queued for retry: %d", len(n.pending["peer"]))
+	}
+	// A route to peer appears.
+	c1, c2 := net.Pipe()
+	drain(c2)
+	defer c1.Close()
+	defer c2.Close()
+	n.register("peer", c1, bufio.NewReader(c1), dummyTransport("peer"), true)
+	// Drain well past nextAt so the entry is due.
+	n.drainRetries(nowMillis() + 10000)
+	if len(n.pending["peer"]) != 0 {
+		t.Fatal("a deliverable retry was not drained from the queue")
+	}
+}
+
+// F2: a message that never becomes routable is dropped at its lifetime cap and
+// the origin is told via a synthesized nak{reason:"expired"} on the ack listener.
+func TestRetryReportsExpiredToAckListener(t *testing.T) {
+	n := bareNode()
+	n.tun.retryMaxMS = 100
+	acks := n.AckListener()
+	mid := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	msg := message.Data(mid, "self", "peer", message.DefaultTTL, map[string]any{"x": 1})
+	n.enqueueRetry(msg)
+	// Age the entry past its lifetime and make it due now.
+	n.pending["peer"][0].enqueuedAt = nowMillis() - 100000
+	n.pending["peer"][0].nextAt = 0
+	n.drainRetries(nowMillis())
+	if len(n.pending["peer"]) != 0 {
+		t.Fatal("expired retry not dropped")
+	}
+	select {
+	case a := <-acks:
+		if a["type"] != "nak" || a["reason"] != "expired" || a["mid"] != mid {
+			t.Fatalf("unexpected expiry report: %v", a)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no expiry report delivered to the ack listener")
+	}
+}
+
+// F2 disabled: with retryMaxMS==0 nothing is queued.
+func TestRetryDisabledQueuesNothing(t *testing.T) {
+	n := bareNode()
+	n.tun.retryMaxMS = 0
+	n.enqueueRetry(message.Data("cccccccccccccccccccccccccccccccc", "self", "peer", message.DefaultTTL, map[string]any{}))
+	if len(n.pending) != 0 {
+		t.Fatal("retry queued even though retry is disabled")
+	}
+}
+
+// F5: under a low frame threshold the session initiator rekeys the live link;
+// both ends advance their rekey epoch and application delivery continues across
+// the key swap without interruption.
+func TestRekeyUnderTrafficAdvancesEpochAndKeepsDelivering(t *testing.T) {
+	t.Setenv("BONEMESH_REKEY_FRAMES", "6") // ~3 heartbeats' worth of frames
+	rootPub, rootPriv := rootKeys(t)
+	start := func(label string) *Node {
+		n, err := Start(cfgFor(t, rootPub, rootPriv, label), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	alpha := start("alpha")
+	beta := start("beta")
+	defer alpha.Kill()
+	defer beta.Kill()
+
+	got := beta.AddListener()
+	if _, err := alpha.Connect("127.0.0.1", beta.Port()); err != nil {
+		t.Fatal(err)
+	}
+
+	epoch := func(n *Node, peer string) int {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		lk := n.links[lower(peer)]
+		if lk == nil {
+			return -1
+		}
+		lk.mu.Lock()
+		defer lk.mu.Unlock()
+		return lk.rekeyEpoch
+	}
+
+	// Heartbeats alone cross the 6-frame threshold within a few seconds.
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if epoch(alpha, "beta") >= 1 && epoch(beta, "alpha") >= 1 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if e := epoch(alpha, "beta"); e < 1 {
+		t.Fatalf("initiator never rekeyed (epoch=%d)", e)
+	}
+	if e := epoch(beta, "alpha"); e < 1 {
+		t.Fatalf("responder never completed a rekey (epoch=%d)", e)
+	}
+
+	// Delivery must still work on the post-rekey keys.
+	for time.Now().Before(deadline) {
+		if alpha.Send("beta", map[string]any{"m": "after-rekey"}) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	select {
+	case p := <-got:
+		if p["m"] != "after-rekey" {
+			t.Fatalf("beta got unexpected payload after rekey: %v", p)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("delivery broke across the rekey")
+	}
 }
 
 func rootKeys(t *testing.T) ([]byte, *mldsa87.PrivateKey) {

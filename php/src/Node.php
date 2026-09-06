@@ -24,6 +24,8 @@ final class Node
     private array $listeners = [];
     /** @var callable[] invoked with each ack/nak addressed to this node */
     private array $ackListeners = [];
+    /** @var array<string, array<int, array>> lowercase dest -> pending retries (F2) */
+    private array $pending = [];
     private RoutingTable $table;
     private Dedup $dedup;
     private array $tun;
@@ -129,28 +131,91 @@ final class Node
     }
 
     // Routes an application payload toward any reachable destination. Returns
-    // true if the message was handed to a next hop.
+    // true if the message was handed to a next hop this instant; otherwise it is
+    // queued for bounded retry (F2) when retry is enabled.
     public function send(string $to, $payload): bool
     {
-        $nh = $this->table->nextHop($to);
-        if ($nh === null) {
-            return false;
-        }
-        $msg = Message::data(Message::newMid(), $this->cfg['label'], $to, Message::DEFAULT_TTL, $payload);
-        return $this->sendToLink($nh, $msg);
+        [, $ok] = $this->sendInternal($to, $payload);
+        return $ok;
     }
 
     // send that also returns the message id, so a caller can correlate the
     // ack/nak delivered to an onAck listener (protocol.md §7). The mid is always
-    // returned, even when there is no route yet.
+    // returned, even when there is no route yet (the message is queued for retry).
     public function sendMid(string $to, $payload): ?string
     {
-        $mid = Message::newMid();
-        $nh = $this->table->nextHop($to);
-        if ($nh !== null) {
-            $this->sendToLink($nh, Message::data($mid, $this->cfg['label'], $to, Message::DEFAULT_TTL, $payload));
-        }
+        [$mid, ] = $this->sendInternal($to, $payload);
         return $mid;
+    }
+
+    /** @return array{0:string,1:bool} the mid and whether it was handed to a next hop now */
+    private function sendInternal(string $to, $payload): array
+    {
+        $mid = Message::newMid();
+        $msg = Message::data($mid, $this->cfg['label'], $to, Message::DEFAULT_TTL, $payload);
+        $nh = $this->table->nextHop($to);
+        $ok = $nh !== null && $this->sendToLink($nh, $msg);
+        if (!$ok) {
+            $this->enqueueRetry($msg);
+        }
+        return [$mid, $ok];
+    }
+
+    // Queues an origin data message for later retry, bounded to 64 per
+    // destination. A no-op when retry is disabled (retryMaxMs === 0).
+    private function enqueueRetry(array $inner): void
+    {
+        if (($this->tun['retryMaxMs'] ?? 0) <= 0) {
+            return;
+        }
+        $to = strtolower((string) ($inner['to'] ?? ''));
+        $now = self::nowMs();
+        $q = $this->pending[$to] ?? [];
+        if (count($q) >= 64) {
+            return; // bounded: one unreachable destination cannot grow without limit
+        }
+        $q[] = ['inner' => $inner, 'enqueuedAt' => $now, 'nextAt' => $now + $this->tun['retryBaseMs'], 'delay' => $this->tun['retryBaseMs']];
+        $this->pending[$to] = $q;
+    }
+
+    // Re-attempts due pending sends once per heartbeat: a landed message is
+    // dropped, a stuck one backs off (delay doubles to the cap), and one past
+    // its lifetime is dropped and reported to the origin's ack listeners as a
+    // synthesized nak{reason:"expired"} (never on the wire).
+    private function drainRetries(int $nowMs): void
+    {
+        foreach ($this->pending as $dest => $q) {
+            $kept = [];
+            foreach ($q as $p) {
+                if ($nowMs < $p['nextAt']) {
+                    $kept[] = $p;
+                    continue;
+                }
+                $to = (string) ($p['inner']['to'] ?? '');
+                $nh = $this->table->nextHop($to);
+                $delivered = $nh !== null && $this->sendToLink($nh, $p['inner']);
+                $expired = $nowMs - $p['enqueuedAt'] > $this->tun['retryMaxMs'];
+                if ($delivered || $expired) {
+                    if (!$delivered && $expired) {
+                        $mid = (string) ($p['inner']['mid'] ?? '');
+                        foreach ($this->ackListeners as $cb) {
+                            $cb(['type' => 'nak', 'mid' => $mid, 'hop' => $this->cfg['label'],
+                                'reason' => 'expired', 'to' => $this->cfg['label'],
+                                'from' => $this->cfg['label'], 'ttl' => Message::DEFAULT_TTL]);
+                        }
+                    }
+                    continue; // drop
+                }
+                $p['delay'] = min($p['delay'] * 2, $this->tun['retryCapMs']);
+                $p['nextAt'] = $nowMs + $p['delay'];
+                $kept[] = $p;
+            }
+            if (empty($kept)) {
+                unset($this->pending[$dest]);
+            } else {
+                $this->pending[$dest] = $kept;
+            }
+        }
     }
 
     // Registers a callback invoked with each ack/nak addressed to this node.
@@ -214,6 +279,7 @@ final class Node
             $now = microtime(true);
             if ($now - $this->lastHeartbeat >= 1.0) {
                 $this->heartbeat();
+                $this->drainRetries(self::nowMs());
                 $this->lastHeartbeat = $now;
             }
             if ($tick !== null && $now - $lastTick >= 0.5) {
@@ -225,34 +291,144 @@ final class Node
 
     private function heartbeat(): void
     {
+        $nowMs = self::nowMs();
         // Snapshot the ids first: sweepConn may close (unset) a conn mid-sweep.
         foreach (array_keys($this->conns) as $id) {
-            $this->sweepConn($id);
+            if ($this->sweepConn($id)) {
+                $this->maybeRekey($id, $nowMs);
+            }
         }
     }
 
     // Once-per-heartbeat maintenance for one established link: tear it down if
     // it is probe-timeout dead (F3) or data-idle past the idle timeout (F4,
     // disabled at idleMs==0), otherwise send it a probe and a route
-    // advertisement.
-    private function sweepConn(int $id): void
+    // advertisement. Returns true if the link was kept.
+    private function sweepConn(int $id): bool
     {
         $conn = $this->conns[$id] ?? null;
         if ($conn === null || ($conn['phase'] ?? '') !== 'established') {
-            return;
+            return false;
         }
         $now = self::nowMs();
         if ($now - ($conn['lastInbound'] ?? $now) > $this->tun['probeTimeoutMs']) {
             $this->closeConn($id);
-            return;
+            return false;
         }
         if ($this->tun['idleMs'] > 0 && $now - ($conn['lastData'] ?? $now) > $this->tun['idleMs']) {
             $this->sendRaw($id, Message::bye('idle'));
             $this->closeConn($id);
-            return;
+            return false;
         }
         $this->sendRaw($id, Message::probe($now));
         $this->sendRaw($id, Message::disco($this->table->advertiseTo($conn['peer'])));
+        return true;
+    }
+
+    // F5: drives the initiator side of a periodic rekey. Abandons a stalled
+    // pre-swap handshake at the rekey timeout (keeping the old keys — the safe
+    // degrade against a peer that does not understand rekey), and otherwise, on
+    // the session initiator only, starts a fresh BMX when the frame count or
+    // session age crosses the threshold. Single-threaded, so seal-then-swap is
+    // naturally atomic against other sends.
+    private function maybeRekey(int $id, int $nowMs): void
+    {
+        $conn = $this->conns[$id] ?? null;
+        if ($conn === null) {
+            return;
+        }
+        if (($conn['rekeyHs'] ?? null) !== null) {
+            if ($nowMs - ($conn['rekeyStartedAt'] ?? 0) > $this->tun['rekeyTimeoutMs']) {
+                $this->conns[$id]['rekeyHs'] = null; // no swap yet; old keys stand
+            }
+            return;
+        }
+        if (($conn['rekeySession'] ?? null) !== null) {
+            return; // swapped send, awaiting phase 4
+        }
+        if (!($conn['initiator'] ?? false)) {
+            return; // only the session initiator drives rekey
+        }
+        $t = $conn['transport'];
+        $due = $t->sendSeq() >= $this->tun['rekeyFrames']
+            || $t->receiveSeq() >= $this->tun['rekeyFrames']
+            || $nowMs - ($conn['establishedAt'] ?? $nowMs) >= $this->tun['rekeyMs'];
+        if (!$due) {
+            return;
+        }
+        $hs = Handshake::initiator($this->cfg['mesh'], $this->cfg['rootPublic'], self::now(), $this->cfg['cert'], $this->cfg['idPrivate']);
+        $mid = Message::newMid();
+        $this->sendRaw($id, ['type' => 'rekey', 'mid' => $mid, 'phase' => 1, 'body' => base64_encode($hs->writeMessage1())]);
+        $this->conns[$id]['rekeyHs'] = $hs;
+        $this->conns[$id]['rekeyMid'] = $mid;
+        $this->conns[$id]['rekeyStartedAt'] = $nowMs;
+    }
+
+    // Advances the tunneled-BMX rekey state machine (protocol.md §5 /
+    // security.md §6). BMX messages ride inside transport frames (body is the
+    // base64 of the framed bmx line), so they arrive through the normal reader;
+    // each side swaps its send key right after sealing its last old-key frame
+    // and its receive key right after opening the peer's. A handshake error
+    // abandons the rekey and keeps the old keys rather than tearing the link.
+    private function handleRekey(int $id, array $msg): void
+    {
+        if (!isset($this->conns[$id])) {
+            return;
+        }
+        $phase = (int) ($msg['phase'] ?? 0);
+        $mid = (string) ($msg['mid'] ?? '');
+        $bodyArr = isset($msg['body']) ? json_decode(trim((string) base64_decode($msg['body'], true)), true) : null;
+        $t = $this->conns[$id]['transport'];
+        try {
+            switch ($phase) {
+                case 1: // responder: accept the fresh bmx1, reply bmx2
+                    $hs = Handshake::responder($this->cfg['mesh'], $this->cfg['rootPublic'], self::now(), $this->cfg['cert'], $this->cfg['idPrivate']);
+                    $m2 = $hs->readMessage1WriteMessage2($bodyArr);
+                    $this->conns[$id]['rekeyHs'] = $hs;
+                    $this->conns[$id]['rekeyMid'] = $mid;
+                    $this->conns[$id]['rekeyStartedAt'] = self::nowMs();
+                    $this->sendRaw($id, ['type' => 'rekey', 'mid' => $mid, 'phase' => 2, 'body' => base64_encode($m2)]);
+                    break;
+                case 2: // initiator: finish with bmx3, then swap send
+                    $hs = $this->conns[$id]['rekeyHs'] ?? null;
+                    if ($hs === null) {
+                        return;
+                    }
+                    $m3 = $hs->readMessage2WriteMessage3($bodyArr);
+                    $sess = $hs->session();
+                    $this->sendRaw($id, ['type' => 'rekey', 'mid' => $mid, 'phase' => 3, 'body' => base64_encode($m3)]);
+                    $t->swapSend($sess['sendKey']); // last old-key frame sent above
+                    $this->conns[$id]['rekeySession'] = $sess;
+                    $this->conns[$id]['rekeyHs'] = null;
+                    break;
+                case 3: // responder: verify bmx3, swap receive, send phase 4, swap send
+                    $hs = $this->conns[$id]['rekeyHs'] ?? null;
+                    if ($hs === null) {
+                        return;
+                    }
+                    $hs->readMessage3($bodyArr);
+                    $sess = $hs->session();
+                    $t->swapReceive($sess['receiveKey']); // phase-3 frame was the last old-key inbound
+                    $this->sendRaw($id, ['type' => 'rekey', 'mid' => $mid, 'phase' => 4]);
+                    $t->swapSend($sess['sendKey']);
+                    $this->conns[$id]['rekeyHs'] = null;
+                    $this->conns[$id]['rekeyEpoch'] = ($this->conns[$id]['rekeyEpoch'] ?? 0) + 1;
+                    break;
+                case 4: // initiator: swap receive; rekey complete
+                    $sess = $this->conns[$id]['rekeySession'] ?? null;
+                    if ($sess === null) {
+                        return;
+                    }
+                    $t->swapReceive($sess['receiveKey']);
+                    $this->conns[$id]['rekeySession'] = null;
+                    $this->conns[$id]['rekeyEpoch'] = ($this->conns[$id]['rekeyEpoch'] ?? 0) + 1;
+                    break;
+            }
+        } catch (\Throwable $e) {
+            // Abandon a failed rekey, keeping whatever keys are current.
+            $this->conns[$id]['rekeyHs'] = null;
+            $this->conns[$id]['rekeySession'] = null;
+        }
     }
 
     private function sendRaw(int $id, array $inner): void
@@ -390,6 +566,9 @@ final class Node
                 // Peer is closing this session gracefully; tear it down.
                 $this->closeConn($id);
                 break;
+            case 'rekey':
+                $this->handleRekey($id, $msg);
+                break;
         }
     }
 
@@ -425,7 +604,11 @@ final class Node
         }
         $fwd = $msg;
         $fwd['ttl'] = $ttl;
-        $this->sendToLink($nh, $fwd);
+        if (!$this->sendToLink($nh, $fwd)) {
+            // The next-hop link died between routing and writing; name it as the
+            // failing hop so the origin learns which hop broke (F2/D4).
+            $this->emitNakHop($mid, $from, $nh, 'link-dead');
+        }
     }
 
     // Relays or delivers an ack/nak (routed back toward the origin like data). A
@@ -461,10 +644,17 @@ final class Node
     // Best-effort: dropped if it cannot itself be routed (no recursion).
     private function emitNak(string $mid, string $origin, string $reason): void
     {
+        $this->emitNakHop($mid, $origin, $this->cfg['label'], $reason);
+    }
+
+    // Sends a NAK naming an explicit failing hop (this node for a local drop,
+    // the next-hop label for a dead onward link).
+    private function emitNakHop(string $mid, string $origin, string $hop, string $reason): void
+    {
         if ($origin === '' || strtolower($origin) === strtolower($this->cfg['label'])) {
             return;
         }
-        $this->routeControl(Message::nak($mid, $this->cfg['label'], $origin, $this->cfg['label'], $reason, Message::DEFAULT_TTL));
+        $this->routeControl(Message::nak($mid, $this->cfg['label'], $origin, $hop, $reason, Message::DEFAULT_TTL));
     }
 
     // Sends a freshly-built ack/nak toward its destination, dropping silently if

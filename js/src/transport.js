@@ -23,6 +23,24 @@ export class Transport {
     return { seq: Number(seq), ct: ct.toString('base64') };
   }
 
+  // Per-direction frame counters, so a node can decide when a rekey is due (F5).
+  sendSeq_() { return this.sendSeq; }
+  receiveSeq_() { return this.receiveSeq; }
+
+  // Install a new outbound key and reset the send counter to 0, at the rekey
+  // boundary immediately after sealing the last old-key frame (F5).
+  swapSend(key) {
+    this.sendKey = key;
+    this.sendSeq = 0n;
+  }
+
+  // Install a new inbound key and reset the receive counter, immediately after
+  // opening the last old-key frame in this direction.
+  swapReceive(key) {
+    this.receiveKey = key;
+    this.receiveSeq = 0n;
+  }
+
   // Open a carrier, enforcing in-order delivery. Returns the inner object, or
   // throws on gap/replay or authentication failure.
   open(carrier) {

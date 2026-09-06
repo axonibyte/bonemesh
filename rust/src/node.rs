@@ -15,6 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use serde_json::{json, Value};
 
 use crate::handshake::Handshake;
@@ -47,6 +49,14 @@ struct Link {
     /// Unix-millis time of the last data frame sent over or received on this
     /// link (probe/echo/disco never count as activity).
     last_data: i64,
+    /// Rekey state (F5). rekey_hs is the in-flight handshake before any key
+    /// swap has happened (abandonable, keeping the old keys); rekey_pending_recv
+    /// is the initiator's new receive key, held between swapping its send key
+    /// (after phase 2) and swapping its receive key (on phase 4).
+    rekey_hs: Option<Handshake>,
+    rekey_pending_recv: Option<Vec<u8>>,
+    rekey_started_at: i64,
+    rekey_epoch: i64,
 }
 
 struct Inner {
@@ -55,9 +65,20 @@ struct Inner {
     links: Mutex<HashMap<String, Arc<Mutex<Link>>>>,
     listeners: Mutex<Vec<Sender<Value>>>,
     ack_listeners: Mutex<Vec<Sender<Value>>>,
+    pending: Mutex<HashMap<String, Vec<PendingSend>>>,
     table: Mutex<routing::Table>,
     dedup: Mutex<routing::Dedup>,
     stop: AtomicBool,
+}
+
+/// An origin data message awaiting retry (F2): it could not be handed to a next
+/// hop yet. Retried on each heartbeat with exponential backoff until it lands
+/// or its lifetime is spent.
+struct PendingSend {
+    inner: Value,
+    enqueued_at: i64,
+    next_at: i64,
+    delay: i64,
 }
 
 /// Operational knobs (protocol.md §0): local behavior, never part of the wire
@@ -113,6 +134,7 @@ impl Node {
             links: Mutex::new(HashMap::new()),
             listeners: Mutex::new(Vec::new()),
             ack_listeners: Mutex::new(Vec::new()),
+            pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new(&label)),
             dedup: Mutex::new(routing::Dedup::new(4096)),
             stop: AtomicBool::new(false),
@@ -181,9 +203,21 @@ impl Node {
 
     /// Send that also returns the message id, so a caller can correlate the
     /// ack/nak delivered to `add_ack_listener` (protocol.md §7). Returns None if
-    /// there is no route.
+    /// the destination is not routable now; the message is queued for bounded
+    /// retry (F2) when retry is enabled, so it may still be delivered later.
     pub fn send_mid(&self, to: &str, payload: Value) -> Option<String> {
-        self.send_with_ttl(to, payload, message::DEFAULT_TTL)
+        let mid = message::new_mid();
+        let msg = message::data(&mid, &self.inner.config.label, to, message::DEFAULT_TTL, payload);
+        let nh = self.inner.table.lock().unwrap().next_hop(to);
+        let delivered = match nh {
+            Some(nh) => send_to_link(&self.inner, &nh, &msg),
+            None => false,
+        };
+        if !delivered {
+            enqueue_retry(&self.inner, &msg);
+            return None;
+        }
+        Some(mid)
     }
 
     /// Send with an explicit initial TTL — used by tests to force a relay to
@@ -210,6 +244,15 @@ impl Node {
     /// A snapshot of learned destinations to their next hop.
     pub fn route_table(&self) -> HashMap<String, String> {
         self.inner.table.lock().unwrap().route_table()
+    }
+
+    /// The number of completed rekeys on the link to `peer`, or -1 if there is
+    /// no such link (F5 observability).
+    pub fn rekey_epoch(&self, peer: &str) -> i64 {
+        match self.inner.links.lock().unwrap().get(&peer.to_lowercase()) {
+            Some(l) => l.lock().unwrap().rekey_epoch,
+            None => -1,
+        }
     }
 
     /// Stops the node's heartbeat.
@@ -265,6 +308,10 @@ fn register(
         established_at: now,
         last_inbound: now,
         last_data: now,
+        rekey_hs: None,
+        rekey_pending_recv: None,
+        rekey_started_at: 0,
+        rekey_epoch: 0,
     }));
 
     let (keep_new, displaced) = {
@@ -337,11 +384,11 @@ fn read_loop(inner: Arc<Inner>, peer: String, mut reader: BufReader<TcpStream>, 
             deregister(&inner, &peer, &link);
             return;
         }
-        handle_inner(&inner, &peer, inner_msg);
+        handle_inner(&inner, &peer, &link, inner_msg);
     }
 }
 
-fn handle_inner(inner: &Arc<Inner>, peer: &str, msg: Value) {
+fn handle_inner(inner: &Arc<Inner>, peer: &str, link: &Arc<Mutex<Link>>, msg: Value) {
     match msg["type"].as_str() {
         Some("probe") => {
             if let Some(token) = msg["token"].as_i64() {
@@ -367,6 +414,7 @@ fn handle_inner(inner: &Arc<Inner>, peer: &str, msg: Value) {
         Some("data") => handle_data(inner, msg),
         Some("ack") => handle_control(inner, msg, "a:"),
         Some("nak") => handle_control(inner, msg, "n:"),
+        Some("rekey") => handle_rekey(inner, link, msg),
         _ => {}
     }
 }
@@ -405,7 +453,11 @@ fn handle_data(inner: &Arc<Inner>, msg: Value) {
         Some(nh) => {
             let mut fwd = msg.clone();
             fwd["ttl"] = json!(ttl);
-            send_to_link(inner, &nh, &fwd);
+            if !send_to_link(inner, &nh, &fwd) {
+                // The next-hop link died between routing and writing; name it as
+                // the failing hop so the origin learns which hop broke (F2/D4).
+                emit_nak_hop(inner, mid, from, &nh, "link-dead");
+            }
         }
         None => emit_nak(inner, mid, from, "no-route"),
     }
@@ -439,12 +491,19 @@ fn handle_control(inner: &Arc<Inner>, msg: Value, prefix: &str) {
 // Sends a NAK back toward the origin naming this node as the failing hop.
 // Best-effort: if the NAK itself cannot be routed it is dropped (no recursion).
 fn emit_nak(inner: &Arc<Inner>, mid: &str, origin: &str, reason: &str) {
+    let hop = inner.config.label.clone();
+    emit_nak_hop(inner, mid, origin, &hop, reason);
+}
+
+// Sends a NAK naming an explicit failing hop (this node for a local drop, the
+// next-hop label for a dead onward link).
+fn emit_nak_hop(inner: &Arc<Inner>, mid: &str, origin: &str, hop: &str, reason: &str) {
     if origin.is_empty() || origin.to_lowercase() == inner.config.label.to_lowercase() {
         return;
     }
     route_control(
         inner,
-        &message::nak(mid, &inner.config.label, origin, &inner.config.label, reason, message::DEFAULT_TTL),
+        &message::nak(mid, &inner.config.label, origin, hop, reason, message::DEFAULT_TTL),
     );
 }
 
@@ -497,31 +556,224 @@ fn heartbeat(inner: Arc<Inner>) {
             links.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
         };
         for (peer, link) in pairs {
-            sweep_link(&inner, now, &peer, &link);
+            if sweep_link(&inner, now, &peer, &link) {
+                maybe_rekey(&inner, now, &link);
+            }
         }
+        drain_retries(&inner, now);
     }
 }
 
 // Once-per-heartbeat maintenance for one link: tear it down if it is
 // probe-timeout dead (F3) or data-idle past the idle timeout (F4, disabled at
 // idle_ms==0), otherwise send it a probe and a route advertisement.
-fn sweep_link(inner: &Arc<Inner>, now: i64, peer: &str, link: &Arc<Mutex<Link>>) {
+// Returns true if the link was kept.
+fn sweep_link(inner: &Arc<Inner>, now: i64, peer: &str, link: &Arc<Mutex<Link>>) -> bool {
     let (last_inbound, last_data) = {
         let l = link.lock().unwrap();
         (l.last_inbound, l.last_data)
     };
     if now - last_inbound > inner.tun.probe_timeout_ms {
         deregister(inner, peer, link);
-        return;
+        return false;
     }
     if inner.tun.idle_ms > 0 && now - last_data > inner.tun.idle_ms {
         send_to_link(inner, peer, &message::bye(Some("idle")));
         deregister(inner, peer, link);
-        return;
+        return false;
     }
     send_to_link(inner, peer, &message::probe(now));
     let adv = inner.table.lock().unwrap().advertise_to(peer);
     send_to_link(inner, peer, &message::disco(adv));
+    true
+}
+
+// Queues an origin data message for later retry, bounded to 64 per destination.
+// A no-op when retry is disabled (retry_max_ms == 0) (F2).
+fn enqueue_retry(inner: &Arc<Inner>, msg: &Value) {
+    if inner.tun.retry_max_ms <= 0 {
+        return;
+    }
+    let to = msg["to"].as_str().unwrap_or("").to_lowercase();
+    let now = now_millis();
+    let mut pending = inner.pending.lock().unwrap();
+    let q = pending.entry(to).or_default();
+    if q.len() >= 64 {
+        return; // bounded: one unreachable destination cannot grow without limit
+    }
+    q.push(PendingSend {
+        inner: msg.clone(),
+        enqueued_at: now,
+        next_at: now + inner.tun.retry_base_ms,
+        delay: inner.tun.retry_base_ms,
+    });
+}
+
+// Re-attempts due pending sends once per heartbeat: a landed message is dropped,
+// a still-stuck one backs off (delay doubles to the cap), and one past its
+// lifetime is dropped and reported to the origin's ack listener as a
+// synthesized nak{reason:"expired"} (never on the wire) (F2).
+fn drain_retries(inner: &Arc<Inner>, now: i64) {
+    // Take the whole map so send_to_link (which locks links) never runs under
+    // the pending lock; survivors and any concurrent enqueues merge back after.
+    let taken: Vec<(String, Vec<PendingSend>)> = {
+        let mut p = inner.pending.lock().unwrap();
+        std::mem::take(&mut *p).into_iter().collect()
+    };
+    let mut survivors: HashMap<String, Vec<PendingSend>> = HashMap::new();
+    for (dest, entries) in taken {
+        for mut e in entries {
+            if now < e.next_at {
+                survivors.entry(dest.clone()).or_default().push(e);
+                continue;
+            }
+            let to = e.inner["to"].as_str().unwrap_or("").to_string();
+            let nh = inner.table.lock().unwrap().next_hop(&to);
+            let delivered = matches!(nh, Some(ref h) if send_to_link(inner, h, &e.inner));
+            if delivered {
+                continue;
+            }
+            if now - e.enqueued_at > inner.tun.retry_max_ms {
+                let mid = e.inner["mid"].as_str().unwrap_or("").to_string();
+                let label = &inner.config.label;
+                deliver_ack(
+                    inner,
+                    json!({"type":"nak","mid":mid,"hop":label,"reason":"expired","to":label,"from":label,"ttl":message::DEFAULT_TTL}),
+                );
+                continue;
+            }
+            e.delay = (e.delay * 2).min(inner.tun.retry_cap_ms);
+            e.next_at = now + e.delay;
+            survivors.entry(dest.clone()).or_default().push(e);
+        }
+    }
+    let mut p = inner.pending.lock().unwrap();
+    for (dest, mut entries) in survivors {
+        p.entry(dest).or_default().append(&mut entries);
+    }
+}
+
+// Seals and writes an inner message on a link the caller already holds locked —
+// used inside the rekey machine so a seal-then-swap is atomic against other
+// senders.
+fn write_locked(l: &mut Link, inner_msg: &Value) {
+    if inner_msg["type"] == "data" {
+        l.last_data = now_millis();
+    }
+    let carrier = l.transport.seal(inner_msg);
+    let bytes = frame::encode(&carrier);
+    let _ = l.write.write_all(&bytes).and_then(|_| l.write.flush());
+}
+
+// Drives the initiator side of a periodic rekey (F5): abandon a stalled pre-swap
+// handshake at the rekey timeout (keeping the old keys — the safe degrade
+// against a peer that does not understand rekey), else, on the session
+// initiator only, start a fresh BMX when the frame count or session age crosses
+// the threshold. Runs under the link lock so phase 1 is sealed with the current
+// keys without racing another sender.
+fn maybe_rekey(inner: &Arc<Inner>, now_ms: i64, link: &Arc<Mutex<Link>>) {
+    let mut l = link.lock().unwrap();
+    if l.rekey_hs.is_some() {
+        if now_ms - l.rekey_started_at > inner.tun.rekey_timeout_ms {
+            l.rekey_hs = None; // no swap has happened yet; the old keys stand
+        }
+        return;
+    }
+    if l.rekey_pending_recv.is_some() {
+        return; // initiator has swapped its send key and is awaiting phase 4
+    }
+    if !l.initiator {
+        return; // only the session's original initiator drives rekey
+    }
+    let due = l.transport.send_seq() >= inner.tun.rekey_frames as u64
+        || l.transport.receive_seq() >= inner.tun.rekey_frames as u64
+        || now_ms - l.established_at >= inner.tun.rekey_ms;
+    if !due {
+        return;
+    }
+    let c = &inner.config;
+    let mut hs = Handshake::initiator(&c.mesh, &c.root_public, now_secs(), c.cert.clone(), c.id_private);
+    let m1 = hs.write_message1();
+    let mid = message::new_mid();
+    write_locked(&mut l, &json!({"type":"rekey","mid":mid,"phase":1,"body":B64.encode(m1)}));
+    l.rekey_hs = Some(hs);
+    l.rekey_started_at = now_ms;
+}
+
+// Advances the tunneled-BMX rekey state machine for one link. The BMX messages
+// ride inside transport frames, so they arrive through the normal reader with no
+// raw-stream race; each side swaps its send key immediately after sealing its
+// last old-key frame, and its receive key immediately after opening the peer's
+// (protocol.md §5 / security.md §6).
+fn handle_rekey(inner: &Arc<Inner>, link: &Arc<Mutex<Link>>, msg: Value) {
+    let phase = msg["phase"].as_i64().unwrap_or(0);
+    let mid = msg["mid"].as_str().unwrap_or("").to_string();
+    let body = B64.decode(msg["body"].as_str().unwrap_or("")).unwrap_or_default();
+    let c = &inner.config;
+    let mut l = link.lock().unwrap();
+    match phase {
+        1 => {
+            // Responder: accept the fresh bmx1 and reply bmx2.
+            let mut hs = Handshake::responder(&c.mesh, &c.root_public, now_secs(), c.cert.clone(), c.id_private);
+            let m2 = match hs.read_message1_write_message2(&body) {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            l.rekey_started_at = now_millis();
+            write_locked(&mut l, &json!({"type":"rekey","mid":mid,"phase":2,"body":B64.encode(m2)}));
+            l.rekey_hs = Some(hs);
+        }
+        2 => {
+            // Initiator: finish with bmx3, then swap its send key.
+            let (m3, send_key, recv_key) = {
+                let hs = match l.rekey_hs.as_mut() {
+                    Some(h) => h,
+                    None => return,
+                };
+                let m3 = match hs.read_message2_write_message3(&body) {
+                    Ok(m) => m,
+                    Err(_) => {
+                        l.rekey_hs = None;
+                        return;
+                    }
+                };
+                let s = hs.session();
+                (m3, s.send_key.clone(), s.receive_key.clone())
+            };
+            write_locked(&mut l, &json!({"type":"rekey","mid":mid,"phase":3,"body":B64.encode(m3)}));
+            l.transport.swap_send(&send_key); // last old-key frame sent above
+            l.rekey_pending_recv = Some(recv_key);
+            l.rekey_hs = None;
+        }
+        3 => {
+            // Responder: verify bmx3, swap receive, send phase 4, swap send.
+            let (send_key, recv_key) = {
+                let hs = match l.rekey_hs.as_mut() {
+                    Some(h) => h,
+                    None => return,
+                };
+                if hs.read_message3(&body).is_err() {
+                    l.rekey_hs = None;
+                    return;
+                }
+                let s = hs.session();
+                (s.send_key.clone(), s.receive_key.clone())
+            };
+            l.transport.swap_receive(&recv_key); // phase-3 frame was the last old-key inbound
+            write_locked(&mut l, &json!({"type":"rekey","mid":mid,"phase":4}));
+            l.transport.swap_send(&send_key);
+            l.rekey_hs = None;
+            l.rekey_epoch += 1;
+        }
+        4 => {
+            // Initiator: swap receive; rekey complete.
+            if let Some(recv) = l.rekey_pending_recv.take() {
+                l.transport.swap_receive(&recv);
+                l.rekey_epoch += 1;
+            }
+        }
+        _ => {}
+    }
 }
 
 fn now_millis() -> i64 {
@@ -585,6 +837,7 @@ mod lifecycle_tests {
             links: Mutex::new(HashMap::new()),
             listeners: Mutex::new(Vec::new()),
             ack_listeners: Mutex::new(Vec::new()),
+            pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new("self")),
             dedup: Mutex::new(routing::Dedup::new(16)),
             stop: AtomicBool::new(false),
@@ -616,6 +869,7 @@ mod lifecycle_tests {
             links: Mutex::new(HashMap::new()),
             listeners: Mutex::new(Vec::new()),
             ack_listeners: Mutex::new(Vec::new()),
+            pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new("self")),
             dedup: Mutex::new(routing::Dedup::new(16)),
             stop: AtomicBool::new(false),
@@ -635,6 +889,95 @@ mod lifecycle_tests {
             receive_key: vec![0u8; 32],
             peer_cert: json!({"label": "peer"}),
         })
+    }
+
+    // A bare Inner with an explicit retry lifetime (others default), for F2.
+    fn inner_retry(retry_max_ms: i64) -> Arc<Inner> {
+        Arc::new(Inner {
+            config: Config {
+                label: "self".into(),
+                mesh: "m".into(),
+                root_public: vec![],
+                cert: Value::Null,
+                id_private: [0u8; 32],
+            },
+            tun: Tunables {
+                probe_timeout_ms: 1_000_000,
+                idle_ms: 0,
+                retry_base_ms: 1,
+                retry_cap_ms: 30000,
+                retry_max_ms,
+                rekey_ms: 3_600_000,
+                rekey_frames: 65536,
+                rekey_timeout_ms: 10000,
+                keylog_path: String::new(),
+            },
+            links: Mutex::new(HashMap::new()),
+            listeners: Mutex::new(Vec::new()),
+            ack_listeners: Mutex::new(Vec::new()),
+            pending: Mutex::new(HashMap::new()),
+            table: Mutex::new(routing::Table::new("self")),
+            dedup: Mutex::new(routing::Dedup::new(16)),
+            stop: AtomicBool::new(false),
+        })
+    }
+
+    // F2: a message enqueued while its destination is unroutable is delivered
+    // once a route appears, on a later heartbeat drain.
+    #[test]
+    fn retry_delivers_after_route_appears() {
+        let inner = inner_retry(100_000);
+        let msg = message::data("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "self", "peer", message::DEFAULT_TTL, json!({"x":1}));
+        enqueue_retry(&inner, &msg);
+        assert_eq!(inner.pending.lock().unwrap().get("peer").map(|q| q.len()), Some(1));
+
+        // A route to peer appears.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (c1, _s1) = tcp_pair(&listener);
+        let r1 = BufReader::new(c1.try_clone().unwrap());
+        register(&inner, "peer", c1, r1, dummy_transport(), true);
+
+        drain_retries(&inner, now_millis() + 10_000); // well past next_at
+        assert!(
+            inner.pending.lock().unwrap().get("peer").map_or(true, |q| q.is_empty()),
+            "a deliverable retry was not drained from the queue"
+        );
+    }
+
+    // F2: a message that never becomes routable is dropped at its lifetime cap
+    // and reported to the origin's ack listener as a nak{reason:"expired"}.
+    #[test]
+    fn retry_reports_expired_to_ack_listener() {
+        let inner = inner_retry(100);
+        let (tx, rx) = channel();
+        inner.ack_listeners.lock().unwrap().push(tx);
+        let mid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let msg = message::data(mid, "self", "peer", message::DEFAULT_TTL, json!({"x":1}));
+        enqueue_retry(&inner, &msg);
+        {
+            let mut p = inner.pending.lock().unwrap();
+            let e = &mut p.get_mut("peer").unwrap()[0];
+            e.enqueued_at = now_millis() - 100_000; // past its lifetime
+            e.next_at = 0; // due now
+        }
+        drain_retries(&inner, now_millis());
+        assert!(
+            inner.pending.lock().unwrap().get("peer").map_or(true, |q| q.is_empty()),
+            "expired retry not dropped"
+        );
+        let a = rx.recv_timeout(Duration::from_secs(1)).expect("no expiry report");
+        assert_eq!(a["type"], "nak");
+        assert_eq!(a["reason"], "expired");
+        assert_eq!(a["mid"], json!(mid));
+    }
+
+    // F2 disabled: with retry_max_ms==0 nothing is queued.
+    #[test]
+    fn retry_disabled_queues_nothing() {
+        let inner = inner_retry(0);
+        let msg = message::data("cccccccccccccccccccccccccccccccc", "self", "peer", message::DEFAULT_TTL, json!({}));
+        enqueue_retry(&inner, &msg);
+        assert!(inner.pending.lock().unwrap().is_empty(), "retry queued even though disabled");
     }
 
     #[test]

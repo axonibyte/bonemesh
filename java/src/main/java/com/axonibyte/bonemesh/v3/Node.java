@@ -23,6 +23,9 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -33,6 +36,7 @@ import org.json.JSONObject;
 import com.axonibyte.bonemesh.v3.cert.Certificate;
 import com.axonibyte.bonemesh.v3.crypto.Signer;
 import com.axonibyte.bonemesh.v3.handshake.Handshake;
+import com.axonibyte.bonemesh.v3.handshake.Session;
 import com.axonibyte.bonemesh.v3.message.Chunker;
 import com.axonibyte.bonemesh.v3.message.Dedup;
 import com.axonibyte.bonemesh.v3.message.Messages;
@@ -71,6 +75,10 @@ public final class Node {
   private final Map<String, PeerLink> links = new ConcurrentHashMap<>();
   private final CopyOnWriteArrayList<Consumer<JSONObject>> dataListeners = new CopyOnWriteArrayList<>();
   private final CopyOnWriteArrayList<Consumer<JSONObject>> ackListeners = new CopyOnWriteArrayList<>();
+  // Origin data messages awaiting bounded retry (F2), keyed by destination.
+  private final Map<String, List<PendingSend>> pending = new java.util.HashMap<>();
+  private static final Base64.Encoder B64ENC = Base64.getEncoder();
+  private static final Base64.Decoder B64DEC = Base64.getDecoder();
 
   private final ServerSocket serverSocket;
   private final Thread acceptThread;
@@ -219,12 +227,82 @@ public final class Node {
   private SendResult sendInternal(String to, JSONObject payload, int ttl) {
     String mid = Messages.newMid(rng);
     boolean all = true;
-    for(JSONObject msg : Chunker.split(mid, label, to, ttl, payload))
-      all = forward(msg) && all;
+    for(JSONObject msg : Chunker.split(mid, label, to, ttl, payload)) {
+      boolean ok = forward(msg);
+      if(!ok) enqueueRetry(msg);
+      all = ok && all;
+    }
     return new SendResult(mid, all);
   }
 
   private record SendResult(String mid, boolean ok) { }
+
+  // An origin data message awaiting retry (F2): re-tried each heartbeat with
+  // exponential backoff until it lands or its lifetime is spent.
+  private static final class PendingSend {
+    final JSONObject inner;
+    final long enqueuedAt;
+    long nextAt;
+    long delay;
+
+    PendingSend(JSONObject inner, long enqueuedAt, long nextAt, long delay) {
+      this.inner = inner;
+      this.enqueuedAt = enqueuedAt;
+      this.nextAt = nextAt;
+      this.delay = delay;
+    }
+  }
+
+  // Queues an origin data message for later retry, bounded to 64 per
+  // destination. A no-op when retry is disabled (retryMaxMillis == 0).
+  private void enqueueRetry(JSONObject inner) {
+    if(tunables.retryMaxMillis <= 0) return;
+    String to = inner.optString("to", "");
+    long now = System.currentTimeMillis();
+    synchronized(pending) {
+      List<PendingSend> q = pending.computeIfAbsent(key(to), k -> new ArrayList<>());
+      if(q.size() >= 64) return; // bounded: one dead destination can't grow without limit
+      q.add(new PendingSend(inner, now, now + tunables.retryBaseMillis, tunables.retryBaseMillis));
+    }
+  }
+
+  // Re-attempts due pending sends once per heartbeat: a landed message is
+  // dropped, a still-stuck one backs off (delay doubles to the cap), and one
+  // past its lifetime is dropped and reported to the origin's ack listener as a
+  // synthesized nak{reason:"expired"} (never on the wire).
+  private void drainRetries(long now) {
+    List<PendingSend> due = new ArrayList<>();
+    synchronized(pending) {
+      for(List<PendingSend> q : pending.values())
+        for(PendingSend p : q)
+          if(now >= p.nextAt) due.add(p);
+    }
+    for(PendingSend p : due) {
+      String to = p.inner.optString("to", "");
+      boolean delivered = forward(p.inner);
+      boolean expired = now - p.enqueuedAt > tunables.retryMaxMillis;
+      if(delivered || expired) {
+        removePending(key(to), p);
+        if(!delivered && expired)
+          deliverAck(new JSONObject()
+              .put("type", "nak").put("mid", p.inner.optString("mid", ""))
+              .put("hop", label).put("reason", "expired")
+              .put("to", label).put("from", label).put("ttl", Messages.DEFAULT_TTL));
+        continue;
+      }
+      p.delay = Math.min(p.delay * 2, tunables.retryCapMillis);
+      p.nextAt = now + p.delay;
+    }
+  }
+
+  private void removePending(String dest, PendingSend p) {
+    synchronized(pending) {
+      List<PendingSend> q = pending.get(dest);
+      if(q == null) return;
+      q.remove(p);
+      if(q.isEmpty()) pending.remove(dest);
+    }
+  }
 
   /**
    * Registers a listener for ack and nak messages addressed to this node (the
@@ -241,8 +319,7 @@ public final class Node {
     if(next == null) return false;
     PeerLink link = links.get(key(next));
     if(link == null) return false;
-    link.send(dataMessage);
-    return true;
+    return link.send(dataMessage);
   }
 
   /**
@@ -266,7 +343,8 @@ public final class Node {
         Thread.sleep(HEARTBEAT_INTERVAL_MILLIS);
         long now = System.currentTimeMillis();
         for(Map.Entry<String, PeerLink> e : links.entrySet())
-          sweepLink(now, e.getValue());
+          if(sweepLink(now, e.getValue())) e.getValue().maybeRekey(now);
+        drainRetries(now);
       }
     } catch(InterruptedException ignored) { }
   }
@@ -274,18 +352,20 @@ public final class Node {
   // Once-per-heartbeat maintenance for one link: tear it down if it is
   // probe-timeout dead (F3) or data-idle past the idle timeout (F4, disabled at
   // idleMillis==0), otherwise send it a probe and a route advertisement.
-  private void sweepLink(long now, PeerLink link) {
+  // Returns true if the link was kept.
+  private boolean sweepLink(long now, PeerLink link) {
     if(now - link.lastInboundMillis > tunables.probeTimeoutMillis) {
       link.close();
-      return;
+      return false;
     }
     if(tunables.idleMillis > 0 && now - link.lastDataMillis > tunables.idleMillis) {
       link.send(Messages.bye("idle"));
       link.close();
-      return;
+      return false;
     }
     link.send(Messages.probe(now));
     link.send(Messages.disco(routing.advertiseTo(link.peer)));
+    return true;
   }
 
   private void acceptLoop() {
@@ -357,7 +437,7 @@ public final class Node {
   }
 
   // Handles one decrypted inner message.
-  private void handleInner(String peer, JSONObject inner) {
+  private void handleInner(String peer, PeerLink link, JSONObject inner) {
     String type = inner.optString("type", "");
     switch(type) {
       case "data": {
@@ -380,7 +460,12 @@ public final class Node {
             });
             break;
           case FORWARD:
-            forward(d.message());
+            // If the onward write fails, the next-hop link died between routing
+            // and writing; name it as the failing hop (F2/D4, link-dead).
+            if(!forward(d.message())) {
+              String nh = routing.nextHop(inner.getString("to"));
+              emitNakHop(mid, from, nh == null ? label : nh, "link-dead");
+            }
             break;
           case DROP_TTL:
             // F6/D4: the relay that dropped it names ITSELF as the failing hop.
@@ -400,9 +485,11 @@ public final class Node {
       case "nak":
         handleControl(inner, "n:");
         break;
+      case "rekey":
+        link.handleRekey(inner);
+        break;
       case "probe":
-        PeerLink link = links.get(key(peer));
-        if(link != null) link.send(Messages.echo(inner.getLong("token")));
+        link.send(Messages.echo(inner.getLong("token")));
         break;
       case "echo":
         long rtt = System.currentTimeMillis() - inner.getLong("token");
@@ -440,8 +527,14 @@ public final class Node {
   // Sends a NAK back toward the origin naming this node as the failing hop.
   // Best-effort: if the NAK itself cannot be routed it is dropped (no recursion).
   private void emitNak(String mid, String origin, String reason) {
+    emitNakHop(mid, origin, label, reason);
+  }
+
+  // Sends a NAK naming an explicit failing hop (this node for a local drop, the
+  // next-hop label for a dead onward link).
+  private void emitNakHop(String mid, String origin, String hop, String reason) {
     if(origin == null || origin.isEmpty() || origin.equalsIgnoreCase(label)) return;
-    routeControl(Messages.nak(mid, label, origin, label, reason, Messages.DEFAULT_TTL));
+    routeControl(Messages.nak(mid, label, origin, hop, reason, Messages.DEFAULT_TTL));
   }
 
   // Sends a freshly-built ack/nak toward its destination, dropping silently if
@@ -509,6 +602,15 @@ public final class Node {
     // The last data frame sent over or received on this link; probe/echo/disco
     // never count as activity.
     private volatile long lastDataMillis;
+    // Rekey state (F5), all guarded by this PeerLink's monitor. rekeyHS is the
+    // in-flight handshake before any key swap has happened (abandonable, keeping
+    // the old keys); rekeySession is the initiator's new session between
+    // swapping its send key (after phase 2) and its receive key (on phase 4).
+    private Handshake rekeyHS;
+    private Session rekeySession;
+    private String rekeyMid;
+    private long rekeyStartedAt;
+    private int rekeyEpoch;
 
     PeerLink(String peer, Socket socket, TransportSession session, boolean initiator)
         throws IOException {
@@ -524,12 +626,17 @@ public final class Node {
       this.lastDataMillis = now;
     }
 
-    synchronized void send(JSONObject inner) {
+    // Seals and writes an inner message. Returns true if it was written; on a
+    // write failure the link is closed and false is returned (F2 needs to know
+    // whether the frame was handed off).
+    synchronized boolean send(JSONObject inner) {
       try {
         if("data".equals(inner.optString("type", ""))) lastDataMillis = System.currentTimeMillis();
         FrameCodec.writeFrame(out, session.seal(inner), FrameCodec.TRANSPORT_CAP);
+        return true;
       } catch(Exception e) {
         close();
+        return false;
       }
     }
 
@@ -546,11 +653,112 @@ public final class Node {
             close();
             return;
           }
-          handleInner(peer, inner);
+          handleInner(peer, this, inner);
         }
       } catch(Exception e) {
         close();
       }
+    }
+
+    // F5: on the session initiator only, start a fresh BMX when the frame count
+    // or session age crosses the threshold; abandon a stalled pre-swap handshake
+    // at the rekey timeout, keeping the old keys (the safe degrade against a
+    // peer that does not understand rekey). Runs under this link's monitor so
+    // the phase-1 frame is sealed with the current keys without racing a sender.
+    synchronized void maybeRekey(long nowMs) {
+      if(rekeyHS != null) {
+        if(nowMs - rekeyStartedAt > tunables.rekeyTimeoutMillis) rekeyHS = null;
+        return;
+      }
+      if(rekeySession != null) return; // initiator swapped send, awaiting phase 4
+      if(!initiator) return;
+      boolean due = session.sendSeq() >= tunables.rekeyFrames
+          || session.receiveSeq() >= tunables.rekeyFrames
+          || nowMs - establishedAtMillis >= tunables.rekeyMillis;
+      if(!due) return;
+      long nowSecs = System.currentTimeMillis() / 1000L;
+      Handshake hs = Handshake.initiator(mesh, rootPublicKey, nowSecs, certificate, identity, rng);
+      String mid = Messages.newMid(rng);
+      try {
+        writeRekey(mid, 1, hs.writeMessage1());
+      } catch(Exception e) {
+        return;
+      }
+      rekeyHS = hs;
+      rekeyMid = mid;
+      rekeyStartedAt = nowMs;
+    }
+
+    // F5: advance the tunneled-BMX rekey state machine. The BMX messages ride
+    // inside transport frames, so they arrive through the normal reader with no
+    // raw-stream race; each side swaps its send key immediately after sealing
+    // its last old-key frame, and its receive key immediately after opening the
+    // peer's (protocol.md §5 / security.md §6).
+    synchronized void handleRekey(JSONObject msg) {
+      int phase = msg.getInt("phase");
+      String mid = msg.optString("mid", "");
+      try {
+        switch(phase) {
+          case 1: { // responder: accept the fresh bmx1 and reply bmx2
+            long nowSecs = System.currentTimeMillis() / 1000L;
+            Handshake hs = Handshake.responder(mesh, rootPublicKey, nowSecs, certificate, identity, rng);
+            byte[] m2 = hs.readMessage1WriteMessage2(B64DEC.decode(msg.getString("body")));
+            rekeyHS = hs;
+            rekeyMid = mid;
+            rekeyStartedAt = System.currentTimeMillis();
+            writeRekey(mid, 2, m2);
+            break;
+          }
+          case 2: { // initiator: finish with bmx3, then swap its send key
+            if(rekeyHS == null) return;
+            byte[] m3 = rekeyHS.readMessage2WriteMessage3(B64DEC.decode(msg.getString("body")));
+            Session sess = rekeyHS.session();
+            writeRekey(mid, 3, m3); // last old-key frame in this direction
+            session.swapSend(sess.sendKey());
+            rekeySession = sess;
+            rekeyHS = null;
+            break;
+          }
+          case 3: { // responder: verify bmx3, swap receive, send phase 4, swap send
+            if(rekeyHS == null) return;
+            rekeyHS.readMessage3(B64DEC.decode(msg.getString("body")));
+            Session sess = rekeyHS.session();
+            session.swapReceive(sess.receiveKey()); // phase-3 was the last old-key inbound
+            writeRekey(mid, 4, null);
+            session.swapSend(sess.sendKey());
+            rekeyHS = null;
+            rekeyEpoch++;
+            break;
+          }
+          case 4: { // initiator: swap receive; rekey complete
+            if(rekeySession == null) return;
+            session.swapReceive(rekeySession.receiveKey());
+            rekeySession = null;
+            rekeyEpoch++;
+            break;
+          }
+          default:
+            break;
+        }
+      } catch(Exception e) {
+        // A failed rekey exchange abandons the attempt; the link stays on its
+        // current keys and is torn down by liveness if it has truly broken.
+        rekeyHS = null;
+      }
+    }
+
+    // Writes a rekey control frame with the caller already holding the monitor,
+    // so a seal-then-swap is atomic against other senders. body may be null
+    // (phase 4 carries no BMX bytes).
+    private void writeRekey(String mid, int phase, byte[] body) throws Exception {
+      JSONObject m = new JSONObject().put("type", "rekey").put("mid", mid).put("phase", phase);
+      if(body != null) m.put("body", B64ENC.encodeToString(body));
+      FrameCodec.writeFrame(out, session.seal(m), FrameCodec.TRANSPORT_CAP);
+    }
+
+    // Test-only: the current completed-rekey count.
+    synchronized int rekeyEpoch() {
+      return rekeyEpoch;
     }
 
     // Closes the link and withdraws its routes — but the route withdrawal only
