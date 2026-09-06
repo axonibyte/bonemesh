@@ -120,11 +120,66 @@ each other. `edge-1.received` gains a line with the payload.
 **A multi-link node** (`mesh`) dials several `--peers` (`host:port,host:port`),
 optionally streams to a routed destination (`--send-to` + `--message`), and can
 dump its routing table to `--routes`. This is how you build topologies larger
-than a single link (see §5).
+than a single link (see §6).
 
 ---
 
-## 4. Embedding a node (library API)
+## 4. Messages: what you send
+
+A BoneMesh message is just an application **payload** — any JSON value —
+addressed to a destination label. Those two things are all you supply; the node
+builds the wire envelope around them for you, so you never construct a message by
+hand. Specifically, the node generates:
+
+- a **message id** (`mid`) — a random 128-bit value it uses for de-duplication
+  and to correlate acknowledgements;
+- **`from`** — set to your node's own certificate-bound label. It is
+  authenticated, so a node cannot forge another node's origin;
+- a **hop limit** (`ttl`, default 16), decremented at each relay;
+- **chunking** — a payload larger than one transport frame (64 KiB by default)
+  is split at the origin and reassembled at the destination, so the frame size
+  never caps how large a payload may be.
+
+What arrives at the destination's listener is exactly the payload value you sent,
+not the envelope. For the full wire shape of a `data` message, see
+[`spec/protocol.md`](../spec/protocol.md) §4.
+
+Constraints and guarantees worth knowing:
+
+- The payload must be JSON-serializable. By convention it is a JSON object, and
+  the reference drivers' `--message` flag expects the file to contain an object.
+- Delivery is **unordered** and best-effort along a live path. `mid` gives
+  de-duplication (a redelivered message is dropped once), not ordering — if you
+  need ordering or an end-to-end receipt, carry a sequence number or request id
+  inside your own payload and have the peer reply.
+- `send` reports whether the destination is currently **routable**, not whether
+  it was delivered end to end: `true` means a path exists and the message was
+  handed to the next hop.
+
+**In code**, pass the payload straight to `send`:
+
+```go
+n.Send("edge-2", map[string]any{"kind": "reading", "temp_c": 21.4, "seq": 7})
+```
+```js
+n.send("edge-2", { kind: "reading", temp_c: 21.4, seq: 7 });
+```
+
+**Via a driver**, the payload is a JSON file given to `--message`, sent toward
+`--to` (a single `connect` send) or `--send-to` (streamed by a `mesh` node):
+
+```sh
+printf '%s\n' '{ "kind": "reading", "temp_c": 21.4, "seq": 7 }' > reading.json
+
+interop/drivers/go.sh connect --mesh acme-prod \
+  --root-pub ca/root.pub --cert edge-2.cert.json \
+  --id-pub edge-2.pub --id-priv edge-2.priv \
+  --host 127.0.0.1 --port 7001 --to edge-1 --message reading.json --seconds 10
+```
+
+---
+
+## 5. Embedding a node (library API)
 
 Each implementation is also a library. A node takes the same three inputs (root
 public key, certificate, identity private key) plus a mesh id and label, and
@@ -190,7 +245,7 @@ its listeners only payloads addressed to its own label; anything else it relays.
 
 ---
 
-## 5. Building a routed mesh
+## 6. Building a routed mesh
 
 Nodes discover each other's reachability automatically. Every second a node
 sends each neighbor a liveness probe and a route advertisement; from those it
@@ -223,7 +278,7 @@ destination is simply unreachable until the partition heals.
 
 ---
 
-## 6. Security model, from the operator's side
+## 7. Security model, from the operator's side
 
 - **The mesh root private key is the whole mesh's trust.** Keep it offline; use
   it only to issue certificates. Its compromise means an attacker can mint valid
@@ -248,7 +303,7 @@ For the full trust and threat model see [`spec/security.md`](../spec/security.md
 
 ---
 
-## 7. Debugging encrypted traffic
+## 8. Debugging encrypted traffic
 
 Because the protocol is JSON under channel encryption, it is meant to be
 inspectable during development without weakening production. The security design
@@ -263,7 +318,7 @@ show exactly what valid traffic looks like.
 
 ---
 
-## 8. Interoperability
+## 9. Interoperability
 
 Any node interoperates with any other regardless of language: the six
 implementations are checked pairwise, in both directions, by the interop matrix
@@ -274,7 +329,7 @@ identically on the wire.
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 - **`send` returns false / message not delivered.** The destination is not
   routable yet. Give discovery a couple of seconds after connecting, confirm the
