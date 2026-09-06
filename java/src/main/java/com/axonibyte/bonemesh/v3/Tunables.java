@@ -87,6 +87,23 @@ final class Tunables {
     return new Tunables(15000L, 0L, 500L, 30000L, 60000L, 3600000L, rekeyFrames, 10000L);
   }
 
+  // Explicit key-log path; everything else at its default.
+  static Tunables forTestKeylog(String keylogPath) {
+    return new Tunables(keylogPath);
+  }
+
+  private Tunables(String keylogPath) {
+    this.probeTimeoutMillis = 15000L;
+    this.idleMillis = 0L;
+    this.retryBaseMillis = 500L;
+    this.retryCapMillis = 30000L;
+    this.retryMaxMillis = 60000L;
+    this.rekeyMillis = 3600000L;
+    this.rekeyFrames = 65536L;
+    this.rekeyTimeoutMillis = 10000L;
+    this.keylogPath = keylogPath;
+  }
+
   private static long envLong(String name, long fallback) {
     String v = System.getenv(name);
     if(v == null || v.isEmpty()) return fallback;

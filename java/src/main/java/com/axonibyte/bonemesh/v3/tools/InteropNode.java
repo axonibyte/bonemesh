@@ -54,6 +54,14 @@ public final class InteropNode {
     }
     Map<String, String> f = flags(args);
 
+    // caps advertises the feature tokens this implementation supports, so a
+    // tier can health-probe and skip a driver that lacks what it exercises.
+    // (No --capture: that transport-stream tee is Go-only.)
+    if(args[0].equals("caps")) {
+      System.out.println("ack nak rekey idle probe-death dial-tiebreak keylog sessions acks");
+      return;
+    }
+
     // keygen needs no mesh/cert: generate an identity, write pub (standard raw)
     // and priv (this implementation's own format). The private key never leaves.
     if(args[0].equals("keygen")) {
@@ -75,12 +83,18 @@ public final class InteropNode {
         Node node = Node.start(label, mesh, rootPub, cert, identity, Integer.parseInt(f.get("port")));
         java.nio.file.Path out = Paths.get(f.get("out"));
         node.addDataListener(payload -> appendLine(out, payload.toString()));
-        Thread.sleep(seconds * 1000L);
+        wireAcks(node, f);
+        long deadline = System.currentTimeMillis() + seconds * 1000L;
+        while(System.currentTimeMillis() < deadline) {
+          dumpSessions(node, f);
+          Thread.sleep(200);
+        }
         node.kill();
         break;
       }
       case "connect": {
         Node node = Node.start(label, mesh, rootPub, cert, identity, 0);
+        wireAcks(node, f);
         node.connect(f.get("host"), Integer.parseInt(f.get("port")));
         JSONObject payload = new JSONObject(readString(f.get("message")));
         String to = f.get("to");
@@ -89,7 +103,12 @@ public final class InteropNode {
           if(node.send(to, payload)) break;
           Thread.sleep(200);
         }
-        Thread.sleep(1500); // let the frame flush before teardown
+        // Stay up briefly so acks/naks and the session dump can be observed.
+        long end = System.currentTimeMillis() + 1500L;
+        while(System.currentTimeMillis() < end) {
+          dumpSessions(node, f);
+          Thread.sleep(200);
+        }
         node.kill();
         break;
       }
@@ -106,6 +125,7 @@ public final class InteropNode {
           java.nio.file.Path out = Paths.get(f.get("out"));
           node.addDataListener(payload -> appendLine(out, payload.toString()));
         }
+        wireAcks(node, f);
         for(String peer : f.getOrDefault("peers", "").split(",")) {
           if(peer.isBlank()) continue;
           int c = peer.lastIndexOf(':');
@@ -120,6 +140,7 @@ public final class InteropNode {
           if(sendTo != null && payload != null) node.send(sendTo, payload);
           if(routes != null)
             Files.writeString(routes, new JSONObject(node.routeTable()).toString());
+          dumpSessions(node, f);
           Thread.sleep(500);
         }
         node.kill();
@@ -129,6 +150,23 @@ public final class InteropNode {
         System.err.println("unknown mode: " + args[0]);
         System.exit(2);
     }
+  }
+
+  // --acks: append each received ack/nak inner message as one JSON line.
+  private static void wireAcks(Node node, Map<String, String> f) {
+    if(f.containsKey("acks")) {
+      java.nio.file.Path acks = Paths.get(f.get("acks"));
+      node.addAckListener(inner -> appendLine(acks, inner.toString()));
+    }
+  }
+
+  // --sessions: rewrite the per-peer {epoch, th} dump as sessions change.
+  private static void dumpSessions(Node node, Map<String, String> f) {
+    if(!f.containsKey("sessions")) return;
+    try {
+      Files.writeString(Paths.get(f.get("sessions")),
+          new JSONObject(node.sessionInfo()).toString(), StandardCharsets.UTF_8);
+    } catch(Exception ignored) { }
   }
 
   private static synchronized void appendLine(java.nio.file.Path out, String line) {

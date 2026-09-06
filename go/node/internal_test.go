@@ -9,6 +9,9 @@ import (
 	"encoding/base64"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,7 +21,6 @@ import (
 	"github.com/axonibyte/bonemesh/gonode/handshake"
 	"github.com/axonibyte/bonemesh/gonode/message"
 	"github.com/axonibyte/bonemesh/gonode/routing"
-	"github.com/axonibyte/bonemesh/gonode/transport"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
 )
 
@@ -34,12 +36,13 @@ func bareNode() *Node {
 	}
 }
 
-func dummyTransport(peer string) *transport.Transport {
-	return transport.New(&handshake.Session{
+func dummySession(peer string) *handshake.Session {
+	return &handshake.Session{
 		SendKey:    make([]byte, 32),
 		ReceiveKey: make([]byte, 32),
 		PeerCert:   map[string]any{"label": peer},
-	})
+		H:          make([]byte, 32),
+	}
 }
 
 // A reconnect displaces an existing link; the stale link's death (deregister)
@@ -51,7 +54,7 @@ func TestStaleLinkDeathDoesNotWithdrawLiveNeighbor(t *testing.T) {
 	c2a, c2b := net.Pipe()
 	defer c2b.Close()
 
-	n.register("peer", c1a, bufio.NewReader(c1a), dummyTransport("peer"), true)
+	n.register("peer", c1a, bufio.NewReader(c1a), dummySession("peer"), true)
 	n.mu.Lock()
 	first := n.links["peer"]
 	n.mu.Unlock()
@@ -60,7 +63,7 @@ func TestStaleLinkDeathDoesNotWithdrawLiveNeighbor(t *testing.T) {
 	}
 
 	// Reconnect: displaces the first link.
-	n.register("peer", c2a, bufio.NewReader(c2a), dummyTransport("peer"), true)
+	n.register("peer", c2a, bufio.NewReader(c2a), dummySession("peer"), true)
 
 	// The displaced socket must be closed — its far end sees EOF promptly.
 	c1b.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -96,7 +99,7 @@ func TestRegisterRecordsInitiatorAndTimestamps(t *testing.T) {
 	ca, cb := net.Pipe()
 	defer cb.Close()
 	before := nowMillis()
-	n.register("peer", ca, bufio.NewReader(ca), dummyTransport("peer"), true)
+	n.register("peer", ca, bufio.NewReader(ca), dummySession("peer"), true)
 	n.mu.Lock()
 	lk := n.links["peer"]
 	n.mu.Unlock()
@@ -150,8 +153,8 @@ func TestTiebreakKeepsLowerLabelInitiatedSession(t *testing.T) {
 			defer a2.Close()
 			defer b1.Close()
 			defer b2.Close()
-			n.register(tc.peer, a1, bufio.NewReader(a1), dummyTransport(tc.peer), firstInitiator)
-			n.register(tc.peer, b1, bufio.NewReader(b1), dummyTransport(tc.peer), !firstInitiator)
+			n.register(tc.peer, a1, bufio.NewReader(a1), dummySession(tc.peer), firstInitiator)
+			n.register(tc.peer, b1, bufio.NewReader(b1), dummySession(tc.peer), !firstInitiator)
 			lk := n.links[lower(tc.peer)]
 			if lk == nil {
 				t.Fatalf("peer=%s first=%v: no surviving link", tc.peer, firstInitiator)
@@ -175,7 +178,7 @@ func TestProbeTimeoutClosesSilentLink(t *testing.T) {
 	drain(c2)
 	defer c1.Close()
 	defer c2.Close()
-	n.register("peer", c1, bufio.NewReader(c1), dummyTransport("peer"), true)
+	n.register("peer", c1, bufio.NewReader(c1), dummySession("peer"), true)
 	lk := n.links["peer"]
 
 	n.sweepLink(nowMillis(), "peer", lk) // fresh: kept
@@ -202,7 +205,7 @@ func TestIdleTeardownOnlyWhenEnabled(t *testing.T) {
 	drain(c2)
 	defer c1.Close()
 	defer c2.Close()
-	enabled.register("peer", c1, bufio.NewReader(c1), dummyTransport("peer"), true)
+	enabled.register("peer", c1, bufio.NewReader(c1), dummySession("peer"), true)
 	lk := enabled.links["peer"]
 	lk.lastInbound.Store(nowMillis()) // not probe-dead
 	lk.lastData.Store(nowMillis() - 5000)
@@ -218,7 +221,7 @@ func TestIdleTeardownOnlyWhenEnabled(t *testing.T) {
 	drain(d2)
 	defer d1.Close()
 	defer d2.Close()
-	disabled.register("peer", d1, bufio.NewReader(d1), dummyTransport("peer"), true)
+	disabled.register("peer", d1, bufio.NewReader(d1), dummySession("peer"), true)
 	lk2 := disabled.links["peer"]
 	lk2.lastInbound.Store(nowMillis())
 	lk2.lastData.Store(nowMillis() - 5000)
@@ -244,7 +247,7 @@ func TestRetryDeliversAfterRouteAppears(t *testing.T) {
 	drain(c2)
 	defer c1.Close()
 	defer c2.Close()
-	n.register("peer", c1, bufio.NewReader(c1), dummyTransport("peer"), true)
+	n.register("peer", c1, bufio.NewReader(c1), dummySession("peer"), true)
 	// Drain well past nextAt so the entry is due.
 	n.drainRetries(nowMillis() + 10000)
 	if len(n.pending["peer"]) != 0 {
@@ -352,6 +355,83 @@ func TestRekeyUnderTrafficAdvancesEpochAndKeepsDelivering(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("delivery broke across the rekey")
+	}
+}
+
+// keylog line: "BMX3_<DIR>_TRAFFIC_<epoch> <hex th> <hex key>". Returns
+// dir -> {th, key} for epoch 0 entries.
+func parseKeylogFile(t *testing.T, path string) map[string][2]string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read keylog %s: %v", path, err)
+	}
+	out := map[string][2]string{}
+	for _, ln := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		f := strings.Fields(ln)
+		if len(f) != 3 || !strings.HasSuffix(f[0], "_TRAFFIC_0") {
+			continue
+		}
+		dir := strings.TrimSuffix(strings.TrimPrefix(f[0], "BMX3_"), "_TRAFFIC_0")
+		out[dir] = [2]string{f[1], f[2]}
+	}
+	return out
+}
+
+// M5: with BONEMESH_KEYLOG set, both ends of a session write the same
+// directional keys and transcript hash — proof the emitted keys are the real
+// shared session keys and the role→direction mapping is correct.
+func TestKeylogEmitsAgreeingDirectionalKeys(t *testing.T) {
+	rootPub, rootPriv := rootKeys(t)
+	alpha, err := Start(cfgFor(t, rootPub, rootPriv, "alpha"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beta, err := Start(cfgFor(t, rootPub, rootPriv, "beta"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer alpha.Kill()
+	defer beta.Kill()
+
+	fa := filepath.Join(t.TempDir(), "a.keylog")
+	fb := filepath.Join(t.TempDir(), "b.keylog")
+	alpha.tun.keylogPath = fa
+	beta.tun.keylogPath = fb
+
+	if _, err := alpha.Connect("127.0.0.1", beta.Port()); err != nil {
+		t.Fatal(err)
+	}
+	// Wait for both ends to write their epoch-0 entries.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if fi, e := os.Stat(fb); e == nil && fi.Size() > 0 {
+			if fi2, e2 := os.Stat(fa); e2 == nil && fi2.Size() > 0 {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	a := parseKeylogFile(t, fa)
+	b := parseKeylogFile(t, fb)
+	for _, dir := range []string{"I2R", "R2I"} {
+		if a[dir] == [2]string{} || b[dir] == [2]string{} {
+			t.Fatalf("missing %s entry (a=%v b=%v)", dir, a, b)
+		}
+		if len(a[dir][1]) != 64 {
+			t.Fatalf("%s key is not a 32-byte hex value: %q", dir, a[dir][1])
+		}
+		if a[dir][1] != b[dir][1] {
+			t.Fatalf("%s key disagrees between ends: %s vs %s (role→direction mapping wrong)", dir, a[dir][1], b[dir][1])
+		}
+		if a[dir][0] != b[dir][0] {
+			t.Fatalf("%s transcript-hash disagrees: %s vs %s", dir, a[dir][0], b[dir][0])
+		}
+	}
+	// The two directions must use different keys.
+	if a["I2R"][1] == a["R2I"][1] {
+		t.Fatal("I2R and R2I keys are identical")
 	}
 }
 

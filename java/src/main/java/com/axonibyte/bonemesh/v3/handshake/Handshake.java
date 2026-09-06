@@ -201,7 +201,7 @@ public final class Handshake {
 
     byte[][] tk = state.split();
     // Initiator sends on i2r (tk[0]), receives on r2i (tk[1]).
-    session = new Session(tk[0], tk[1], peerCertificate);
+    session = new Session(tk[0], tk[1], peerCertificate, state.transcriptHash());
     return line(out);
   }
 
@@ -219,7 +219,7 @@ public final class Handshake {
 
     byte[][] tk = state.split();
     // Responder sends on r2i (tk[1]), receives on i2r (tk[0]).
-    session = new Session(tk[1], tk[0], peerCertificate);
+    session = new Session(tk[1], tk[0], peerCertificate, state.transcriptHash());
   }
 
   /** @return <code>true</code> once this side of the handshake has completed */

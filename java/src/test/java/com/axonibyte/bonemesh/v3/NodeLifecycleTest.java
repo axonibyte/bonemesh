@@ -66,16 +66,16 @@ public final class NodeLifecycleTest {
     Class<?> tsClass = Class.forName("com.axonibyte.bonemesh.v3.transport.TransportSession");
     Class<?> sessClass = Class.forName("com.axonibyte.bonemesh.v3.handshake.Session");
     Constructor<?> sessCtor =
-        sessClass.getDeclaredConstructor(byte[].class, byte[].class, Certificate.class);
+        sessClass.getDeclaredConstructor(byte[].class, byte[].class, Certificate.class, byte[].class);
     sessCtor.setAccessible(true);
     Object session = sessCtor.newInstance(new byte[32], new byte[32],
-        new Certificate("m", peer, new byte[0], 0, 0));
+        new Certificate("m", peer, new byte[0], 0, 0), new byte[32]);
     Object ts = tsClass.getConstructor(sessClass).newInstance(session);
     // The inner-class constructor takes the enclosing Node as its first arg.
     Constructor<?> plCtor = plClass.getDeclaredConstructor(
-        Node.class, String.class, Socket.class, tsClass, boolean.class);
+        Node.class, String.class, Socket.class, tsClass, boolean.class, String.class);
     plCtor.setAccessible(true);
-    return plCtor.newInstance(node, peer, socket, ts, initiator);
+    return plCtor.newInstance(node, peer, socket, ts, initiator, "0000000000000000");
   }
 
   private static void registerLink(Node node, String peer, Object link) throws Exception {

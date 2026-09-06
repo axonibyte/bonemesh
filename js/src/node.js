@@ -10,6 +10,7 @@
 // to guard (contrast the Java node's synchronized routing tables): each link's
 // seal/open runs to completion on the event loop.
 import net from 'node:net';
+import fs from 'node:fs';
 import { once } from 'node:events';
 import { Handshake } from './handshake.js';
 import { Transport } from './transport.js';
@@ -225,7 +226,7 @@ export class Node {
     const m2 = await ch.readFrame();
     socket.write(hs.readMessage2WriteMessage3(m2));
     const peer = hs.session.peerCert.label;
-    this.#register(peer, socket, ch, new Transport(hs.session), true);
+    if (this.#register(peer, socket, ch, hs.session, true)) this.#writeKeylog(0, true, hs.session);
     return peer;
   }
 
@@ -283,17 +284,20 @@ export class Node {
       socket.destroy();
       return;
     }
-    this.#register(hs.session.peerCert.label, socket, ch, new Transport(hs.session), false);
+    const peer = hs.session.peerCert.label;
+    if (this.#register(peer, socket, ch, hs.session, false)) this.#writeKeylog(0, false, hs.session);
   }
 
-  #register(peer, socket, ch, transport, initiator) {
+  #register(peer, socket, ch, session, initiator) {
     ch.setCap(TRANSPORT_CAP);
     const now = nowMs();
+    const transport = new Transport(session);
     // initiator: whether this node dialed the connection (protocol.md §3 —
     // the simultaneous-dial tiebreak needs to know who initiated each
     // competing session). lastInbound/lastData feed liveness and idle checks;
-    // probe/echo/disco never count as data activity.
-    const link = { socket, ch, transport, initiator, establishedAt: now, lastInbound: now, lastData: now };
+    // probe/echo/disco never count as data activity. th is a short transcript-
+    // hash label both ends agree on, surfaced via sessionInfo().
+    const link = { socket, ch, transport, initiator, establishedAt: now, lastInbound: now, lastData: now, th: thPrefix(session) };
     const k = peer.toLowerCase();
     const prev = this.links.get(k);
     // F1 simultaneous-dial tiebreak (protocol.md §3): if an existing link was
@@ -335,6 +339,38 @@ export class Node {
       }
       this.#handleInner(peer, link, inner);
     });
+    return true;
+  }
+
+  // Appends this session's directional transport keys to the file named by
+  // BONEMESH_KEYLOG, in the pinned cross-language format (security.md §8):
+  //   BMX3_I2R_TRAFFIC_<epoch> <hex transcript-hash> <hex key>
+  //   BMX3_R2I_TRAFFIC_<epoch> <hex transcript-hash> <hex key>
+  // A no-op unless the env var is set; a loud warning per session because it
+  // defeats forward secrecy for anyone holding the file. Role-relative send/
+  // receive keys are mapped onto the absolute I2R/R2I directions so one
+  // inspector reads a log from either end.
+  #writeKeylog(epoch, initiator, session) {
+    const path = this.tun.keylogPath;
+    if (!path || !session) return;
+    let i2r = session.sendKey, r2i = session.receiveKey;
+    if (!initiator) { i2r = session.receiveKey; r2i = session.sendKey; }
+    const th = Buffer.from(session.h).toString('hex');
+    const line = (dir, key) => `BMX3_${dir}_TRAFFIC_${epoch} ${th} ${Buffer.from(key).toString('hex')}\n`;
+    try {
+      fs.appendFileSync(path, line('I2R', i2r) + line('R2I', r2i));
+    } catch { return; }
+    if (epoch === 0) {
+      console.error(`WARNING: BONEMESH_KEYLOG is on; transport keys written to ${path} — forward secrecy is defeated for anyone holding that file`);
+    }
+  }
+
+  // Per-neighbor rekey epoch and transcript-hash label — the observability the
+  // interop harness dumps via --sessions (both ends of a session agree on th).
+  sessionInfo() {
+    const out = {};
+    for (const [peer, link] of this.links) out[peer] = { epoch: link.rekeyEpoch || 0, th: link.th || '' };
+    return out;
   }
 
   // Withdraws a dropped link's routes, but only if it is still the current
@@ -414,13 +450,18 @@ export class Node {
         link.transport.swapSend(sess.sendKey);
         link.rekeyHs = null;
         link.rekeyEpoch = (link.rekeyEpoch || 0) + 1;
+        link.th = thPrefix(sess);
+        this.#writeKeylog(link.rekeyEpoch, link.initiator, sess);
         break;
       }
       case 4: { // initiator: swap receive; rekey complete
         if (!link.rekeySession) return;
-        link.transport.swapReceive(link.rekeySession.receiveKey);
+        const rs = link.rekeySession;
+        link.transport.swapReceive(rs.receiveKey);
         link.rekeySession = null;
         link.rekeyEpoch = (link.rekeyEpoch || 0) + 1;
+        link.th = thPrefix(rs);
+        this.#writeKeylog(link.rekeyEpoch, link.initiator, rs);
         break;
       }
     }
@@ -506,3 +547,9 @@ export class Node {
 
 function now() { return Math.floor(Date.now() / 1000); }
 function nowMs() { return Date.now(); }
+
+// thPrefix is the first 16 hex chars of a session's transcript hash, a compact
+// session label for the harness's --sessions dump.
+function thPrefix(session) {
+  return session && session.h ? Buffer.from(session.h).toString('hex').slice(0, 16) : '';
+}

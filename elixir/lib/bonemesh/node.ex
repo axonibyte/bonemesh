@@ -54,6 +54,9 @@ defmodule Bonemesh.Node do
   @doc "A snapshot of the routing table: destination => next-hop label."
   def routes(node), do: GenServer.call(node, :routes)
 
+  @doc "Per-neighbor session info: peer => %{epoch, th} (interop --sessions)."
+  def session_info(node), do: GenServer.call(node, :session_info)
+
   @doc "Stops the node."
   def stop(node), do: GenServer.stop(node)
 
@@ -74,7 +77,9 @@ defmodule Bonemesh.Node do
       id_private: Keyword.fetch!(opts, :id_private),
       listen: listen,
       port: port,
-      tun: load_tunables(),
+      # :keylog opt overrides BONEMESH_KEYLOG (lets two in-process nodes write
+      # to distinct files in tests).
+      tun: %{load_tunables() | keylog_path: Keyword.get(opts, :keylog, load_tunables().keylog_path)},
       routing: Routing.new(label),
       # links: downcased label => %{pid, initiator, established_at,
       # last_inbound, last_data} (protocol.md §3 — the tiebreak/liveness/idle
@@ -103,6 +108,11 @@ defmodule Bonemesh.Node do
   def handle_call(:routes, _from, s) do
     table = for dest <- Map.keys(s.routing.routes), into: %{}, do: {dest, Routing.next_hop(s.routing, dest)}
     {:reply, table, s}
+  end
+
+  def handle_call(:session_info, _from, s) do
+    info = for {peer, e} <- s.links, into: %{}, do: {peer, %{"epoch" => e.rekey_epoch, "th" => e.th}}
+    {:reply, info, s}
   end
 
   def handle_call({:connect, host, port}, _from, s) do
@@ -141,6 +151,15 @@ defmodule Bonemesh.Node do
 
   # A link reports its rekey epoch advanced (F5); record it on the link entry so
   # tests and operators can observe rekeys. Pid-guarded against a stale link.
+  def handle_cast({:link_th, peer, pid, th}, s) do
+    key = String.downcase(peer)
+
+    case s.links[key] do
+      %{pid: ^pid} = e -> {:noreply, %{s | links: Map.put(s.links, key, %{e | th: th})}}
+      _ -> {:noreply, s}
+    end
+  end
+
   def handle_cast({:rekey_epoch, peer, pid, epoch}, s) do
     key = String.downcase(peer)
 
@@ -481,7 +500,7 @@ defmodule Bonemesh.Node do
   end
 
   defp register_link(s, peer, socket, session) do
-    pid = start_link_process(self(), peer, socket, Transport.session(session), true, link_cfg(s), s.tun)
+    pid = start_link_process(self(), peer, socket, Transport.session(session), true, link_cfg(s), s.tun, session.h)
     register_link_pid(s, peer, pid, true)
   end
 
@@ -492,7 +511,7 @@ defmodule Bonemesh.Node do
   # The caller must currently own the socket. The process carries its own link
   # state (transport session, rekey machine, seq counters) since only it sees
   # the per-direction sequence numbers the rekey trigger reads.
-  defp start_link_process(node, peer, socket, session, initiator, cfg, tun) do
+  defp start_link_process(node, peer, socket, session, initiator, cfg, tun, h) do
     ls = %{
       node: node,
       peer: peer,
@@ -501,6 +520,7 @@ defmodule Bonemesh.Node do
       initiator: initiator,
       cfg: cfg,
       tun: tun,
+      h: h,
       established_at: System.system_time(:millisecond),
       rekey_hs: nil,
       rekey_session: nil,
@@ -512,6 +532,9 @@ defmodule Bonemesh.Node do
       spawn(fn ->
         receive do
           :go ->
+            # M5: emit the epoch-0 key-log and report the transcript-hash label.
+            write_keylog(0, initiator, session.send_key, session.receive_key, h, tun.keylog_path)
+            GenServer.cast(node, {:link_th, peer, self(), th_prefix(h)})
             :inet.setopts(socket, active: :once)
             link_loop(ls)
         end
@@ -556,7 +579,8 @@ defmodule Bonemesh.Node do
         established_at: now,
         last_inbound: now,
         last_data: now,
-        rekey_epoch: 0
+        rekey_epoch: 0,
+        th: ""
       }
 
       %{s | links: Map.put(s.links, key, entry), routing: Routing.observe_neighbor(s.routing, peer, 1)}
@@ -703,7 +727,9 @@ defmodule Bonemesh.Node do
               session = Transport.swap_receive(ls.session, new.receive_key)
               session = seal_send(session, sock, rekey_msg(mid, 4, nil))
               session = Transport.swap_send(session, new.send_key)
+              write_keylog(ls.epoch + 1, ls.initiator, new.send_key, new.receive_key, new.h, ls.tun.keylog_path)
               report_epoch(ls, ls.epoch + 1)
+              GenServer.cast(ls.node, {:link_th, ls.peer, self(), th_prefix(new.h)})
               %{ls | session: session, rekey_hs: nil, epoch: ls.epoch + 1}
 
             {:error, _} ->
@@ -716,7 +742,10 @@ defmodule Bonemesh.Node do
           ls
         else
           session = Transport.swap_receive(ls.session, ls.rekey_session.receive_key)
+          rk = ls.rekey_session
+          write_keylog(ls.epoch + 1, ls.initiator, rk.send_key, rk.receive_key, rk.h, ls.tun.keylog_path)
           report_epoch(ls, ls.epoch + 1)
+          GenServer.cast(ls.node, {:link_th, ls.peer, self(), th_prefix(rk.h)})
           %{ls | session: session, rekey_session: nil, epoch: ls.epoch + 1}
         end
 
@@ -789,7 +818,7 @@ defmodule Bonemesh.Node do
          {:ok, hs} <- Handshake.read_message3(hs, m3) do
       session = Handshake.session(hs)
       peer = session.peer_cert["label"]
-      link = start_link_process(node, peer, socket, Transport.session(session), false, link_cfg(s), s.tun)
+      link = start_link_process(node, peer, socket, Transport.session(session), false, link_cfg(s), s.tun, session.h)
       GenServer.cast(node, {:link_up, peer, link})
     else
       _ -> :gen_tcp.close(socket)
@@ -837,6 +866,29 @@ defmodule Bonemesh.Node do
   # Operational knobs (protocol.md §0): local behavior, never part of the wire
   # contract, read once from the environment at node start. Two nodes with
   # different values still interoperate.
+  # First 16 hex chars of the transcript hash — a compact session label both
+  # ends agree on (interop --sessions).
+  defp th_prefix(h), do: h |> Base.encode16(case: :lower) |> String.slice(0, 16)
+
+  # Emits this session's directional transport keys (security.md §8): a no-op
+  # unless BONEMESH_KEYLOG is set. The initiator's send key is I2R and its
+  # receive key R2I; the responder is the mirror. Written by the link process,
+  # which knows its role and holds the keys. Loud warning once per session.
+  defp write_keylog(_epoch, _initiator, _send_key, _recv_key, _h, ""), do: :ok
+
+  defp write_keylog(epoch, initiator, send_key, recv_key, h, path) do
+    {i2r, r2i} = if initiator, do: {send_key, recv_key}, else: {recv_key, send_key}
+    th = Base.encode16(h, case: :lower)
+    line = fn dir, key -> "BMX3_#{dir}_TRAFFIC_#{epoch} #{th} #{Base.encode16(key, case: :lower)}\n" end
+    File.write!(path, line.("I2R", i2r) <> line.("R2I", r2i), [:append])
+
+    if epoch == 0 do
+      IO.puts(:stderr, "WARNING: BONEMESH_KEYLOG is on; transport keys written to #{path} — forward secrecy is defeated for anyone holding that file")
+    end
+
+    :ok
+  end
+
   defp load_tunables do
     %{
       probe_timeout_ms: env_int("BONEMESH_PROBE_TIMEOUT_MS", 15_000),

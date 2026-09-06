@@ -10,7 +10,10 @@ package node
 import (
 	"bufio"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"os"
 	"net"
 	"strconv"
 	"sync"
@@ -33,6 +36,10 @@ type Config struct {
 	RootPublic []byte
 	Cert       map[string]any
 	IDPrivate  []byte
+	// CapturePath, when set, tees every transport carrier this node sends or
+	// receives to a newline-delimited JSON file as {"dir","frame"} — the
+	// capture bonemesh-inspect reads. A debugging aid, off unless set.
+	CapturePath string
 }
 
 type link struct {
@@ -43,6 +50,9 @@ type link struct {
 	// runs over (protocol.md §3: the simultaneous-dial tiebreak needs to
 	// know who initiated each competing session).
 	initiator bool
+	// th is a short hex prefix of the session's transcript hash — a session
+	// identifier both ends agree on, surfaced for the interop harness.
+	th string
 	// establishedAt is when the handshake completed, in unix millis.
 	establishedAt int64
 	// lastInbound is the unix-millis time of the last successfully opened
@@ -74,6 +84,7 @@ type Node struct {
 	pending      map[string][]*pendingSend
 	table        *routing.Table
 	dedup        *routing.Dedup
+	keylogMu     sync.Mutex
 	done         chan struct{}
 }
 
@@ -146,8 +157,11 @@ func (n *Node) Connect(host string, port int) (string, error) {
 	if _, err := conn.Write(m3); err != nil {
 		return "", err
 	}
-	peer, _ := hs.SessionResult().PeerCert["label"].(string)
-	n.register(peer, conn, r, transport.New(hs.SessionResult()), true)
+	sess := hs.SessionResult()
+	peer, _ := sess.PeerCert["label"].(string)
+	if n.register(peer, conn, r, sess, true) {
+		n.writeKeylog(0, true, sess)
+	}
 	return peer, nil
 }
 
@@ -320,8 +334,11 @@ func (n *Node) respond(conn net.Conn) {
 		conn.Close()
 		return
 	}
-	peer, _ := hs.SessionResult().PeerCert["label"].(string)
-	n.register(peer, conn, r, transport.New(hs.SessionResult()), false)
+	sess := hs.SessionResult()
+	peer, _ := sess.PeerCert["label"].(string)
+	if n.register(peer, conn, r, sess, false) {
+		n.writeKeylog(0, false, sess)
+	}
 }
 
 // register installs a new link for peer and starts its reader. It returns true
@@ -331,9 +348,9 @@ func (n *Node) respond(conn net.Conn) {
 // it is a genuine dial collision, and both ends deterministically keep the
 // session initiated by the lexicographically-lower label, so the pair converges
 // on exactly one session.
-func (n *Node) register(peer string, conn net.Conn, r *bufio.Reader, t *transport.Transport, initiator bool) bool {
+func (n *Node) register(peer string, conn net.Conn, r *bufio.Reader, sess *handshake.Session, initiator bool) bool {
 	now := nowMillis()
-	lk := &link{conn: conn, transport: t, initiator: initiator, establishedAt: now}
+	lk := &link{conn: conn, transport: transport.New(sess), initiator: initiator, establishedAt: now, th: thPrefix(sess)}
 	lk.lastInbound.Store(now)
 	lk.lastData.Store(now)
 
@@ -375,6 +392,7 @@ func (n *Node) readLoop(peer string, r *bufio.Reader, lk *link) {
 			n.deregister(peer, lk)
 			return
 		}
+		n.capture(lk.initiator, false, carrier)
 		lk.mu.Lock()
 		inner, err := lk.transport.Open(carrier)
 		lk.mu.Unlock()
@@ -697,13 +715,17 @@ func (n *Node) handleRekey(lk *link, msg map[string]any) {
 		lk.transport.SwapSend(sess.SendKey)
 		lk.rekeyHS = nil
 		lk.rekeyEpoch++
+		n.writeKeylog(lk.rekeyEpoch, lk.initiator, sess)
+		lk.th = thPrefix(sess)
 	case 4: // initiator: swap receive; rekey complete
 		if lk.rekeySession == nil {
 			return
 		}
 		lk.transport.SwapReceive(lk.rekeySession.ReceiveKey)
-		lk.rekeySession = nil
 		lk.rekeyEpoch++
+		n.writeKeylog(lk.rekeyEpoch, lk.initiator, lk.rekeySession)
+		lk.th = thPrefix(lk.rekeySession)
+		lk.rekeySession = nil
 	}
 }
 
@@ -715,10 +737,99 @@ func (n *Node) writeLocked(lk *link, inner map[string]any) {
 		lk.lastData.Store(nowMillis())
 	}
 	carrier := lk.transport.Seal(inner)
+	n.capture(lk.initiator, true, carrier)
 	_, _ = lk.conn.Write(frame.Encode(carrier))
 }
 
 func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
+
+// thPrefix is the first 16 hex chars of a session's transcript hash, a compact
+// session label for the harness's --sessions dump.
+func thPrefix(sess *handshake.Session) string {
+	h := hex.EncodeToString(sess.H)
+	if len(h) > 16 {
+		h = h[:16]
+	}
+	return h
+}
+
+// SessionInfo reports, per neighbor, its rekey epoch and transcript-hash label
+// — the observability the interop harness dumps via --sessions (both ends of a
+// session agree on th, and epoch advances on rekey).
+func (n *Node) SessionInfo() map[string]map[string]any {
+	n.mu.Lock()
+	pairs := make(map[string]*link, len(n.links))
+	for peer, lk := range n.links {
+		pairs[peer] = lk
+	}
+	n.mu.Unlock()
+	out := map[string]map[string]any{}
+	for peer, lk := range pairs {
+		lk.mu.Lock()
+		out[peer] = map[string]any{"epoch": lk.rekeyEpoch, "th": lk.th}
+		lk.mu.Unlock()
+	}
+	return out
+}
+
+// capture tees a transport carrier to the capture file, tagged with the
+// absolute wire direction (i2r/r2i) derived from this node's role on the link.
+func (n *Node) capture(initiator, sending bool, carrier map[string]any) {
+	if n.cfg.CapturePath == "" {
+		return
+	}
+	// The initiator's send is i2r and its receive is r2i; the responder is the
+	// mirror.
+	i2r := initiator == sending
+	dir := "r2i"
+	if i2r {
+		dir = "i2r"
+	}
+	n.keylogMu.Lock()
+	defer n.keylogMu.Unlock()
+	f, err := os.OpenFile(n.cfg.CapturePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	b, _ := json.Marshal(map[string]any{"dir": dir, "frame": carrier})
+	_, _ = f.Write(append(b, '\n'))
+}
+
+// writeKeylog appends this session's directional transport keys to the file
+// named by BONEMESH_KEYLOG, in the pinned format (security.md §8):
+//
+//	BMX3_I2R_TRAFFIC_<epoch> <hex transcript-hash> <hex key>
+//	BMX3_R2I_TRAFFIC_<epoch> <hex transcript-hash> <hex key>
+//
+// It is a no-op unless the env var is set, and it logs a loud warning per
+// session because it defeats forward secrecy for anyone holding the file. The
+// node maps its role-relative send/receive keys onto the absolute I2R/R2I
+// directions so one inspector reads logs from either end.
+func (n *Node) writeKeylog(epoch int, initiator bool, sess *handshake.Session) {
+	if n.tun.keylogPath == "" || sess == nil {
+		return
+	}
+	i2r, r2i := sess.SendKey, sess.ReceiveKey
+	if !initiator {
+		i2r, r2i = sess.ReceiveKey, sess.SendKey
+	}
+	th := hex.EncodeToString(sess.H)
+	line := func(dir string, key []byte) string {
+		return fmt.Sprintf("BMX3_%s_TRAFFIC_%d %s %s\n", dir, epoch, th, hex.EncodeToString(key))
+	}
+	n.keylogMu.Lock()
+	defer n.keylogMu.Unlock()
+	f, err := os.OpenFile(n.tun.keylogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString(line("I2R", i2r) + line("R2I", r2i))
+	if epoch == 0 {
+		fmt.Fprintf(os.Stderr, "WARNING: BONEMESH_KEYLOG is on; transport keys written to %s — forward secrecy is defeated for anyone holding that file\n", n.tun.keylogPath)
+	}
+}
 
 func (n *Node) sendToLink(label string, inner map[string]any) bool {
 	n.mu.Lock()
@@ -733,6 +844,7 @@ func (n *Node) sendToLink(label string, inner map[string]any) bool {
 	lk.mu.Lock()
 	defer lk.mu.Unlock()
 	carrier := lk.transport.Seal(inner)
+	n.capture(lk.initiator, true, carrier)
 	_, err := lk.conn.Write(frame.Encode(carrier))
 	return err == nil
 }

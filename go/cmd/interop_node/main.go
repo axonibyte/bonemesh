@@ -22,6 +22,11 @@ func main() {
 		os.Stderr.WriteString("usage: interop_node <keygen|listen|connect> [--flag value ...]\n")
 		os.Exit(2)
 	}
+	if os.Args[1] == "caps" {
+		// Feature tokens the harness health-probes to gate tier-10 scenarios.
+		os.Stdout.WriteString("ack nak rekey idle probe-death dial-tiebreak keylog sessions acks capture\n")
+		return
+	}
 	f := flags(os.Args[2:])
 	switch os.Args[1] {
 	case "keygen":
@@ -37,6 +42,29 @@ func main() {
 	}
 }
 
+// observe wires the optional observability flags: --acks appends each received
+// ack/nak inner as a JSON line, and --sessions (dumped by dumpSessions in the
+// mode loops) reports per-peer epoch + transcript-hash. --capture is applied in
+// config() via CapturePath.
+func observe(n *node.Node, f map[string]string) {
+	if acks := f["acks"]; acks != "" {
+		ch := n.AckListener()
+		go func() {
+			for a := range ch {
+				b, _ := json.Marshal(a)
+				appendLine(acks, b)
+			}
+		}()
+	}
+}
+
+func dumpSessions(n *node.Node, f map[string]string) {
+	if s := f["sessions"]; s != "" {
+		b, _ := json.Marshal(n.SessionInfo())
+		_ = os.WriteFile(s, b, 0o644)
+	}
+}
+
 // mesh is the multi-link mode for the convergence tier: dial several --peers
 // (host:port,host:port), optionally log delivered payloads (--out), repeatedly
 // send toward a routed destination (--send-to with --message), and periodically
@@ -45,6 +73,7 @@ func mesh(f map[string]string) {
 	port, _ := strconv.Atoi(f["port"])
 	n, err := node.Start(config(f), port)
 	must(err)
+	observe(n, f)
 	if out := f["out"]; out != "" {
 		ch := n.AddListener()
 		go func() {
@@ -78,6 +107,7 @@ func mesh(f map[string]string) {
 			b, _ := json.Marshal(n.RouteTable())
 			must(os.WriteFile(routes, b, 0o644))
 		}
+		dumpSessions(n, f)
 		time.Sleep(500 * time.Millisecond)
 	}
 	n.Kill()
@@ -94,7 +124,7 @@ func config(f map[string]string) node.Config {
 	idPriv := decodeB64(read(f["id-priv"]))
 	cert := loadCert(f["cert"])
 	label, _ := cert["label"].(string)
-	return node.Config{Label: label, Mesh: f["mesh"], RootPublic: rootPub, Cert: cert, IDPrivate: idPriv}
+	return node.Config{Label: label, Mesh: f["mesh"], RootPublic: rootPub, Cert: cert, IDPrivate: idPriv, CapturePath: f["capture"]}
 }
 
 func listen(f map[string]string) {
@@ -102,6 +132,7 @@ func listen(f map[string]string) {
 	seconds := seconds(f)
 	n, err := node.Start(config(f), port)
 	must(err)
+	observe(n, f)
 	ch := n.AddListener()
 	out := f["out"]
 	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
@@ -112,12 +143,14 @@ func listen(f map[string]string) {
 			appendLine(out, b)
 		case <-time.After(200 * time.Millisecond):
 		}
+		dumpSessions(n, f)
 	}
 }
 
 func connect(f map[string]string) {
 	n, err := node.Start(config(f), 0)
 	must(err)
+	observe(n, f)
 	port, _ := strconv.Atoi(f["port"])
 	if _, err := n.Connect(f["host"], port); err != nil {
 		os.Stderr.WriteString("connect: " + err.Error() + "\n")
@@ -131,7 +164,12 @@ func connect(f map[string]string) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	// Stay up briefly so acks/naks and the session dump can be observed.
+	end := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(end) {
+		dumpSessions(n, f)
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 func loadCert(path string) map[string]any {

@@ -41,6 +41,9 @@ struct Link {
     /// (protocol.md §3: the simultaneous-dial tiebreak needs to know who
     /// initiated each competing session).
     initiator: bool,
+    /// Short hex prefix of the session's transcript hash — a session identifier
+    /// both ends agree on, surfaced for the interop harness (--sessions).
+    th: String,
     /// When the handshake completed, in unix millis.
     established_at: i64,
     /// Unix-millis time of the last successfully opened inbound frame —
@@ -51,10 +54,10 @@ struct Link {
     last_data: i64,
     /// Rekey state (F5). rekey_hs is the in-flight handshake before any key
     /// swap has happened (abandonable, keeping the old keys); rekey_pending_recv
-    /// is the initiator's new receive key, held between swapping its send key
-    /// (after phase 2) and swapping its receive key (on phase 4).
+    /// holds the initiator's new (i2r, r2i, transcript-hash) between swapping
+    /// its send key (after phase 2) and swapping its receive key (on phase 4).
     rekey_hs: Option<Handshake>,
-    rekey_pending_recv: Option<Vec<u8>>,
+    rekey_pending: Option<(Vec<u8>, Vec<u8>, [u8; 32])>,
     rekey_started_at: i64,
     rekey_epoch: i64,
 }
@@ -68,6 +71,7 @@ struct Inner {
     pending: Mutex<HashMap<String, Vec<PendingSend>>>,
     table: Mutex<routing::Table>,
     dedup: Mutex<routing::Dedup>,
+    keylog_mu: Mutex<()>,
     stop: AtomicBool,
 }
 
@@ -137,6 +141,7 @@ impl Node {
             pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new(&label)),
             dedup: Mutex::new(routing::Dedup::new(4096)),
+            keylog_mu: Mutex::new(()),
             stop: AtomicBool::new(false),
         });
 
@@ -188,10 +193,17 @@ impl Node {
         write.flush().ok();
 
         let peer = hs.session().peer_cert["label"].as_str().unwrap_or("").to_string();
+        let (sk, rk, h) = {
+            let s = hs.session();
+            (s.send_key.clone(), s.receive_key.clone(), s.h)
+        };
         // Handshake done: drop the dial read-timeout so it cannot masquerade
         // as a liveness timer; liveness is the probe-timeout's job.
         write.set_read_timeout(None).ok();
-        let _ = register(&self.inner, &peer, write, reader, Transport::new(hs.session()), true);
+        if register(&self.inner, &peer, write, reader, Transport::new(hs.session()), true, &th16(&h)) {
+            // Initiator: send key is i2r, receive key is r2i.
+            write_keylog(&self.inner, 0, &sk, &rk, &h);
+        }
         Ok(peer)
     }
 
@@ -246,6 +258,21 @@ impl Node {
         self.inner.table.lock().unwrap().route_table()
     }
 
+    /// Per-neighbor rekey epoch and transcript-hash label — the observability
+    /// the interop harness dumps via --sessions.
+    pub fn session_info(&self) -> Value {
+        let links: Vec<(String, Arc<Mutex<Link>>)> = {
+            let map = self.inner.links.lock().unwrap();
+            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        let mut obj = serde_json::Map::new();
+        for (peer, link) in links {
+            let l = link.lock().unwrap();
+            obj.insert(peer, json!({"epoch": l.rekey_epoch, "th": l.th}));
+        }
+        Value::Object(obj)
+    }
+
     /// The number of completed rekeys on the link to `peer`, or -1 if there is
     /// no such link (F5 observability).
     pub fn rekey_epoch(&self, peer: &str) -> i64 {
@@ -277,10 +304,17 @@ fn respond(inner: &Arc<Inner>, stream: TcpStream) -> Result<(), String> {
     hs.read_message3(&m3)?;
 
     let peer = hs.session().peer_cert["label"].as_str().unwrap_or("").to_string();
+    let (sk, rk, h) = {
+        let s = hs.session();
+        (s.send_key.clone(), s.receive_key.clone(), s.h)
+    };
     // Handshake done: drop the accept read-timeout so it cannot masquerade
     // as a liveness timer; liveness is the probe-timeout's job.
     write.set_read_timeout(None).ok();
-    let _ = register(inner, &peer, write, reader, Transport::new(hs.session()), false);
+    if register(inner, &peer, write, reader, Transport::new(hs.session()), false, &th16(&h)) {
+        // Responder: receive key is i2r, send key is r2i.
+        write_keylog(inner, 0, &rk, &sk, &h);
+    }
     Ok(())
 }
 
@@ -299,17 +333,19 @@ fn register(
     reader: BufReader<TcpStream>,
     transport: Transport,
     initiator: bool,
+    th: &str,
 ) -> bool {
     let now = now_millis();
     let link = Arc::new(Mutex::new(Link {
         write,
         transport,
         initiator,
+        th: th.to_string(),
         established_at: now,
         last_inbound: now,
         last_data: now,
         rekey_hs: None,
-        rekey_pending_recv: None,
+        rekey_pending: None,
         rekey_started_at: 0,
         rekey_epoch: 0,
     }));
@@ -679,7 +715,7 @@ fn maybe_rekey(inner: &Arc<Inner>, now_ms: i64, link: &Arc<Mutex<Link>>) {
         }
         return;
     }
-    if l.rekey_pending_recv.is_some() {
+    if l.rekey_pending.is_some() {
         return; // initiator has swapped its send key and is awaiting phase 4
     }
     if !l.initiator {
@@ -725,7 +761,7 @@ fn handle_rekey(inner: &Arc<Inner>, link: &Arc<Mutex<Link>>, msg: Value) {
         }
         2 => {
             // Initiator: finish with bmx3, then swap its send key.
-            let (m3, send_key, recv_key) = {
+            let (m3, send_key, recv_key, h) = {
                 let hs = match l.rekey_hs.as_mut() {
                     Some(h) => h,
                     None => return,
@@ -738,16 +774,16 @@ fn handle_rekey(inner: &Arc<Inner>, link: &Arc<Mutex<Link>>, msg: Value) {
                     }
                 };
                 let s = hs.session();
-                (m3, s.send_key.clone(), s.receive_key.clone())
+                (m3, s.send_key.clone(), s.receive_key.clone(), s.h)
             };
             write_locked(&mut l, &json!({"type":"rekey","mid":mid,"phase":3,"body":B64.encode(m3)}));
-            l.transport.swap_send(&send_key); // last old-key frame sent above
-            l.rekey_pending_recv = Some(recv_key);
+            l.transport.swap_send(&send_key); // last old-key frame sent above; initiator send = i2r
+            l.rekey_pending = Some((send_key, recv_key, h));
             l.rekey_hs = None;
         }
         3 => {
             // Responder: verify bmx3, swap receive, send phase 4, swap send.
-            let (send_key, recv_key) = {
+            let (send_key, recv_key, h) = {
                 let hs = match l.rekey_hs.as_mut() {
                     Some(h) => h,
                     None => return,
@@ -757,19 +793,24 @@ fn handle_rekey(inner: &Arc<Inner>, link: &Arc<Mutex<Link>>, msg: Value) {
                     return;
                 }
                 let s = hs.session();
-                (s.send_key.clone(), s.receive_key.clone())
+                (s.send_key.clone(), s.receive_key.clone(), s.h)
             };
             l.transport.swap_receive(&recv_key); // phase-3 frame was the last old-key inbound
             write_locked(&mut l, &json!({"type":"rekey","mid":mid,"phase":4}));
             l.transport.swap_send(&send_key);
             l.rekey_hs = None;
             l.rekey_epoch += 1;
+            l.th = th16(&h);
+            // Responder: receive key is i2r, send key is r2i.
+            write_keylog(inner, l.rekey_epoch, &recv_key, &send_key, &h);
         }
         4 => {
             // Initiator: swap receive; rekey complete.
-            if let Some(recv) = l.rekey_pending_recv.take() {
-                l.transport.swap_receive(&recv);
+            if let Some((i2r, r2i, h)) = l.rekey_pending.take() {
+                l.transport.swap_receive(&r2i);
                 l.rekey_epoch += 1;
+                l.th = th16(&h);
+                write_keylog(inner, l.rekey_epoch, &i2r, &r2i, &h);
             }
         }
         _ => {}
@@ -781,6 +822,56 @@ fn now_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
+}
+
+fn to_hex(b: &[u8]) -> String {
+    let mut s = String::with_capacity(b.len() * 2);
+    for byte in b {
+        s.push_str(&format!("{:02x}", byte));
+    }
+    s
+}
+
+/// th16 is the first 16 hex chars of a transcript hash — a compact session
+/// label for the harness's --sessions dump.
+fn th16(h: &[u8]) -> String {
+    let full = to_hex(h);
+    full.chars().take(16).collect()
+}
+
+/// write_keylog appends a session's directional transport keys to the file
+/// named by BONEMESH_KEYLOG in the pinned format (security.md §8), keyed by the
+/// transcript hash. Callers pass the ABSOLUTE i2r/r2i keys (mapping their
+/// role-relative send/receive onto direction), so one inspector reads either
+/// end. A loud warning is printed once per session (epoch 0).
+fn write_keylog(inner: &Arc<Inner>, epoch: i64, i2r: &[u8], r2i: &[u8], h: &[u8]) {
+    if inner.tun.keylog_path.is_empty() {
+        return;
+    }
+    let th = to_hex(h);
+    let _g = inner.keylog_mu.lock().unwrap();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&inner.tun.keylog_path)
+    {
+        let _ = write!(
+            f,
+            "BMX3_I2R_TRAFFIC_{} {} {}\nBMX3_R2I_TRAFFIC_{} {} {}\n",
+            epoch,
+            th,
+            to_hex(i2r),
+            epoch,
+            th,
+            to_hex(r2i)
+        );
+    }
+    if epoch == 0 {
+        eprintln!(
+            "WARNING: BONEMESH_KEYLOG is on; transport keys written to {} — forward secrecy is defeated for anyone holding that file",
+            inner.tun.keylog_path
+        );
+    }
 }
 
 fn send_to_link(inner: &Arc<Inner>, label: &str, inner_msg: &Value) -> bool {
@@ -840,6 +931,7 @@ mod lifecycle_tests {
             pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new("self")),
             dedup: Mutex::new(routing::Dedup::new(16)),
+            keylog_mu: Mutex::new(()),
             stop: AtomicBool::new(false),
         })
     }
@@ -872,6 +964,7 @@ mod lifecycle_tests {
             pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new("self")),
             dedup: Mutex::new(routing::Dedup::new(16)),
+            keylog_mu: Mutex::new(()),
             stop: AtomicBool::new(false),
         })
     }
@@ -888,6 +981,7 @@ mod lifecycle_tests {
             send_key: vec![0u8; 32],
             receive_key: vec![0u8; 32],
             peer_cert: json!({"label": "peer"}),
+            h: [0u8; 32],
         })
     }
 
@@ -918,6 +1012,7 @@ mod lifecycle_tests {
             pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new("self")),
             dedup: Mutex::new(routing::Dedup::new(16)),
+            keylog_mu: Mutex::new(()),
             stop: AtomicBool::new(false),
         })
     }
@@ -935,7 +1030,7 @@ mod lifecycle_tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let (c1, _s1) = tcp_pair(&listener);
         let r1 = BufReader::new(c1.try_clone().unwrap());
-        register(&inner, "peer", c1, r1, dummy_transport(), true);
+        register(&inner, "peer", c1, r1, dummy_transport(), true, "");
 
         drain_retries(&inner, now_millis() + 10_000); // well past next_at
         assert!(
@@ -989,11 +1084,11 @@ mod lifecycle_tests {
         let r1 = BufReader::new(c1.try_clone().unwrap());
         let r2 = BufReader::new(c2.try_clone().unwrap());
 
-        register(&inner, "peer", c1, r1, dummy_transport(), true);
+        register(&inner, "peer", c1, r1, dummy_transport(), true, "");
         let first = inner.links.lock().unwrap().get("peer").cloned().unwrap();
 
         // Reconnect: displaces the first link.
-        register(&inner, "peer", c2, r2, dummy_transport(), true);
+        register(&inner, "peer", c2, r2, dummy_transport(), true, "");
         let cur = inner.links.lock().unwrap().get("peer").cloned().unwrap();
         assert!(!Arc::ptr_eq(&first, &cur), "reconnect did not replace the link");
 
@@ -1029,7 +1124,7 @@ mod lifecycle_tests {
         let (c1, _s1) = tcp_pair(&listener);
         let r1 = BufReader::new(c1.try_clone().unwrap());
         let before = now_millis();
-        register(&inner, "peer", c1, r1, dummy_transport(), true);
+        register(&inner, "peer", c1, r1, dummy_transport(), true, "");
         let link = inner.links.lock().unwrap().get("peer").cloned().unwrap();
         let l = link.lock().unwrap();
         assert!(l.initiator, "initiator flag not recorded");
@@ -1069,8 +1164,8 @@ mod lifecycle_tests {
                 let (c2, _s2) = tcp_pair(&listener);
                 let r1 = BufReader::new(c1.try_clone().unwrap());
                 let r2 = BufReader::new(c2.try_clone().unwrap());
-                register(&inner, peer, c1, r1, dummy_transport(), first_initiator);
-                register(&inner, peer, c2, r2, dummy_transport(), !first_initiator);
+                register(&inner, peer, c1, r1, dummy_transport(), first_initiator, "");
+                register(&inner, peer, c2, r2, dummy_transport(), !first_initiator, "");
                 let lk = inner.links.lock().unwrap().get(peer).cloned().unwrap();
                 let got = lk.lock().unwrap().initiator;
                 assert_eq!(
@@ -1089,7 +1184,7 @@ mod lifecycle_tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let (c1, _s1) = tcp_pair(&listener); // hold _s1 so the socket stays open
         let r1 = BufReader::new(c1.try_clone().unwrap());
-        register(&inner, "peer", c1, r1, dummy_transport(), true);
+        register(&inner, "peer", c1, r1, dummy_transport(), true, "");
         let lk = inner.links.lock().unwrap().get("peer").cloned().unwrap();
 
         sweep_link(&inner, now_millis(), "peer", &lk); // fresh: kept
@@ -1112,7 +1207,7 @@ mod lifecycle_tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let (c1, _s1) = tcp_pair(&listener);
         let r1 = BufReader::new(c1.try_clone().unwrap());
-        register(&enabled, "peer", c1, r1, dummy_transport(), true);
+        register(&enabled, "peer", c1, r1, dummy_transport(), true, "");
         let lk = enabled.links.lock().unwrap().get("peer").cloned().unwrap();
         {
             let mut l = lk.lock().unwrap();
@@ -1128,7 +1223,7 @@ mod lifecycle_tests {
         let disabled = inner_with_tun(1_000_000, 0);
         let (c2, _s2) = tcp_pair(&listener);
         let r2 = BufReader::new(c2.try_clone().unwrap());
-        register(&disabled, "peer", c2, r2, dummy_transport(), true);
+        register(&disabled, "peer", c2, r2, dummy_transport(), true, "");
         let lk2 = disabled.links.lock().unwrap().get("peer").cloned().unwrap();
         {
             let mut l = lk2.lock().unwrap();

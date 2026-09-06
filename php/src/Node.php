@@ -81,8 +81,11 @@ final class Node
         $peer = $sess['peerCert']['label'];
         stream_set_blocking($sock, false);
         $id = (int) $sock;
-        $this->conns[$id] = ['sock' => $sock, 'buf' => '', 'phase' => 'established', 'transport' => new Transport($sess), 'peer' => $peer];
+        $this->conns[$id] = ['sock' => $sock, 'buf' => '', 'phase' => 'established', 'transport' => new Transport($sess), 'peer' => $peer, 'th' => substr(bin2hex($sess['h']), 0, 16)];
         $this->registerLink($id, $peer, true);
+        if (isset($this->conns[$id])) {
+            $this->writeKeylog(0, true, $sess);
+        }
         return $peer;
     }
 
@@ -222,6 +225,49 @@ final class Node
     public function onAck(callable $cb): void
     {
         $this->ackListeners[] = $cb;
+    }
+
+    // A snapshot of live sessions: peer => {epoch, th}. th is a short transcript-
+    // hash prefix both ends agree on; epoch advances on rekey. The interop
+    // harness dumps this via --sessions.
+    public function sessionInfo(): array
+    {
+        $out = [];
+        foreach ($this->links as $peer => $id) {
+            if (!isset($this->conns[$id])) {
+                continue;
+            }
+            $out[$peer] = [
+                'epoch' => $this->conns[$id]['rekeyEpoch'] ?? 0,
+                'th' => $this->conns[$id]['th'] ?? '',
+            ];
+        }
+        return $out;
+    }
+
+    // writeKeylog appends this session's directional transport keys to the file
+    // named by BONEMESH_KEYLOG, in the pinned cross-language format (security.md
+    // §8): BMX3_I2R_TRAFFIC_<epoch> <hex transcript-hash> <hex key> and the R2I
+    // line. A no-op unless the env is set; logs a loud warning per session.
+    private function writeKeylog(int $epoch, bool $initiator, array $sess): void
+    {
+        $path = $this->tun['keylogPath'] ?? '';
+        if ($path === '') {
+            return;
+        }
+        $i2r = $sess['sendKey'];
+        $r2i = $sess['receiveKey'];
+        if (!$initiator) {
+            $i2r = $sess['receiveKey'];
+            $r2i = $sess['sendKey'];
+        }
+        $th = bin2hex($sess['h']);
+        $line = fn(string $dir, string $key): string =>
+            sprintf("BMX3_%s_TRAFFIC_%d %s %s\n", $dir, $epoch, $th, bin2hex($key));
+        file_put_contents($path, $line('I2R', $i2r) . $line('R2I', $r2i), FILE_APPEND);
+        if ($epoch === 0) {
+            fwrite(STDERR, "WARNING: BONEMESH_KEYLOG is on; transport keys written to $path — forward secrecy is defeated for anyone holding that file\n");
+        }
     }
 
     // send with an explicit initial TTL; used by tests to force a relay to
@@ -413,6 +459,8 @@ final class Node
                     $t->swapSend($sess['sendKey']);
                     $this->conns[$id]['rekeyHs'] = null;
                     $this->conns[$id]['rekeyEpoch'] = ($this->conns[$id]['rekeyEpoch'] ?? 0) + 1;
+                    $this->conns[$id]['th'] = substr(bin2hex($sess['h']), 0, 16);
+                    $this->writeKeylog($this->conns[$id]['rekeyEpoch'], $this->conns[$id]['initiator'] ?? false, $sess);
                     break;
                 case 4: // initiator: swap receive; rekey complete
                     $sess = $this->conns[$id]['rekeySession'] ?? null;
@@ -422,6 +470,8 @@ final class Node
                     $t->swapReceive($sess['receiveKey']);
                     $this->conns[$id]['rekeySession'] = null;
                     $this->conns[$id]['rekeyEpoch'] = ($this->conns[$id]['rekeyEpoch'] ?? 0) + 1;
+                    $this->conns[$id]['th'] = substr(bin2hex($sess['h']), 0, 16);
+                    $this->writeKeylog($this->conns[$id]['rekeyEpoch'], $this->conns[$id]['initiator'] ?? false, $sess);
                     break;
             }
         } catch (\Throwable $e) {
@@ -526,7 +576,11 @@ final class Node
                 $this->conns[$id]['transport'] = new Transport($sess);
                 $this->conns[$id]['phase'] = 'established';
                 $this->conns[$id]['peer'] = $peer;
+                $this->conns[$id]['th'] = substr(bin2hex($sess['h']), 0, 16);
                 $this->registerLink($id, $peer, false);
+                if (isset($this->conns[$id])) {
+                    $this->writeKeylog(0, false, $sess);
+                }
                 break;
             case 'established':
                 $inner = $this->conns[$id]['transport']->open($obj);

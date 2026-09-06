@@ -21,6 +21,11 @@ fn main() {
     let f = flags(&args);
 
     match mode.as_str() {
+        "caps" => {
+            // Feature tokens the harness health-probes to gate tier-10
+            // scenarios. Rust supports all but --capture (Go only).
+            println!("ack nak rekey idle probe-death dial-tiebreak keylog sessions acks");
+        }
         "keygen" => keygen(&f),
         "listen" => listen(&f),
         "connect" => connect(&f),
@@ -60,6 +65,7 @@ fn listen(f: &HashMap<String, String>) {
     let port: u16 = f["port"].parse().unwrap();
     let seconds: u64 = f.get("seconds").and_then(|s| s.parse().ok()).unwrap_or(10);
     let node = Node::start(config(f), port).expect("start node");
+    observe(&node, f);
     let rx = node.add_listener();
     let out = f["out"].clone();
     let deadline = Instant::now() + Duration::from_secs(seconds);
@@ -68,12 +74,14 @@ fn listen(f: &HashMap<String, String>) {
             let mut file = fs::OpenOptions::new().create(true).append(true).open(&out).unwrap();
             writeln!(file, "{}", serde_json::to_string(&payload).unwrap()).unwrap();
         }
+        dump_sessions(&node, f);
     }
 }
 
 fn connect(f: &HashMap<String, String>) {
     let seconds: u64 = f.get("seconds").and_then(|s| s.parse().ok()).unwrap_or(10);
     let node = Node::start(config(f), 0).expect("start node");
+    observe(&node, f);
     let port: u16 = f["port"].parse().unwrap();
     node.connect(&f["host"], port).expect("connect");
     let payload: Value = serde_json::from_str(&read(&f["message"])).unwrap();
@@ -84,7 +92,12 @@ fn connect(f: &HashMap<String, String>) {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    std::thread::sleep(Duration::from_millis(1500));
+    // Stay up briefly so acks/naks and the session dump can be observed.
+    let end = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < end {
+        dump_sessions(&node, f);
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 // The multi-link mode for the convergence tier: dial several --peers
@@ -95,6 +108,7 @@ fn mesh(f: &HashMap<String, String>) {
     let seconds: u64 = f.get("seconds").and_then(|s| s.parse().ok()).unwrap_or(10);
     let port: u16 = f.get("port").and_then(|s| s.parse().ok()).unwrap_or(0);
     let node = Node::start(config(f), port).expect("start node");
+    observe(&node, f);
 
     if let Some(out) = f.get("out").cloned() {
         let rx = node.add_listener();
@@ -124,9 +138,32 @@ fn mesh(f: &HashMap<String, String>) {
         if let Some(rf) = &routes {
             fs::write(rf, serde_json::to_string(&node.route_table()).unwrap()).unwrap();
         }
+        dump_sessions(&node, f);
         std::thread::sleep(Duration::from_millis(500));
     }
     node.kill();
+}
+
+// observe wires --acks: each received ack/nak inner is appended as one JSON
+// line. (--sessions is written by dump_sessions in the mode loops; --capture is
+// Go-only.)
+fn observe(node: &Node, f: &HashMap<String, String>) {
+    if let Some(acks) = f.get("acks").cloned() {
+        let rx = node.add_ack_listener();
+        std::thread::spawn(move || {
+            while let Ok(a) = rx.recv() {
+                if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&acks) {
+                    let _ = writeln!(file, "{}", serde_json::to_string(&a).unwrap());
+                }
+            }
+        });
+    }
+}
+
+fn dump_sessions(node: &Node, f: &HashMap<String, String>) {
+    if let Some(s) = f.get("sessions") {
+        let _ = fs::write(s, serde_json::to_string(&node.session_info()).unwrap());
+    }
 }
 
 fn read(path: &str) -> String {

@@ -17,11 +17,17 @@
 package com.axonibyte.bonemesh.v3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -233,6 +239,51 @@ public class NodeTest {
       Thread.sleep(100);
     }
     assertTrue(await(got, 5000), "delivery broke across the rekey");
+  }
+
+  // M5: with BONEMESH_KEYLOG set, both ends of a session write the same
+  // directional keys and transcript hash — proof the emitted keys are the real
+  // shared session keys and the role->direction mapping is correct.
+  @Test void keylogEmitsAgreeingDirectionalKeys() throws Exception {
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+    Path fa = Files.createTempFile("bonemesh-a", ".keylog");
+    Path fb = Files.createTempFile("bonemesh-b", ".keylog");
+    fa.toFile().deleteOnExit();
+    fb.toFile().deleteOnExit();
+    alpha.useTunablesForTest(Tunables.forTestKeylog(fa.toString()));
+    beta.useTunablesForTest(Tunables.forTestKeylog(fb.toString()));
+
+    alpha.connect("127.0.0.1", beta.port());
+    long deadline = System.currentTimeMillis() + 5000;
+    while(System.currentTimeMillis() < deadline && (Files.size(fa) == 0 || Files.size(fb) == 0))
+      Thread.sleep(50);
+
+    Map<String, String[]> a = parseKeylog(fa);
+    Map<String, String[]> b = parseKeylog(fb);
+    for(String dir : new String[] { "I2R", "R2I" }) {
+      assertNotNull(a.get(dir), "missing " + dir + " entry on alpha");
+      assertNotNull(b.get(dir), "missing " + dir + " entry on beta");
+      assertEquals(64, a.get(dir)[1].length(), dir + " key is not a 32-byte hex value");
+      assertEquals(a.get(dir)[1], b.get(dir)[1],
+          dir + " key disagrees between ends (role->direction mapping wrong)");
+      assertEquals(a.get(dir)[0], b.get(dir)[0], dir + " transcript-hash disagrees");
+    }
+    assertNotEquals(a.get("I2R")[1], a.get("R2I")[1], "I2R and R2I keys are identical");
+  }
+
+  // Parses epoch-0 key-log lines "BMX3_<DIR>_TRAFFIC_0 <hex th> <hex key>" into
+  // dir -> {th, key}.
+  private static Map<String, String[]> parseKeylog(Path path) throws Exception {
+    Map<String, String[]> out = new HashMap<>();
+    for(String ln : Files.readAllLines(path)) {
+      String[] parts = ln.trim().split("\\s+");
+      if(parts.length != 3 || !parts[0].endsWith("_TRAFFIC_0")) continue;
+      String dir = parts[0].substring("BMX3_".length(), parts[0].length() - "_TRAFFIC_0".length());
+      out.put(dir, new String[] { parts[1], parts[2] });
+    }
+    return out;
   }
 
   // Reads a peer link's completed-rekey count through the private links map.

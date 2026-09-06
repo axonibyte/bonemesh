@@ -22,9 +22,15 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -79,6 +85,9 @@ public final class Node {
   private final Map<String, List<PendingSend>> pending = new java.util.HashMap<>();
   private static final Base64.Encoder B64ENC = Base64.getEncoder();
   private static final Base64.Decoder B64DEC = Base64.getDecoder();
+  private static final HexFormat HEX = HexFormat.of();
+  // Serializes key-log appends so a session's two directional lines stay paired.
+  private final Object keylogLock = new Object();
 
   private final ServerSocket serverSocket;
   private final Thread acceptThread;
@@ -184,9 +193,11 @@ public final class Node {
     byte[] m2 = readRawLine(in, FrameCodec.HANDSHAKE_CAP);
     writeRaw(out, hs.readMessage2WriteMessage3(m2));
 
-    String peer = hs.session().peerCertificate().label();
-    PeerLink link = new PeerLink(peer, socket, new TransportSession(hs.session()), true);
+    Session sess = hs.session();
+    String peer = sess.peerCertificate().label();
+    PeerLink link = new PeerLink(peer, socket, new TransportSession(sess), true, thPrefix(sess));
     if(registerLink(peer, link)) {
+      writeKeylog(0, true, sess);
       Thread reader = new Thread(link::readLoop, "bonemesh-read-" + label + "-" + peer);
       reader.setDaemon(true);
       reader.start();
@@ -394,9 +405,13 @@ public final class Node {
       byte[] m3 = readRawLine(in, FrameCodec.HANDSHAKE_CAP);
       hs.readMessage3(m3);
 
-      String peer = hs.session().peerCertificate().label();
-      PeerLink link = new PeerLink(peer, socket, new TransportSession(hs.session()), false);
-      if(registerLink(peer, link)) link.readLoop();
+      Session sess = hs.session();
+      String peer = sess.peerCertificate().label();
+      PeerLink link = new PeerLink(peer, socket, new TransportSession(sess), false, thPrefix(sess));
+      if(registerLink(peer, link)) {
+        writeKeylog(0, false, sess);
+        link.readLoop();
+      }
     } catch(Exception e) {
       closeQuietly(socket);
     }
@@ -583,6 +598,57 @@ public final class Node {
     return label.toLowerCase(java.util.Locale.ROOT);
   }
 
+  // A short hex prefix of a session's transcript hash — a session label both
+  // ends agree on, surfaced to the interop harness via sessionInfo().
+  private static String thPrefix(Session sess) {
+    String h = HEX.formatHex(sess.transcriptHash());
+    return h.length() > 16 ? h.substring(0, 16) : h;
+  }
+
+  /**
+   * Reports, per neighbor, its rekey epoch and transcript-hash label — the
+   * observability the interop harness dumps via <code>--sessions</code> (both
+   * ends of a session agree on <code>th</code>, and <code>epoch</code> advances
+   * on rekey).
+   *
+   * @return an ordered map of neighbor label to its session info
+   */
+  public Map<String, JSONObject> sessionInfo() {
+    Map<String, JSONObject> out = new LinkedHashMap<>();
+    for(Map.Entry<String, PeerLink> e : links.entrySet())
+      out.put(e.getKey(), new JSONObject().put("epoch", e.getValue().rekeyEpoch())
+          .put("th", e.getValue().th()));
+    return out;
+  }
+
+  // Appends this session's directional transport keys to the file named by
+  // BONEMESH_KEYLOG (security.md §8), in the pinned cross-language format:
+  //   BMX3_I2R_TRAFFIC_<epoch> <hex transcript-hash> <hex key>
+  //   BMX3_R2I_TRAFFIC_<epoch> <hex transcript-hash> <hex key>
+  // No-op unless the env var is set. Logs a loud warning once per session
+  // (epoch 0) because it defeats forward secrecy for holders of the file. The
+  // node maps its role-relative send/receive keys onto absolute I2R/R2I so one
+  // inspector reads logs from either end.
+  private void writeKeylog(int epoch, boolean initiator, Session sess) {
+    if(tunables.keylogPath == null || tunables.keylogPath.isEmpty()) return;
+    byte[] i2r = initiator ? sess.sendKey() : sess.receiveKey();
+    byte[] r2i = initiator ? sess.receiveKey() : sess.sendKey();
+    String th = HEX.formatHex(sess.transcriptHash());
+    String lines = "BMX3_I2R_TRAFFIC_" + epoch + " " + th + " " + HEX.formatHex(i2r) + "\n"
+        + "BMX3_R2I_TRAFFIC_" + epoch + " " + th + " " + HEX.formatHex(r2i) + "\n";
+    synchronized(keylogLock) {
+      try {
+        Files.writeString(Path.of(tunables.keylogPath), lines, StandardCharsets.UTF_8,
+            StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+      } catch(IOException ignored) {
+        return;
+      }
+    }
+    if(epoch == 0)
+      System.err.println("WARNING: BONEMESH_KEYLOG is on; transport keys written to "
+          + tunables.keylogPath + " — forward secrecy is defeated for anyone holding that file");
+  }
+
   /** One authenticated, encrypted link to a neighbor. */
   private final class PeerLink {
     private final String peer;
@@ -594,6 +660,9 @@ public final class Node {
     // §3: the simultaneous-dial tiebreak needs to know who initiated each
     // competing session).
     private final boolean initiator;
+    // Short hex prefix of the session transcript hash — a session identifier
+    // both ends agree on, surfaced via sessionInfo(); updated on rekey.
+    private volatile String th;
     // When the handshake completed.
     private final long establishedAtMillis;
     // The last successfully opened inbound frame — any authenticated frame
@@ -612,7 +681,7 @@ public final class Node {
     private long rekeyStartedAt;
     private int rekeyEpoch;
 
-    PeerLink(String peer, Socket socket, TransportSession session, boolean initiator)
+    PeerLink(String peer, Socket socket, TransportSession session, boolean initiator, String th)
         throws IOException {
       this.peer = peer;
       this.socket = socket;
@@ -620,6 +689,7 @@ public final class Node {
       this.in = socket.getInputStream();
       this.out = socket.getOutputStream();
       this.initiator = initiator;
+      this.th = th;
       long now = System.currentTimeMillis();
       this.establishedAtMillis = now;
       this.lastInboundMillis = now;
@@ -728,13 +798,17 @@ public final class Node {
             session.swapSend(sess.sendKey());
             rekeyHS = null;
             rekeyEpoch++;
+            th = thPrefix(sess);
+            writeKeylog(rekeyEpoch, initiator, sess);
             break;
           }
           case 4: { // initiator: swap receive; rekey complete
             if(rekeySession == null) return;
             session.swapReceive(rekeySession.receiveKey());
-            rekeySession = null;
             rekeyEpoch++;
+            th = thPrefix(rekeySession);
+            writeKeylog(rekeyEpoch, initiator, rekeySession);
+            rekeySession = null;
             break;
           }
           default:
@@ -759,6 +833,10 @@ public final class Node {
     // Test-only: the current completed-rekey count.
     synchronized int rekeyEpoch() {
       return rekeyEpoch;
+    }
+
+    String th() {
+      return th;
     }
 
     // Closes the link and withdraws its routes — but the route withdrawal only
