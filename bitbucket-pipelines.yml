@@ -1,51 +1,162 @@
+# BoneMesh CI.
+#
+# The real gate is reaper (eight tenants, see docs/testing.md §2), which runs each
+# implementation hermetically in a digest-pinned container and runs the interop
+# battery on a networked guest. Pipelines is the always-on, per-push check: it
+# mirrors to GitHub, builds the published Java artifact, and runs every
+# implementation's own suite plus its byte-exact corpus checks.
+#
+# Per-implementation logic lives in ci/test-impl.sh, not here. Bitbucket cannot
+# loop and each step takes exactly one image, so these steps differ only in name,
+# image and cache; the script is what knows how a language is tested. The images
+# are the SAME digests the reaper manifests pin, so CI and reaper test against one
+# toolchain set rather than drifting apart.
+#
+# Note the corpus checks can only run here, not in a reaper tenant: a tenant syncs
+# one subtree and cannot see spec/corpus.
 image: atlassian/default-image:3
 
-doMirror: &doMirror
-  name: Mirror repository
-  clone:
-    enabled: false
-  script:
-    - git clone --mirror git@bitbucket.org:${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
-    - cd ${BITBUCKET_REPO_SLUG}.git
-    - git push --mirror git@github.com:${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
-
-doBuild: &doBuild
-  name: Build and test artifact
-  image: eclipse-temurin:25-jdk
+definitions:
   caches:
-    - gradle
-  script:
-    - cd java
-    - bash ./gradlew clean test shadowJar --info
-  artifacts:
-    - java/build/libs/bonemesh.jar
+    uv:
+      key:
+        files:
+          - python/uv.lock
+      path: .uv_cache
 
-doDeploy: &doDeploy
-  name: Deploy artifact
-  clone:
-    enabled: false
-  script:
-    - >-
-      for f in java/build/libs/*.jar; do
-        sha256sum $f | awk '{ print $1 }' > ${f}.sha256
-        curl -v -X POST "https://${BB_PUB_USER}:${BB_PUB_SECRET}@api.bitbucket.org/2.0/repositories/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}/downloads" \
-            --form files=@"${f}" --form files=@"${f}.sha256"
-      done
+  steps:
+    - step: &doMirror
+        name: Mirror repository
+        clone:
+          enabled: false
+        script:
+          - git clone --mirror git@bitbucket.org:${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
+          - cd ${BITBUCKET_REPO_SLUG}.git
+          - git push --mirror git@github.com:${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
+
+    # Builds the published artifact, so it keeps its name and its place ahead of
+    # doDeploy, which consumes the jar. Java's own suite runs here as part of the
+    # build; its corpus checks run in doTestJava with everyone else's.
+    - step: &doBuild
+        name: Build and test artifact
+        image: eclipse-temurin:25-jdk
+        caches:
+          - gradle
+        script:
+          - cd java
+          - bash ./gradlew clean test shadowJar --info
+        artifacts:
+          - java/build/libs/bonemesh.jar
+
+    # One step per implementation. Same script, same shape; only the toolchain
+    # differs. Digests match the reaper manifests named in each comment.
+    - step: &doTestJava
+        name: Test java
+        image: docker.io/library/eclipse-temurin@sha256:e787e08ef76f4c16866108cd7f9fcd96a68eef3ac6cc76866897d4d02d5a2262
+        caches:
+          - gradle
+        script:
+          - sh ci/test-impl.sh java
+
+    - step: &doTestGo
+        name: Test go
+        image: docker.io/library/golang@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81
+        script:
+          - sh ci/test-impl.sh go
+
+    - step: &doTestRust
+        name: Test rust
+        image: docker.io/library/rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+        caches:
+          - cargo
+        script:
+          - sh ci/test-impl.sh rust
+
+    - step: &doTestJs
+        name: Test js
+        image: docker.io/library/node@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e
+        script:
+          - sh ci/test-impl.sh js
+
+    - step: &doTestPhp
+        name: Test php
+        image: docker.io/library/php@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0
+        script:
+          - sh ci/test-impl.sh php
+
+    - step: &doTestElixir
+        name: Test elixir
+        image: docker.io/library/elixir@sha256:d170fadffd75b36146ff40b6e8d5cc881c59d136ae5a2c34a1b394ec33b6cffa
+        caches:
+          - mix
+        script:
+          - sh ci/test-impl.sh elixir
+
+    - step: &doTestPython
+        name: Test python
+        image: docker.io/astral/uv@sha256:85d4cb1afa769a7338e095b927bee941cf5ec92266c7424b3f6c0f2748567248
+        caches:
+          - uv
+        script:
+          - export UV_CACHE_DIR="$BITBUCKET_CLONE_DIR/.uv_cache"
+          - sh ci/test-impl.sh python
+
+    # The corpus conformance runner plus methodology tier 3 (source-as-data),
+    # which reads the spec as data and checks every implementation against it.
+    - step: &doTestSpec
+        name: Test spec conformance and tier 3
+        image: docker.io/library/golang@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81
+        script:
+          - sh ci/test-impl.sh spec
+
+    - step: &doDeploy
+        name: Deploy artifact
+        clone:
+          enabled: false
+        script:
+          - >-
+            for f in java/build/libs/*.jar; do
+              sha256sum $f | awk '{ print $1 }' > ${f}.sha256
+              curl -v -X POST "https://${BB_PUB_USER}:${BB_PUB_SECRET}@api.bitbucket.org/2.0/repositories/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}/downloads" \
+                  --form files=@"${f}" --form files=@"${f}.sha256"
+            done
 
 pipelines:
+  # Bitbucket matches pull-request patterns against the SOURCE branch only; there
+  # is no native destination filter (BCLOUD-17859). So every PR runs the same
+  # gate. A PR into a release branch running it too is harmless -- it is the same
+  # build.
+  pull-requests:
+    '**':
+      - step: *doBuild
+      - parallel: &testAll
+          steps:
+            - step: *doTestJava
+            - step: *doTestGo
+            - step: *doTestRust
+            - step: *doTestJs
+            - step: *doTestPhp
+            - step: *doTestElixir
+            - step: *doTestPython
+            - step: *doTestSpec
+
   branches:
     main:
-      - step:
-          <<: *doMirror
-      - step:
-          <<: *doBuild
-      - step:
-          <<: *doDeploy
-    dev:
-      - step:
-          <<: *doMirror
-      - step:
-          <<: *doBuild
+      - step: *doMirror
+      - step: *doBuild
+      - parallel: *testAll
+      - step: *doDeploy
+
+    '{feature/**,bugfix/**,release/**,hotfix/**}':
+      - step: *doMirror
+      - step: *doBuild
+      - parallel: *testAll
+
     '**':
-      - step:
-          <<: *doMirror
+      - step: *doMirror
+
+  # New section. Without it nothing matched a tag push at all -- branches:'**'
+  # does not -- so tags were mirroring nothing.
+  tags:
+    '**':
+      - step: *doMirror
