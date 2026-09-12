@@ -296,6 +296,35 @@ class Node:
         """A snapshot of learned destinations to their next hop."""
         return self.table.route_table()
 
+    def broadcast(self, payload) -> int:
+        """Send an application payload to every reachable label except this node's own
+        (protocol.md section 6).
+
+        Targets are every peer with a live session plus every destination with a next
+        hop, compared case-insensitively so one peer is never targeted twice. This is
+        not a message type: each destination gets its own ordinary data send with its
+        own message id, which dedup and ack correlation both require -- a shared id
+        would have the first relay suppress every other copy, and an ack names only an
+        id.
+
+        Excluding this node's own label is the D5 fix, and so is including direct
+        session peers: the v2 implementation iterated indirect routes only and could
+        list itself among them.
+
+        Returns how many destinations the message was handed to a next hop for.
+        """
+        targets = {label.lower() for label in self.links}
+        targets |= {dest.lower() for dest in self.table.route_table()}
+        # Defence in depth, and honestly labelled: learn_route's first guard already
+        # makes a route to ourselves impossible, and a session peer's label comes from
+        # its certificate, so this line's condition cannot be reached from either
+        # source. Kept because D5 was exactly this bug and the guard it duplicates
+        # lives in another module -- but no broadcast test can distinguish it. What
+        # pins D5 is test_no_route_is_ever_installed_to_ourselves, which IS
+        # mutation-caught.
+        targets.discard(self.cfg.label.lower())
+        return sum(1 for to in sorted(targets) if self.send(to, payload))
+
     def on_message(self, cb) -> None:
         """Register a callback invoked with each delivered application payload."""
         self.listeners.append(cb)

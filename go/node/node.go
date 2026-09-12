@@ -137,6 +137,46 @@ func (n *Node) AddListener() <-chan map[string]any {
 // RouteTable is a snapshot of learned destinations to their next hop.
 func (n *Node) RouteTable() map[string]string { return n.table.RouteTable() }
 
+// Broadcast sends an application payload to every reachable label except this
+// node's own (protocol.md §6).
+//
+// Targets are every peer with a live session plus every destination with a next
+// hop, compared case-insensitively so one peer is never targeted twice. This is
+// not a message type: each destination gets its own ordinary data send with its own
+// message id, which dedup and ack correlation both require -- a shared id would
+// have the first relay suppress every other copy, and an ack names only an id.
+//
+// Excluding this node's own label is the D5 fix, and so is including direct session
+// peers: the v2 implementation iterated indirect routes only and could list itself.
+//
+// Returns how many destinations the message was handed to a next hop for.
+func (n *Node) Broadcast(payload any) int {
+	targets := map[string]struct{}{}
+	n.mu.Lock()
+	for label := range n.links {
+		targets[lower(label)] = struct{}{}
+	}
+	n.mu.Unlock()
+	for dest := range n.table.RouteTable() {
+		targets[lower(dest)] = struct{}{}
+	}
+	// Defence in depth, and honestly labelled: LearnRoute's first guard already makes
+	// a route to ourselves impossible, and a session peer's label comes from its
+	// certificate, so this line's condition cannot be reached from either source. Kept
+	// because D5 was exactly this bug and the guard it duplicates lives in another
+	// package -- but no broadcast test can distinguish it. What pins D5 is
+	// routing.TestNoRouteIsEverInstalledToOurselves, which IS mutation-caught.
+	delete(targets, lower(n.cfg.Label))
+
+	handed := 0
+	for to := range targets {
+		if _, ok := n.SendM(to, payload); ok {
+			handed++
+		}
+	}
+	return handed
+}
+
 // Connect dials a peer and completes the handshake as initiator.
 func (n *Node) Connect(host string, port int) (string, error) {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), 5*time.Second)

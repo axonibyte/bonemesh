@@ -275,6 +275,44 @@ impl Node {
         self.inner.table.lock().unwrap().route_table()
     }
 
+    /// Sends an application payload to every reachable label except this node's own
+    /// (protocol.md §6).
+    ///
+    /// Targets are every peer with a live session plus every destination with a next
+    /// hop, compared case-insensitively so one peer is never targeted twice. This is
+    /// not a message type: each destination gets its own ordinary data send with its
+    /// own message id, which dedup and ack correlation both require — a shared id
+    /// would have the first relay suppress every other copy, and an ack names only an
+    /// id.
+    ///
+    /// Excluding this node's own label is the D5 fix, and so is including direct
+    /// session peers: the v2 implementation iterated indirect routes only and could
+    /// list itself among them.
+    ///
+    /// Returns how many destinations the message was handed to a next hop for.
+    pub fn broadcast(&self, payload: Value) -> usize {
+        let mut targets: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for label in self.inner.links.lock().unwrap().keys() {
+            targets.insert(label.to_lowercase());
+        }
+        for dest in self.inner.table.lock().unwrap().route_table().keys() {
+            targets.insert(dest.to_lowercase());
+        }
+        // Defence in depth, and honestly labelled: learn_route's first guard already
+        // makes a route to ourselves impossible, and a session peer's label comes from
+        // its certificate, so this line's condition cannot be reached from either
+        // source. Kept because D5 was exactly this bug and the guard it duplicates
+        // lives in another module -- but no broadcast test can distinguish it. What
+        // pins D5 is routing_test::no_route_is_ever_installed_to_ourselves, which IS
+        // mutation-caught.
+        targets.remove(&self.inner.config.label.to_lowercase());
+
+        targets
+            .iter()
+            .filter(|to| self.send_mid(to, payload.clone()).is_some())
+            .count()
+    }
+
     /// Per-neighbor rekey epoch and transcript-hash label — the observability
     /// the interop harness dumps via --sessions.
     pub fn session_info(&self) -> Value {

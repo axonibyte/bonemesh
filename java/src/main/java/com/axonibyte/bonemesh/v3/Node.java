@@ -217,6 +217,42 @@ public final class Node {
   }
 
   /**
+   * Sends an application payload to every reachable label except this node's own
+   * (protocol.md &sect;6).
+   *
+   * <p>Targets are every peer with a live session plus every destination with a
+   * next hop, compared case-insensitively so one peer is never targeted twice.
+   * This is not a message type: each destination gets its own ordinary
+   * {@code data} send with its own message id, which dedup and ack correlation
+   * both require — a shared id would have the first relay suppress every other
+   * copy, and an ack names only an id.</p>
+   *
+   * <p>Excluding this node's own label is the D5 fix, and so is including direct
+   * session peers: the v2 implementation iterated indirect routes only and could
+   * list itself among them.</p>
+   *
+   * @param payload the application payload
+   * @return how many destinations the message was handed to a next hop for
+   */
+  public int broadcast(JSONObject payload) {
+    java.util.Set<String> targets = new java.util.TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+    targets.addAll(links.keySet());
+    targets.addAll(routing.knownRouteDestinations());
+    // Defence in depth, and honestly labelled: the routing layer's first guard in
+    // learnRoute already makes a route to ourselves impossible, and a session peer's
+    // label comes from its certificate, so this line's condition cannot be reached
+    // from either source. It is kept because D5 was exactly this bug and the guard it
+    // duplicates lives in another module that broadcast does not own -- but no
+    // broadcast test can distinguish it. What pins D5 is
+    // RoutingTest.noRouteIsEverInstalledToOurselves, which IS mutation-caught.
+    targets.remove(label);
+    int handed = 0;
+    for(String to : targets)
+      if(send(to, payload)) handed++;
+    return handed;
+  }
+
+  /**
    * Sends an application payload and returns its message id, so a caller can
    * correlate the ack or nak later delivered to {@link #addAckListener} against
    * the message it answers (protocol.md &sect;7).

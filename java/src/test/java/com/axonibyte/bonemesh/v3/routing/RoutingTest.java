@@ -85,6 +85,21 @@ public class RoutingTest {
   // A direct neighbor must never get a learned route: a shadow route would be
   // poison-reversed back to its source, clobbering the legitimate neighbor
   // advertisement and breaking multi-relay convergence (seen in a mixed diamond).
+  @Test void noRouteIsEverInstalledToOurselves() {
+    // The load-bearing half of defect D5: the v2 broadcast could list the node's own
+    // label among its routes and send to itself. learnRoute's first guard is what
+    // makes that impossible, and until 3.3.0 no suite in any of the seven ports
+    // asserted it -- which is why Node.broadcast's own self-exclusion cannot be
+    // mutation-caught: the condition it guards against cannot be reached from here.
+    RoutingTable rt = new RoutingTable("self");
+    rt.observeNeighbor("beta", 10);
+    rt.learnRoute("self", "beta", 1);
+    rt.learnRoute("SELF", "beta", 1); // labels compare case-insensitively
+    assertNull(rt.nextHop("self"));
+    assertTrue(rt.knownRouteDestinations().isEmpty(),
+        "a route to ourselves was installed: " + rt.knownRouteDestinations());
+  }
+
   @Test void noRouteInstalledForADirectNeighbor() {
     RoutingTable rt = new RoutingTable("self");
     rt.observeNeighbor("beta", 10);

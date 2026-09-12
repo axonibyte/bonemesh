@@ -33,6 +33,24 @@ defmodule Bonemesh.RoutingTest do
     refute Map.has_key?(Routing.advertise_to(t, "b"), "b")
   end
 
+  # No route is ever installed to ourselves.
+  #
+  # The load-bearing half of defect D5: the v2 broadcast could list the node's own
+  # label among its routes and send to itself. learn_route's first guard is what makes
+  # that impossible, and until 3.3.0 no suite in any of the seven ports asserted it --
+  # which is why broadcast's own self-exclusion cannot be mutation-caught: the
+  # condition it guards against cannot be reached from there.
+  test "no route is ever installed to ourselves" do
+    t =
+      Routing.new("self")
+      |> Routing.observe_neighbor("b", 10)
+      |> Routing.learn_route("self", "b", 1)
+      |> Routing.learn_route("SELF", "b", 1)
+
+    assert t.routes == %{}
+    assert Routing.next_hop(t, "self") == nil
+  end
+
   # A direct neighbor must never get a learned route: a shadow route would be
   # poison-reversed back to its source, clobbering the legitimate neighbor
   # advertisement and breaking multi-relay convergence.

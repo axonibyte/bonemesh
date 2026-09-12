@@ -54,6 +54,24 @@ defmodule Bonemesh.Node do
   @doc "A snapshot of the routing table: destination => next-hop label."
   def routes(node), do: GenServer.call(node, :routes)
 
+  @doc """
+  Sends an application payload to every reachable label except this node's own
+  (protocol.md §6).
+
+  Targets are every peer with a live session plus every destination with a next hop,
+  compared case-insensitively so one peer is never targeted twice. This is not a
+  message type: each destination gets its own ordinary data send with its own message
+  id, which dedup and ack correlation both require — a shared id would have the first
+  relay suppress every other copy, and an ack names only an id.
+
+  Excluding this node's own label is the D5 fix, and so is including direct session
+  peers: the v2 implementation iterated indirect routes only and could list itself
+  among them.
+
+  Returns how many destinations the message was handed to a next hop for.
+  """
+  def broadcast(node, payload), do: GenServer.call(node, {:broadcast, payload})
+
   @doc "Per-neighbor session info: peer => %{epoch, th} (interop --sessions)."
   def session_info(node), do: GenServer.call(node, :session_info)
 
@@ -128,6 +146,34 @@ defmodule Bonemesh.Node do
   def handle_call({:send, to, payload}, _from, s) do
     {ok, _mid, s} = do_send(s, to, payload)
     {:reply, ok, s}
+  end
+
+  def handle_call({:broadcast, payload}, _from, s) do
+    # Live session peers (keys are already downcased) union routed destinations,
+    # minus this node's own label (D5). Sorted so the order is deterministic.
+    targets =
+      s.links
+      |> Map.keys()
+      |> Enum.concat(Map.keys(s.routing.routes))
+      |> Enum.map(&String.downcase/1)
+      |> Enum.uniq()
+      # Defence in depth, and honestly labelled: learn_route's first guard already
+      # makes a route to ourselves impossible, and a session peer's label comes from
+      # its certificate, so this line's condition cannot be reached from either
+      # source. Kept because D5 was exactly this bug and the guard it duplicates
+      # lives in another module -- but no broadcast test can distinguish it. What
+      # pins D5 is routing's "no route is ever installed to ourselves", which IS
+      # mutation-caught.
+      |> List.delete(String.downcase(s.label))
+      |> Enum.sort()
+
+    {handed, s} =
+      Enum.reduce(targets, {0, s}, fn to, {n, st} ->
+        {ok, _mid, st} = do_send(st, to, payload)
+        {if(ok, do: n + 1, else: n), st}
+      end)
+
+    {:reply, handed, s}
   end
 
   def handle_call({:send_mid, to, payload}, _from, s) do

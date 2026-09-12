@@ -76,6 +76,20 @@ test('remove neighbor withdraws its routes', function () {
     assertNull($t->nextHop('b'));
 });
 
+test('no route is ever installed to ourselves', function () {
+    // The load-bearing half of defect D5: the v2 broadcast could list the node's own
+    // label among its routes and send to itself. learnRoute's first guard is what
+    // makes that impossible, and until 3.3.0 no suite in any of the seven ports
+    // asserted it -- which is why broadcast's own self-exclusion cannot be
+    // mutation-caught: the condition it guards against cannot be reached from there.
+    $t = new RoutingTable('self');
+    $t->observeNeighbor('b', 10);
+    $t->learnRoute('self', 'b', 1);
+    $t->learnRoute('SELF', 'b', 1); // labels compare case-insensitively
+    assertEq([], $t->routeTable(), 'a route to ourselves was installed');
+    assertTrue($t->nextHop('self') === null);
+});
+
 test('no route is installed for a direct neighbor', function () {
     $t = new RoutingTable('self');
     $t->observeNeighbor('b', 10);

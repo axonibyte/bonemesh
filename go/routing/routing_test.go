@@ -109,6 +109,26 @@ func TestRemoveNeighborWithdrawsItsRoutes(t *testing.T) {
 	}
 }
 
+// No route is ever installed to ourselves.
+//
+// The load-bearing half of defect D5: the v2 broadcast could list the node's own
+// label among its routes and send to itself. LearnRoute's first guard is what makes
+// that impossible, and until 3.3.0 no suite in any of the seven ports asserted it --
+// which is why Broadcast's own self-exclusion cannot be mutation-caught: the
+// condition it guards against cannot be reached from there.
+func TestNoRouteIsEverInstalledToOurselves(t *testing.T) {
+	tbl := NewTable("self")
+	tbl.ObserveNeighbor("b", 10)
+	tbl.LearnRoute("self", "b", 1)
+	tbl.LearnRoute("SELF", "b", 1) // labels compare case-insensitively
+	if len(tbl.RouteTable()) != 0 {
+		t.Fatalf("a route to ourselves was installed: %v", tbl.RouteTable())
+	}
+	if nh, ok := tbl.NextHop("self"); ok {
+		t.Fatalf("nextHop(self) should have no route, got %q", nh)
+	}
+}
+
 // A destination that is a direct neighbor must never get a learned route — a
 // shadow route would be poison-reversed back to its source, clobbering the
 // legitimate neighbor advertisement and breaking multi-relay convergence.

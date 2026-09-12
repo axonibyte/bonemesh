@@ -79,6 +79,23 @@ fn remove_neighbor_withdraws_its_routes() {
     assert_eq!(t.next_hop("b"), None);
 }
 
+// No route is ever installed to ourselves.
+//
+// The load-bearing half of defect D5: the v2 broadcast could list the node's own
+// label among its routes and send to itself. learn_route's first guard is what makes
+// that impossible, and until 3.3.0 no suite in any of the seven ports asserted it --
+// which is why broadcast's own self-exclusion cannot be mutation-caught: the
+// condition it guards against cannot be reached from there.
+#[test]
+fn no_route_is_ever_installed_to_ourselves() {
+    let mut t = Table::new("self");
+    t.observe_neighbor("b", 10);
+    t.learn_route("self", "b", 1);
+    t.learn_route("SELF", "b", 1); // labels compare case-insensitively
+    assert!(t.route_table().is_empty(), "a route to ourselves was installed");
+    assert_eq!(t.next_hop("self"), None);
+}
+
 // A direct neighbor must never get a learned route (a shadow route would be
 // poison-reversed back, breaking multi-relay convergence).
 #[test]

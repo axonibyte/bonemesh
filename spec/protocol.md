@@ -307,8 +307,21 @@ measures **real round-trip time**:
   previous hop, and re-encrypts the same inner message (decrementing `ttl`) to
   the next hop's session. This is the trust model of `security.md` §7 — members
   trust each other; a relay sees plaintext.
-- **Broadcast** targets every known reachable label except the node's own (the
-  v2 M1 fix, D5, now the specified behavior).
+- **Broadcast** targets every known reachable label except the node's own: every
+  peer with a live session, plus every destination with a next hop, compared
+  case-insensitively (`security.md` §2) so one peer is never targeted twice.
+
+  It is **not a message type**. A broadcast is N ordinary `data` sends, and each
+  destination gets its **own `mid`**. That is forced rather than stylistic: dedup
+  keys on (`mid`, chunk index) (§6.1), so a shared `mid` would have the first
+  relay that saw one copy suppress every other, and an `ack` names only a `mid`,
+  so an origin could not tell which destination had answered. The call reports how
+  many destinations the message was handed to a next hop for; each send then
+  follows the Send rules above, retry included.
+
+  Both halves of the exclusion are the D5 fix: the node's own label is never a
+  target, and direct session peers always are. The v2 implementation iterated
+  indirect routes only and could list itself among them.
 
 ### 6.1 Splitting and reassembly
 

@@ -137,3 +137,101 @@ func TestAckReachesOriginListener(t *testing.T) {
 		t.Fatal("origin never received an ack for its delivered message")
 	}
 }
+
+// Broadcast reaches every peer with a live session and never the sender
+// (protocol.md §6). Both halves of the D5 fix are asserted: direct session peers
+// ARE targeted, because the v2 implementation iterated indirect routes only, and
+// the node's own label is NOT, because it could appear among its own routes.
+func TestBroadcastReachesEveryPeerButNeverTheSender(t *testing.T) {
+	root, rootPriv := newRoot(t)
+	start := func(label string) *node.Node {
+		n, err := node.Start(config(t, root, rootPriv, label), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	alpha := start("alpha")
+	beta := start("beta")
+	gamma := start("gamma")
+	defer alpha.Kill()
+	defer beta.Kill()
+	defer gamma.Kill()
+
+	betaGot := beta.AddListener()
+	gammaGot := gamma.AddListener()
+	alphaGot := alpha.AddListener()
+
+	if _, err := alpha.Connect("127.0.0.1", beta.Port()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alpha.Connect("127.0.0.1", gamma.Port()); err != nil {
+		t.Fatal(err)
+	}
+
+	if handed := alpha.Broadcast(map[string]any{"m": "all"}); handed != 2 {
+		t.Fatalf("broadcast handed off to %d destinations, want 2", handed)
+	}
+	for name, ch := range map[string]<-chan map[string]any{"beta": betaGot, "gamma": gammaGot} {
+		select {
+		case p := <-ch:
+			if p["m"] != "all" {
+				t.Errorf("%s got unexpected payload: %v", name, p)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s never received the broadcast", name)
+		}
+	}
+
+	// Assert the absence with time allowed to pass, and after the positives, so a
+	// failure reads as "the sender got its own broadcast" rather than as a timeout.
+	select {
+	case p := <-alphaGot:
+		t.Fatalf("the sender received its own broadcast: %v", p)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// Each destination gets its own mid. Forced, not stylistic: dedup keys on
+// (mid, chunk index), so a shared mid would have the first relay suppress every
+// other copy, and an ack names only a mid.
+func TestBroadcastGivesEachDestinationItsOwnMessageID(t *testing.T) {
+	root, rootPriv := newRoot(t)
+	start := func(label string) *node.Node {
+		n, err := node.Start(config(t, root, rootPriv, label), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	alpha := start("alpha")
+	beta := start("beta")
+	gamma := start("gamma")
+	defer alpha.Kill()
+	defer beta.Kill()
+	defer gamma.Kill()
+
+	acks := alpha.AckListener()
+	if _, err := alpha.Connect("127.0.0.1", beta.Port()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alpha.Connect("127.0.0.1", gamma.Port()); err != nil {
+		t.Fatal(err)
+	}
+	if handed := alpha.Broadcast(map[string]any{"m": "all"}); handed != 2 {
+		t.Fatalf("broadcast handed off to %d destinations, want 2", handed)
+	}
+
+	seen := map[string]bool{}
+	deadline := time.After(10 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case a := <-acks:
+			if mid, ok := a["mid"].(string); ok {
+				seen[mid] = true
+			}
+		case <-deadline:
+			t.Fatalf("expected one ack per destination with distinct mids, saw %d", len(seen))
+		}
+	}
+}

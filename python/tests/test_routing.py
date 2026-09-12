@@ -40,6 +40,20 @@ def test_a_learned_route_resolves_to_its_next_hop():
     assert t.routes["charlie"]["cost"] == 12  # advertised 7 + link 5
 
 
+def test_no_route_is_ever_installed_to_ourselves():
+    # The load-bearing half of defect D5: the v2 broadcast could list the node's own
+    # label among its routes and send to itself. learn_route's first guard is what
+    # makes that impossible, and until 3.3.0 no suite in any of the seven ports
+    # asserted it -- which is why Node.broadcast's own self-exclusion cannot be
+    # mutation-caught: the condition it guards against cannot be reached from here.
+    t = Table("alpha")
+    t.observe_neighbor("bravo", 5)
+    t.learn_route("alpha", "bravo", 1)
+    t.learn_route("ALPHA", "bravo", 1)  # labels compare case-insensitively
+    assert t.route_table() == {}
+    assert t.next_hop("alpha") is None
+
+
 def test_no_route_is_installed_for_a_direct_neighbour():
     # Shadowing a direct neighbour with a learned route was a real convergence
     # defect (docs/architecture.md §4).
