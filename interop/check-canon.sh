@@ -14,10 +14,7 @@ repo=$(cd "$here/.." && pwd)
 corpus="$repo/spec/corpus/canon.json"
 jar="$repo/java/build/libs/bonemesh.jar"
 
-if [ ! -f "$jar" ]; then
-  echo "building the Java shadow jar first..."
-  (cd "$repo/java" && ./gradlew --no-daemon --quiet shadowJar)
-fi
+sh "$here/ensure-jar.sh"
 
 echo "checking the Java canonicalizer against $corpus"
 java -cp "$jar" com.axonibyte.bonemesh.v3.cert.CanonDump "$corpus"

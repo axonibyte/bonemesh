@@ -3,18 +3,27 @@
 // low frame threshold the session initiator rekeys the live link; both ends
 // advance their rekey epoch and application delivery continues across the key
 // swap without interruption.
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bonemesh::node::{Config, Node};
 use bonemesh::{cert, crypto};
 use serde_json::json;
 
 const MESH: &str = "acme-prod";
-const NOW: i64 = 1_788_600_000;
+// These suites start real nodes, so certificate validity is judged against the
+// wall clock rather than an instant the test supplies. A hardcoded absolute NOW
+// therefore expires: the previous value (1_788_600_000, with a +100_000s window)
+// stopped being valid on 2026-09-07 and silently took every live-node test in
+// this file with it. Derive it instead, as the Java, Go, JS and Elixir suites do.
+// cert_test.rs keeps a fixed NOW on purpose -- it passes `now` to verify()
+// explicitly, so it is deterministic and cannot rot.
+fn now() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+}
 
 fn config(root_priv: &[u8; 32], root_pub: &[u8], label: &str) -> Config {
     let (pub_key, priv_seed) = crypto::mldsa65_generate();
-    let c = cert::sign(cert::build(MESH, label, &pub_key, NOW - 100, NOW + 100_000), root_priv);
+    let c = cert::sign(cert::build(MESH, label, &pub_key, now() - 100, now() + 100_000), root_priv);
     Config {
         label: label.to_string(),
         mesh: MESH.to_string(),

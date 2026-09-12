@@ -116,6 +116,23 @@ public final class TransportSession {
   }
 
   /**
+   * Opens a transport-frame ciphertext under a key and sequence number, the
+   * counterpart to {@link #sealCiphertext(byte[], long, byte[])}. Used by
+   * {@link #open(JSONObject)} and by the cross-language transport-frame vector,
+   * which states that a conforming implementation both reproduces the sealed
+   * bytes and can open them.
+   *
+   * @param key the 32-byte direction key
+   * @param seq the sequence number (also the nonce input)
+   * @param ct the ciphertext with appended tag
+   * @return the recovered plaintext bytes
+   * @throws Aead.AeadException if authentication fails
+   */
+  public static byte[] openCiphertext(byte[] key, long seq, byte[] ct) throws Aead.AeadException {
+    return Aead.open(key, nonce(seq), new byte[0], ct);
+  }
+
+  /**
    * Opens a transport frame body, enforcing in-order delivery (the frame's
    * sequence must equal the next expected one) and authenticity.
    *
@@ -130,7 +147,7 @@ public final class TransportSession {
     byte[] ct = B64DEC.decode(carrier.getString("ct"));
     byte[] plaintext;
     try {
-      plaintext = Aead.open(receiveKey, nonce(seq), new byte[0], ct);
+      plaintext = openCiphertext(receiveKey, seq, ct);
     } catch(Aead.AeadException e) {
       throw new TransportException("frame authentication failed: " + e.getMessage());
     }

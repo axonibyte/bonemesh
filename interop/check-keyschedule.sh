@@ -13,10 +13,7 @@ repo=$(cd "$here/.." && pwd)
 vector="$repo/spec/corpus/transcripts/keyschedule.json"
 jar="$repo/java/build/libs/bonemesh.jar"
 
-if [ ! -f "$jar" ]; then
-  echo "building the Java shadow jar first..."
-  (cd "$repo/java" && ./gradlew --no-daemon --quiet shadowJar)
-fi
+sh "$here/ensure-jar.sh"
 
 echo "checking the Java key schedule against $vector"
 java -cp "$jar" com.axonibyte.bonemesh.v3.handshake.KsDump "$vector"

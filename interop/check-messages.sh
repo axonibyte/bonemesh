@@ -5,6 +5,6 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd); repo=$(cd "$here/.." && pwd)
 jar="$repo/java/build/libs/bonemesh.jar"
-[ -f "$jar" ] || (cd "$repo/java" && ./gradlew --no-daemon --quiet shadowJar)
+sh "$here/ensure-jar.sh"
 echo "checking the Java message validator against spec/corpus/messages.json"
 java -cp "$jar" com.axonibyte.bonemesh.v3.message.MessageCheck "$repo/spec/corpus/messages.json"

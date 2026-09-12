@@ -32,7 +32,11 @@ import org.json.JSONObject;
  * interoperates.
  *
  * <p>No argument generates and prints the vector; one path argument verifies
- * it.</p>
+ * it. Verification asserts both halves the vector states -- that the sealed
+ * ciphertext is reproduced byte-for-byte, and that it can be opened again --
+ * because sealing alone would pass even if opening were broken, and opening
+ * alone would pass a transport that agreed with itself but not with the other
+ * implementations.</p>
  *
  * @author Caleb L. Power
  */
@@ -53,15 +57,38 @@ public final class TransportDump {
     }
     JSONObject doc = new JSONObject(
         new String(Files.readAllBytes(Paths.get(args[0])), StandardCharsets.UTF_8));
+    JSONObject inputs = doc.getJSONObject("inputs");
     String want = doc.getJSONObject("outputs").getString("ct_hex");
-    String got = build(doc.getJSONObject("inputs")).getJSONObject("outputs").getString("ct_hex");
-    if(want.equals(got)) {
-      System.out.println("PASS ct_hex");
-      System.out.println("transport frame matches");
-    } else {
+    String got = build(inputs).getJSONObject("outputs").getString("ct_hex");
+    int failures = 0;
+
+    if(want.equals(got)) System.out.println("PASS ct_hex");
+    else {
       System.out.println("FAIL ct_hex\n  got:  " + got + "\n  want: " + want);
+      failures++;
+    }
+
+    String wantInner = inputs.getString("inner_plaintext_hex");
+    try {
+      byte[] pt = TransportSession.openCiphertext(
+          HEX.parseHex(inputs.getString("key_hex")), inputs.getLong("seq"), HEX.parseHex(want));
+      String gotInner = HEX.formatHex(pt);
+      if(wantInner.equals(gotInner)) System.out.println("PASS inner_plaintext_hex");
+      else {
+        System.out.println(
+            "FAIL inner_plaintext_hex\n  got:  " + gotInner + "\n  want: " + wantInner);
+        failures++;
+      }
+    } catch(Exception e) {
+      System.out.println("FAIL inner_plaintext_hex\n  got:  <authentication failed>");
+      failures++;
+    }
+
+    if(failures > 0) {
+      System.err.println(failures + " output(s) mismatched");
       System.exit(1);
     }
+    System.out.println("transport frame seals and opens to the shared vector");
   }
 
   private static JSONObject fixedInputs() {

@@ -35,7 +35,7 @@ defmodule Bonemesh.Transport do
       true ->
         ct = Base.decode64!(carrier["ct"])
 
-        case Bonemesh.Crypto.aead_open(session.receive_key, nonce(seq), <<>>, ct) do
+        case open_ciphertext(session.receive_key, seq, ct) do
           {:ok, plaintext} -> {:ok, JSON.decode!(plaintext), %{session | receive_seq: seq + 1}}
           :error -> {:error, "frame authentication failed"}
         end
@@ -52,9 +52,22 @@ defmodule Bonemesh.Transport do
   @doc "Installs a new inbound key and resets the receive counter (F5)."
   def swap_receive(session, key), do: %{session | receive_key: key, receive_seq: 0}
 
-  @doc "Seals a transport-frame ciphertext (the single AEAD implementation)."
+  @doc """
+  Seals a transport-frame ciphertext (the single AEAD implementation).
+
+  The frame body alone, addressed by sequence number rather than by session
+  state -- the form the shared transport-frame vector
+  (`spec/corpus/transcripts/transport-frame.json`) is stated in. `seal/2` and
+  `open/2` are the stateful wrappers, so the nonce is built in exactly one place.
+  """
   def seal_ciphertext(key, seq, plaintext),
     do: Bonemesh.Crypto.aead_seal(key, nonce(seq), <<>>, plaintext)
+
+  @doc """
+  Opens a transport-frame ciphertext. Returns `{:ok, plaintext}` or `:error`.
+  """
+  def open_ciphertext(key, seq, ct),
+    do: Bonemesh.Crypto.aead_open(key, nonce(seq), <<>>, ct)
 
   defp nonce(seq), do: <<0::32, seq::little-64>>
 end

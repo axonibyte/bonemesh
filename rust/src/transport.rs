@@ -70,7 +70,7 @@ impl Transport {
             return Err(format!("out-of-order frame: expected {}, got {}", self.receive_seq, seq));
         }
         let ct = B64.decode(carrier["ct"].as_str().ok_or("missing ct")?).map_err(|_| "bad ct")?;
-        let pt = crypto::aead_open(&self.receive_key, &nonce(seq), &[], &ct)
+        let pt = open_ciphertext(&self.receive_key, seq, &ct)
             .ok_or("frame authentication failed")?;
         self.receive_seq += 1;
         serde_json::from_slice(&pt).map_err(|_| "bad inner json".into())
@@ -78,8 +78,18 @@ impl Transport {
 }
 
 /// Seals a transport-frame ciphertext (the single AEAD implementation).
+///
+/// The frame body alone, addressed by sequence number rather than by session
+/// state -- the form the shared transport-frame vector
+/// (`spec/corpus/transcripts/transport-frame.json`) is stated in. `seal` and
+/// `open` are the stateful wrappers, so the nonce is built in exactly one place.
 pub fn seal_ciphertext(key: &[u8], seq: u64, plaintext: &[u8]) -> Vec<u8> {
     crypto::aead_seal(key, &nonce(seq), &[], plaintext)
+}
+
+/// Opens a transport-frame ciphertext. Returns `None` if authentication fails.
+pub fn open_ciphertext(key: &[u8], seq: u64, ct: &[u8]) -> Option<Vec<u8>> {
+    crypto::aead_open(key, &nonce(seq), &[], ct)
 }
 
 fn nonce(seq: u64) -> [u8; 12] {

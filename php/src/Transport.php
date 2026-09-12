@@ -24,7 +24,7 @@ final class Transport
     {
         $seq = $this->sendSeq;
         $pt = json_encode($inner, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $ct = Crypto::aeadSeal($this->sendKey, self::nonce($seq), null, $pt);
+        $ct = self::sealCiphertext($this->sendKey, $seq, $pt);
         $this->sendSeq++;
         return ['seq' => $seq, 'ct' => base64_encode($ct)];
     }
@@ -38,7 +38,7 @@ final class Transport
             throw new \RuntimeException('out-of-order frame');
         }
         $ct = base64_decode($carrier['ct'], true);
-        $pt = Crypto::aeadOpen($this->receiveKey, self::nonce($seq), null, $ct);
+        $pt = self::openCiphertext($this->receiveKey, $seq, $ct);
         if ($pt === null) {
             throw new \RuntimeException('frame authentication failed');
         }
@@ -72,6 +72,22 @@ final class Transport
     {
         $this->receiveKey = $key;
         $this->receiveSeq = 0;
+    }
+
+    // The frame body alone, addressed by sequence number rather than by session
+    // state. This is the form the shared transport-frame vector
+    // (spec/corpus/transcripts/transport-frame.json) is stated in; seal() and
+    // open() are the stateful wrappers, so the nonce is built in exactly one
+    // place.
+    public static function sealCiphertext(string $key, int $seq, string $plaintext): string
+    {
+        return Crypto::aeadSeal($key, self::nonce($seq), null, $plaintext);
+    }
+
+    // Returns the plaintext, or null if authentication fails.
+    public static function openCiphertext(string $key, int $seq, string $ct): ?string
+    {
+        return Crypto::aeadOpen($key, self::nonce($seq), null, $ct);
     }
 
     private static function nonce(int $seq): string
