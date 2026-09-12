@@ -16,6 +16,12 @@ import { MAX_CHUNKS } from './chunk.js';
 export function validate(schema, f) {
   switch (schema) {
     case 'bmx1': return validateBmx1(f);
+    case 'bmx2': return validateBmx2(f);
+    case 'bmx3': return validateBmx3(f);
+    case 'disco': return validateDisco(f);
+    case 'probe': return validateTokenCarrier(f, 'probe');
+    case 'echo': return validateTokenCarrier(f, 'echo');
+    case 'rekey': return validateRekey(f);
     case 'envelope': return validateEnvelope(f);
     case 'data': return validateData(f);
     case 'ack': return validateAck(f);
@@ -30,6 +36,63 @@ function validateBmx1(f) {
   if (!isInt(f.v) || f.v !== 3) return 'version';
   if (typeof f.mesh !== 'string' || f.mesh === '') return 'empty-mesh';
   for (const k of ['e', 'k', 'n']) {
+    if (!(k in f)) return 'missing-field';
+    const r = base64Reason(f[k]);
+    if (r) return r;
+  }
+  return null;
+}
+
+// Handshake messages 2 and 3 (security.md §4). Both carry one sealed `auth` member
+// rather than separate cert and sig.
+function validateBmx2(f) {
+  if (f.t !== 'bmx2') return 'type';
+  return requireBase64(f, ['e', 'ct', 'auth']);
+}
+
+function validateBmx3(f) {
+  if (f.t !== 'bmx3') return 'type';
+  return requireBase64(f, ['auth']);
+}
+
+// Route advertisement (protocol.md §4.2, §6). An empty advertisement is {}, never [].
+function validateDisco(f) {
+  if (f.type !== 'disco') return 'type';
+  if (!('routes' in f)) return 'missing-field';
+  const r = f.routes;
+  if (r === null || typeof r !== 'object' || Array.isArray(r)) return 'routes-format';
+  for (const cost of Object.values(r)) {
+    if (!isInt(cost) || cost < 0) return 'routes-format';
+  }
+  return null;
+}
+
+// Latency measurement pair (§4.2, §5). The token is opaque to the responder, which
+// echoes it back unchanged, so only its type is constrained.
+function validateTokenCarrier(f, want) {
+  if (f.type !== want) return 'type';
+  if (!('token' in f)) return 'missing-field';
+  if (!isInt(f.token)) return 'token-format';
+  return null;
+}
+
+// Tunneled BMX rekey (§4.2, security.md §6). Phases 1-3 carry the BMX bytes in
+// `body`; phase 4 carries no BMX message and must omit it.
+function validateRekey(f) {
+  if (f.type !== 'rekey') return 'type';
+  const m = midReason(f.mid);
+  if (m) return m;
+  if (!('phase' in f)) return 'missing-field';
+  if (!isInt(f.phase) || f.phase < 1 || f.phase > 4) return 'phase-range';
+  const hasBody = 'body' in f;
+  if (f.phase === 4) return hasBody ? 'body-or-phase' : null;
+  if (!hasBody) return 'body-or-phase';
+  return base64Reason(f.body);
+}
+
+// Every named member must be present and Base64.
+function requireBase64(f, keys) {
+  for (const k of keys) {
     if (!(k in f)) return 'missing-field';
     const r = base64Reason(f[k]);
     if (r) return r;

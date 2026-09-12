@@ -14,6 +14,12 @@ final class Message
     {
         return match ($schema) {
             'bmx1' => self::validateBmx1($f),
+            'bmx2' => self::validateBmx2($f),
+            'bmx3' => self::validateBmx3($f),
+            'disco' => self::validateDisco($f),
+            'probe' => self::validateTokenCarrier($f, 'probe'),
+            'echo' => self::validateTokenCarrier($f, 'echo'),
+            'rekey' => self::validateRekey($f),
             'envelope' => self::validateEnvelope($f),
             'data' => self::validateData($f),
             'ack' => self::validateAck($f),
@@ -39,6 +45,107 @@ final class Message
                 return 'missing-field';
             }
             if ($r = self::base64Reason($f[$key])) {
+                return $r;
+            }
+        }
+        return null;
+    }
+
+    // Handshake messages 2 and 3 (security.md section 4). Both carry one sealed
+    // 'auth' member rather than separate cert and sig.
+    private static function validateBmx2(array $f): ?string
+    {
+        if (($f['t'] ?? null) !== 'bmx2') {
+            return 'type';
+        }
+        return self::requireBase64($f, ['e', 'ct', 'auth']);
+    }
+
+    private static function validateBmx3(array $f): ?string
+    {
+        if (($f['t'] ?? null) !== 'bmx3') {
+            return 'type';
+        }
+        return self::requireBase64($f, ['auth']);
+    }
+
+    // Route advertisement (protocol.md section 4.2, section 6). An empty
+    // advertisement is {}, never []. json_decode turns both into a PHP array, so a
+    // JSON [] arrives as an empty list -- indistinguishable from {} here, and
+    // accepted, exactly as an empty object would be. A non-empty list is caught by
+    // its costs, which are not integers keyed by label.
+    private static function validateDisco(array $f): ?string
+    {
+        if (($f['type'] ?? null) !== 'disco') {
+            return 'type';
+        }
+        if (!array_key_exists('routes', $f)) {
+            return 'missing-field';
+        }
+        if (!is_array($f['routes'])) {
+            return 'routes-format';
+        }
+        if ($f['routes'] !== [] && array_is_list($f['routes'])) {
+            return 'routes-format';
+        }
+        foreach ($f['routes'] as $cost) {
+            if (!is_int($cost) || $cost < 0) {
+                return 'routes-format';
+            }
+        }
+        return null;
+    }
+
+    // Latency measurement pair (section 4.2, section 5). The token is opaque to the
+    // responder, which echoes it back unchanged, so only its type is constrained.
+    private static function validateTokenCarrier(array $f, string $want): ?string
+    {
+        if (($f['type'] ?? null) !== $want) {
+            return 'type';
+        }
+        if (!array_key_exists('token', $f)) {
+            return 'missing-field';
+        }
+        if (!is_int($f['token'])) {
+            return 'token-format';
+        }
+        return null;
+    }
+
+    // Tunneled BMX rekey (section 4.2, security.md section 6). Phases 1-3 carry the
+    // BMX bytes in 'body'; phase 4 carries no BMX message and must omit it.
+    private static function validateRekey(array $f): ?string
+    {
+        if (($f['type'] ?? null) !== 'rekey') {
+            return 'type';
+        }
+        if ($r = self::midReason($f['mid'] ?? null)) {
+            return $r;
+        }
+        if (!array_key_exists('phase', $f)) {
+            return 'missing-field';
+        }
+        if (!is_int($f['phase']) || $f['phase'] < 1 || $f['phase'] > 4) {
+            return 'phase-range';
+        }
+        $hasBody = array_key_exists('body', $f);
+        if ($f['phase'] === 4) {
+            return $hasBody ? 'body-or-phase' : null;
+        }
+        if (!$hasBody) {
+            return 'body-or-phase';
+        }
+        return self::base64Reason($f['body']);
+    }
+
+    // Every named member must be present and Base64.
+    private static function requireBase64(array $f, array $keys): ?string
+    {
+        foreach ($keys as $k) {
+            if (!array_key_exists($k, $f)) {
+                return 'missing-field';
+            }
+            if ($r = self::base64Reason($f[$k])) {
                 return $r;
             }
         }

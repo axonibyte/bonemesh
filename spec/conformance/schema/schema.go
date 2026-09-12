@@ -15,6 +15,18 @@ func Validate(name string, frame map[string]any) string {
 	switch name {
 	case "bmx1":
 		return validateBMX1(frame)
+	case "bmx2":
+		return validateBMX2(frame)
+	case "bmx3":
+		return validateBMX3(frame)
+	case "disco":
+		return validateDisco(frame)
+	case "probe":
+		return validateTokenCarrier(frame, "probe")
+	case "echo":
+		return validateTokenCarrier(frame, "echo")
+	case "rekey":
+		return validateRekey(frame)
 	case "envelope":
 		return validateEnvelope(frame)
 	case "data":
@@ -28,6 +40,103 @@ func Validate(name string, frame map[string]any) string {
 	default:
 		return "unknown-schema"
 	}
+}
+
+// Handshake messages 2 and 3 (security.md §4). Both carry one sealed "auth"
+// member rather than separate cert and sig. This package is an independent reading
+// of the spec, so the rules are written out here rather than shared with any
+// implementation -- a check that imports the thing it checks agrees with itself.
+func validateBMX2(f map[string]any) string {
+	if s, _ := f["t"].(string); s != "bmx2" {
+		return "type"
+	}
+	return requireB64(f, "e", "ct", "auth")
+}
+
+func validateBMX3(f map[string]any) string {
+	if s, _ := f["t"].(string); s != "bmx3" {
+		return "type"
+	}
+	return requireB64(f, "auth")
+}
+
+// Route advertisement (protocol.md §4.2, §6). An empty advertisement is {}.
+func validateDisco(f map[string]any) string {
+	if s, _ := f["type"].(string); s != "disco" {
+		return "type"
+	}
+	raw, has := f["routes"]
+	if !has {
+		return "missing-field"
+	}
+	routes, ok := raw.(map[string]any)
+	if !ok {
+		return "routes-format"
+	}
+	for _, v := range routes {
+		cost, ok := asInt(v)
+		if !ok || cost < 0 {
+			return "routes-format"
+		}
+	}
+	return ""
+}
+
+// Latency measurement pair (§4.2, §5). The token is opaque to the responder,
+// which echoes it back unchanged, so only its type is constrained.
+func validateTokenCarrier(f map[string]any, want string) string {
+	if s, _ := f["type"].(string); s != want {
+		return "type"
+	}
+	if _, has := f["token"]; !has {
+		return "missing-field"
+	}
+	if _, ok := asInt(f["token"]); !ok {
+		return "token-format"
+	}
+	return ""
+}
+
+// Tunneled BMX rekey (§4.2, security.md §6). Phases 1-3 carry the BMX bytes in
+// "body"; phase 4 carries no BMX message and must omit it.
+func validateRekey(f map[string]any) string {
+	if s, _ := f["type"].(string); s != "rekey" {
+		return "type"
+	}
+	if r := checkMID(f["mid"]); r != "" {
+		return r
+	}
+	if _, has := f["phase"]; !has {
+		return "missing-field"
+	}
+	phase, ok := asInt(f["phase"])
+	if !ok || phase < 1 || phase > 4 {
+		return "phase-range"
+	}
+	_, hasBody := f["body"]
+	if phase == 4 {
+		if hasBody {
+			return "body-or-phase"
+		}
+		return ""
+	}
+	if !hasBody {
+		return "body-or-phase"
+	}
+	return checkBase64(f["body"])
+}
+
+// Every named member must be present and Base64.
+func requireB64(f map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if _, has := f[k]; !has {
+			return "missing-field"
+		}
+		if r := checkBase64(f[k]); r != "" {
+			return r
+		}
+	}
+	return ""
 }
 
 func validateBMX1(f map[string]any) string {

@@ -13,6 +13,12 @@ defmodule Bonemesh.MessageSchema do
   """
   @spec validate(String.t(), map()) :: nil | String.t()
   def validate("bmx1", f), do: validate_bmx1(f)
+  def validate("bmx2", f), do: validate_bmx2(f)
+  def validate("bmx3", f), do: validate_bmx3(f)
+  def validate("disco", f), do: validate_disco(f)
+  def validate("probe", f), do: validate_token_carrier(f, "probe")
+  def validate("echo", f), do: validate_token_carrier(f, "echo")
+  def validate("rekey", f), do: validate_rekey(f)
   def validate("envelope", f), do: validate_envelope(f)
   def validate("data", f), do: validate_data(f)
   def validate("ack", f), do: validate_ack(f)
@@ -26,6 +32,61 @@ defmodule Bonemesh.MessageSchema do
       f["v"] != 3 -> "version"
       not is_binary(f["mesh"]) or f["mesh"] == "" -> "empty-mesh"
       true -> first_missing_or_base64(f, ["e", "k", "n"])
+    end
+  end
+
+  # Handshake messages 2 and 3 (security.md §4). Both carry one sealed "auth"
+  # member rather than separate cert and sig.
+  defp validate_bmx2(f) do
+    if f["t"] != "bmx2", do: "type", else: first_missing_or_base64(f, ["e", "ct", "auth"])
+  end
+
+  defp validate_bmx3(f) do
+    if f["t"] != "bmx3", do: "type", else: first_missing_or_base64(f, ["auth"])
+  end
+
+  # Route advertisement (protocol.md §4.2, §6). An empty advertisement is %{}.
+  defp validate_disco(f) do
+    cond do
+      f["type"] != "disco" ->
+        "type"
+
+      not Map.has_key?(f, "routes") ->
+        "missing-field"
+
+      not is_map(f["routes"]) ->
+        "routes-format"
+
+      Enum.any?(f["routes"], fn {_k, c} -> not is_integer(c) or c < 0 end) ->
+        "routes-format"
+
+      true ->
+        nil
+    end
+  end
+
+  # Latency measurement pair (§4.2, §5). The token is opaque to the responder,
+  # which echoes it back unchanged, so only its type is constrained.
+  defp validate_token_carrier(f, want) do
+    cond do
+      f["type"] != want -> "type"
+      not Map.has_key?(f, "token") -> "missing-field"
+      not is_integer(f["token"]) -> "token-format"
+      true -> nil
+    end
+  end
+
+  # Tunneled BMX rekey (§4.2, security.md §6). Phases 1-3 carry the BMX bytes in
+  # "body"; phase 4 carries no BMX message and must omit it.
+  defp validate_rekey(f) do
+    cond do
+      f["type"] != "rekey" -> "type"
+      (r = mid_reason(f["mid"])) != nil -> r
+      not Map.has_key?(f, "phase") -> "missing-field"
+      not is_integer(f["phase"]) or f["phase"] < 1 or f["phase"] > 4 -> "phase-range"
+      f["phase"] == 4 -> if Map.has_key?(f, "body"), do: "body-or-phase", else: nil
+      not Map.has_key?(f, "body") -> "body-or-phase"
+      true -> base64_reason(f["body"])
     end
   end
 

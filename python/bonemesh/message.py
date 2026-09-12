@@ -42,7 +42,8 @@ def _mid_reason(v) -> str | None:
 def validate(schema: str, f) -> str | None:
     """Returns None if valid, else a reason tag.
 
-    Schemas: bmx1, envelope, data, ack, nak, bye.
+    Schemas: bmx1, bmx2, bmx3, envelope, data, ack, nak, bye, disco, probe, echo,
+    rekey.
     """
     if not isinstance(f, dict):
         return "type"
@@ -182,8 +183,90 @@ def _validate_bye(f: dict) -> str | None:
     return None
 
 
+def _validate_bmx2(f: dict) -> str | None:
+    """Handshake message 2 (security.md section 4): one sealed ``auth`` member
+    rather than separate cert and sig, plus the responder's ephemeral and the KEM
+    ciphertext in the clear."""
+    if f.get("t") != "bmx2":
+        return "type"
+    return _require_base64(f, ("e", "ct", "auth"))
+
+
+def _validate_bmx3(f: dict) -> str | None:
+    if f.get("t") != "bmx3":
+        return "type"
+    return _require_base64(f, ("auth",))
+
+
+def _validate_disco(f: dict) -> str | None:
+    """Route advertisement (protocol.md section 4.2, section 6): destination label
+    to advertised path cost in milliseconds. An empty advertisement is ``{}``."""
+    if f.get("type") != "disco":
+        return "type"
+    if "routes" not in f:
+        return "missing-field"
+    routes = f["routes"]
+    if not isinstance(routes, dict):
+        return "routes-format"
+    for cost in routes.values():
+        if not _is_int(cost) or cost < 0:
+            return "routes-format"
+    return None
+
+
+def _validate_token_carrier(f: dict, want: str) -> str | None:
+    """Latency measurement pair (section 4.2, section 5). The token is opaque to
+    the responder, which echoes it back unchanged, so only its type is
+    constrained."""
+    if f.get("type") != want:
+        return "type"
+    if "token" not in f:
+        return "missing-field"
+    if not _is_int(f["token"]):
+        return "token-format"
+    return None
+
+
+def _validate_rekey(f: dict) -> str | None:
+    """Tunneled BMX rekey (section 4.2, security.md section 6). Phases 1-3 carry
+    the BMX bytes in ``body``; phase 4 carries no BMX message and must omit it."""
+    if f.get("type") != "rekey":
+        return "type"
+    m = _mid_reason(f.get("mid"))
+    if m:
+        return m
+    if "phase" not in f:
+        return "missing-field"
+    phase = f["phase"]
+    if not _is_int(phase) or phase < 1 or phase > 4:
+        return "phase-range"
+    has_body = "body" in f
+    if phase == 4:
+        return "body-or-phase" if has_body else None
+    if not has_body:
+        return "body-or-phase"
+    return _base64_reason(f["body"])
+
+
+def _require_base64(f: dict, keys) -> str | None:
+    """Every named member must be present and Base64."""
+    for k in keys:
+        if k not in f:
+            return "missing-field"
+        r = _base64_reason(f[k])
+        if r:
+            return r
+    return None
+
+
 _VALIDATORS = {
     "bmx1": _validate_bmx1,
+    "bmx2": _validate_bmx2,
+    "bmx3": _validate_bmx3,
+    "disco": _validate_disco,
+    "probe": lambda f: _validate_token_carrier(f, "probe"),
+    "echo": lambda f: _validate_token_carrier(f, "echo"),
+    "rekey": _validate_rekey,
     "envelope": _validate_envelope,
     "data": _validate_data,
     "ack": _validate_ack,

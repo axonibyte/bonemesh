@@ -16,6 +16,12 @@ use crate::chunk::MAX_CHUNKS;
 pub fn validate(schema: &str, f: &Value) -> Option<&'static str> {
     match schema {
         "bmx1" => validate_bmx1(f),
+        "bmx2" => validate_bmx2(f),
+        "bmx3" => validate_bmx3(f),
+        "disco" => validate_disco(f),
+        "probe" => validate_token_carrier(f, "probe"),
+        "echo" => validate_token_carrier(f, "echo"),
+        "rekey" => validate_rekey(f),
         "envelope" => validate_envelope(f),
         "data" => validate_data(f),
         "ack" => validate_ack(f),
@@ -42,6 +48,99 @@ fn validate_bmx1(f: &Value) -> Option<&'static str> {
         }
         if let Some(r) = base64_reason(&f[k]) {
             return Some(r);
+        }
+    }
+    None
+}
+
+/// Handshake messages 2 and 3 (security.md §4). Both carry one sealed `auth`
+/// member rather than separate cert and sig.
+fn validate_bmx2(f: &Value) -> Option<&'static str> {
+    if f["t"].as_str() != Some("bmx2") {
+        return Some("type");
+    }
+    require_base64(f, &["e", "ct", "auth"])
+}
+
+fn validate_bmx3(f: &Value) -> Option<&'static str> {
+    if f["t"].as_str() != Some("bmx3") {
+        return Some("type");
+    }
+    require_base64(f, &["auth"])
+}
+
+/// Route advertisement (protocol.md §4.2, §6). An empty advertisement is `{}`,
+/// never `[]`.
+fn validate_disco(f: &Value) -> Option<&'static str> {
+    if f["type"].as_str() != Some("disco") {
+        return Some("type");
+    }
+    let raw = match f.get("routes") {
+        Some(v) => v,
+        None => return Some("missing-field"),
+    };
+    let routes = match raw.as_object() {
+        Some(o) => o,
+        None => return Some("routes-format"),
+    };
+    for cost in routes.values() {
+        match cost.as_i64() {
+            Some(c) if c >= 0 => {}
+            _ => return Some("routes-format"),
+        }
+    }
+    None
+}
+
+/// Latency measurement pair (§4.2, §5). The token is opaque to the responder,
+/// which echoes it back unchanged, so only its type is constrained.
+fn validate_token_carrier(f: &Value, want: &str) -> Option<&'static str> {
+    if f["type"].as_str() != Some(want) {
+        return Some("type");
+    }
+    match f.get("token") {
+        None => Some("missing-field"),
+        Some(t) if t.as_i64().is_none() => Some("token-format"),
+        _ => None,
+    }
+}
+
+/// Tunneled BMX rekey (§4.2, security.md §6). Phases 1-3 carry the BMX bytes in
+/// `body`; phase 4 carries no BMX message and must omit it.
+fn validate_rekey(f: &Value) -> Option<&'static str> {
+    if f["type"].as_str() != Some("rekey") {
+        return Some("type");
+    }
+    if let Some(r) = mid_reason(&f["mid"]) {
+        return Some(r);
+    }
+    if f.get("phase").is_none() {
+        return Some("missing-field");
+    }
+    let phase = match f["phase"].as_i64() {
+        Some(p) if (1..=4).contains(&p) => p,
+        _ => return Some("phase-range"),
+    };
+    let has_body = f.get("body").is_some();
+    if phase == 4 {
+        return if has_body { Some("body-or-phase") } else { None };
+    }
+    if !has_body {
+        return Some("body-or-phase");
+    }
+    base64_reason(&f["body"])
+}
+
+/// Every named member must be present and Base64.
+fn require_base64(f: &Value, keys: &[&str]) -> Option<&'static str> {
+    for k in keys {
+        match f.get(*k) {
+            None => return Some("missing-field"),
+            Some(v) => {
+                if let Some(r) = base64_reason(v) {
+                    return Some(r);
+                }
+            }
         }
     }
     None
