@@ -14,7 +14,7 @@ This folder holds the protocol specification and its supporting artifacts:
   delivered as of 3.1.0 across every implementation and exercised by interop
   tier 10.
 - `corpus/` — shared test vectors and hostile-input corpora consumed by every
-  implementation (**done**; enforced by all six ports and the conformance runner).
+  implementation (**done**; enforced by all seven ports and the conformance runner).
 - `conformance/` — the language-agnostic conformance runner, in Go (**done**).
 
 See [docs/PLAN.md](../docs/PLAN.md) §Phase 2.

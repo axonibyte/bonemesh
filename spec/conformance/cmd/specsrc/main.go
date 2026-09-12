@@ -25,10 +25,22 @@
 // It proves that the constants, tunable names and message-type tokens the spec
 // pins are PRESENT in each implementation, and that each implementation reads no
 // BONEMESH_* tunable the spec does not document. It does NOT prove they are used
-// correctly -- a cap that is parsed but never enforced still passes here. Correct
-// use is what the corpus checks (interop/run-corpus-checks.sh) and the live tiers
-// (interop/tier5..10.sh) are for. This tier catches the drift those cannot see:
-// a constant renamed, removed, or changed in the spec and not in the code.
+// correctly -- a cap that is parsed but never enforced still passes here, and a
+// constant sitting in a comment satisfies the search.
+//
+// It is also blind where two pinned constants share a value. 65536 is both the
+// transport frame cap and the default rekey frame threshold, so changing
+// TRANSPORT_CAP alone still finds 65536 elsewhere in the tree and passes. Measured,
+// not assumed: mutating python/bonemesh/frame.py's TRANSPORT_CAP to 131072 does not
+// fail this tool -- and IS caught by interop/check-framing-<impl>.sh, which compares
+// the corpus's declared cap against the code's constant directly. That is the
+// portfolio argument doing its job rather than a gap: the cheaper, more precise
+// oracle owns that question.
+//
+// What this tier catches that no other can see: a tunable renamed in code and not
+// in the spec (or added to code and never documented), a message type the spec
+// gained that an implementation never learned, and a corpus schema the spec does
+// not list.
 //
 // Every extraction asserts that it actually extracted something. A parser that
 // silently matches nothing would turn this whole tool into a vacuous pass, which

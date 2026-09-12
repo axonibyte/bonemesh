@@ -2,7 +2,7 @@
 # Tier 10 — feature-behavior conformance (methodology tier 10), language-agnostic.
 #
 # Where tiers 5-9 prove the 3.0 wire contract, tier 10 proves the 3.1 features
-# added across all six implementations actually work ON THE WIRE, cross-language:
+# added across all seven implementations actually work ON THE WIRE, cross-language:
 #   1. ack        — a delivered message is acknowledged back to the origin.
 #   2. nak / D4    — a relay that drops a message names ITSELF as the failing
 #                    hop, never the destination (defect D4).

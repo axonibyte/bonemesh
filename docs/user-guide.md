@@ -1,6 +1,6 @@
 # BoneMesh User Guide
 
-BoneMesh is a point-to-point mesh networking protocol with six interoperating
+BoneMesh is a point-to-point mesh networking protocol with seven interoperating
 implementations — Java, Go, Rust, PHP, Elixir, and JavaScript (Node.js). A node
 written in any of them speaks the same wire protocol, so a mesh can be any mix
 of languages. Traffic is authenticated and encrypted end to end on each hop with
@@ -90,7 +90,7 @@ way — pick the keygen that matches the language the node will run in.
 Every implementation ships a small node runner used by the interop harness and
 handy for trying a mesh out. They all speak the same command contract
 (`interop/README.md`): `keygen`, `listen`, `connect`, and `mesh`. The runners
-are `interop/drivers/{java,go,rust,elixir,js,php}.sh`.
+are `interop/drivers/{java,go,rust,elixir,js,php,python}.sh`.
 
 Common flags: `--mesh`, `--root-pub`, `--cert`, `--id-pub`, `--id-priv`, and
 `--seconds` (how long to stay up).
@@ -240,6 +240,21 @@ $n->send("edge-2", ["hello" => "world"]);
 $n->serve(60);   // runs the accept/heartbeat/relay loop for 60s
 ```
 
+**Python** (`asyncio`)
+```python
+import asyncio
+from bonemesh import Node
+from bonemesh.node import Config
+
+async def main():
+    n = await Node.start(Config("edge-1", "acme-prod", root_pub, cert, id_priv), 7001)
+    n.on_message(lambda payload: print(payload))
+    await n.connect("10.0.0.2", 7002)
+    n.send("edge-2", {"hello": "world"})
+
+asyncio.run(main())
+```
+
 `send` returns whether the destination is currently routable. A node delivers to
 its listeners only payloads addressed to its own label; anything else it relays.
 
@@ -350,9 +365,9 @@ show exactly what valid traffic looks like.
 
 ## 9. Interoperability
 
-Any node interoperates with any other regardless of language: the six
+Any node interoperates with any other regardless of language: the seven
 implementations are checked pairwise, in both directions, by the interop matrix
-(`interop/run-matrix.sh`), and jointly under fault injection, a degraded
+(`interop/run-matrix.sh`, forty-nine cells), and jointly under fault injection, a degraded
 network, seeded fuzzing, routed-mesh convergence, and simulated churn (interop
 tiers 5–9). If you write against one implementation, the others behave
 identically on the wire.

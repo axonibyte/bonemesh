@@ -14,7 +14,7 @@ what a conforming implementation must do.
 | `messages.json` | Message schema validation for handshake and transport frames (`protocol.md` §4, `security.md` §4). | **active** |
 | `transcripts/keyschedule.json` | The BMX key schedule — transcript hashes, chaining keys, ciphertexts, transport keys. | **active** (Java + Go) |
 | `transcripts/handshake-agreement.json` | The X25519 hybrid agreement + schedule → transport keys. | **active** (Java + Go). |
-| `transcripts/pqc-interop.json` | ML-KEM-768 cross-decapsulation and ML-DSA-65 signature verification. | **active** (proven across all six). |
+| `transcripts/pqc-interop.json` | ML-KEM-768 cross-decapsulation and ML-DSA-65 signature verification. | **active** (proven across all seven). |
 
 Adversarial framing-level inputs a node must reject without crashing (oversize,
 injection, truncation, invalid UTF-8, non-object) live in `framing.json`, and
@@ -28,13 +28,13 @@ inputs a lenient JSON library accepts but a conforming frame reader must reject
 as `invalid-json`. Java's classifier previously used org.json's lenient tokener
 and accepted them; as of 3.1.0 it validates the object in org.json strict mode
 (keeping the lenient pass only to preserve the `trailing-data` verdict), so all
-six implementations now agree byte-for-byte on every case — enforced per
+seven implementations now agree byte-for-byte on every case — enforced per
 language and cross-checked against the Go reference by `interop/check-framing*`.
 
 The `transcripts/` vectors freeze the handshake's cryptographic core:
 the key agreement and schedule (Java + Go) and the post-quantum layer —
 ML-KEM cross-decapsulation and ML-DSA signatures (`pqc-interop.json`) — proven
-across all six. `transcripts/README.md` records exactly what is frozen; the only
+across all seven. `transcripts/README.md` records exactly what is frozen; the only
 remaining optional item is a byte-exact full-transcript vector for offline
 conformance, unnecessary now that the live cross-language handshake is proven
 end to end.

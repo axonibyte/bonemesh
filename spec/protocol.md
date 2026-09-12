@@ -5,7 +5,7 @@ which owns identity, the BMX handshake, and the threat model. This document owns
 framing, the connection/session model, message types, discovery, routing, and
 the delivery semantics — including the real fixes for the protocol-level v2
 defects (D3, D4, D7). The wire contract here is **frozen**: it is implemented by
-all six reference implementations and enforced by the shared corpus (`corpus/`).
+all seven reference implementations and enforced by the shared corpus (`corpus/`).
 Constants formerly marked **[PIN]** are resolved inline against that corpus. The
 session-lifecycle and tooling behaviors that 3.0.0 specified but deferred —
 simultaneous-dial resolution, retry/backoff, probe-timeout liveness, idle
@@ -36,7 +36,7 @@ not depend on a two-party handshake, so they are testable and pinned now.
 
 Operational tunables (local behavior, not the wire contract, so two nodes with
 different values still interoperate): heartbeat/probe interval **1 s** (the value
-all six reference nodes use), latency EWMA **α = 0.2**, dedup window **4096**
+all seven reference nodes use), latency EWMA **α = 0.2**, dedup window **4096**
 recent `mid`s per peer. The 3.1.0 features add more, all read once from the
 environment at node start and all with defaults chosen so a peer never has to
 assume anything about them: `BONEMESH_PROBE_TIMEOUT_MS` (15000), `BONEMESH_IDLE_MS`
@@ -45,7 +45,7 @@ assume anything about them: `BONEMESH_PROBE_TIMEOUT_MS` (15000), `BONEMESH_IDLE_
 (3600000 / 65536 / 10000), and `BONEMESH_KEYLOG` (unset = off).
 
 **Delivered in 3.1.0.** The following were specified in 3.0.0 but deferred; they
-are now implemented across all six reference implementations and are backward-
+are now implemented across all seven reference implementations and are backward-
 compatible additions (they do not bump `v`): deterministic **simultaneous-dial**
 resolution — keep the session whose initiator label is lexicographically lower
 (§3); **retry/backoff** on undeliverable messages (§7); probe-timeout-based
@@ -92,7 +92,7 @@ the handshake are in `security.md`; everything else is here.
   **dials** and runs BMX as initiator. Simultaneous dials (both ends open at
   once) are resolved deterministically: the session whose initiator label is
   lexicographically lower is kept, the other torn down, so a pair converges on
-  exactly one session. (Implemented across all six as of 3.1.0; both ends
+  exactly one session. (Implemented across all seven as of 3.1.0; both ends
   compute the same winner, so they agree on which session to drop.)
 - After the handshake, both directions send transport frames freely. There is
   no per-message connection setup — the v2 connect/handshake/teardown cost is
@@ -183,7 +183,7 @@ measures **real round-trip time**:
 
 ## 7. Acknowledgement and liveness (defect D4)
 
-Implemented across all six as of 3.1.0. The `ack` and `nak` inner types
+Implemented across all seven as of 3.1.0. The `ack` and `nak` inner types
 (schemas in `corpus/messages.json`) are emitted by the reference nodes; a peer
 that does not recognize them ignores them (§8), so a mixed-version mesh degrades
 safely. The origin observes them through an ack listener; the boolean return of
@@ -207,7 +207,7 @@ safely. The origin observes them through an ack listener; the boolean return of
   socket stays open but has stopped responding is still declared dead. Dead
   neighbors are withdrawn from the routing tables and their routes poisoned to
   neighbors.
-- **Retry/backoff.** All six queue an undeliverable message (no route, or a
+- **Retry/backoff.** All seven queue an undeliverable message (no route, or a
   failed first-hop write) per destination and retry it on each heartbeat with
   exponential backoff — 500 ms doubling to a 30 s cap — until it lands or its
   lifetime (`BONEMESH_RETRY_MAX_MS`, default 60 s; 0 disables) is spent, at which

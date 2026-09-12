@@ -24,8 +24,9 @@ a shared test harness.
 |---|---|
 | `spec/` | The normative protocol (`protocol.md`), security design (`security.md`), the shared test corpus (`corpus/`), and a Go conformance runner (`conformance/`). |
 | `java/` | The Java implementation — the original library and the v3 reference. |
-| `go/`, `rust/`, `js/`, `php/`, `elixir/` | The other five full implementations. |
-| `interop/` | The multiprotocol test harness: the live matrix, tiers 5–10 (plus the gated tier 11 soak), and the neutral per-language node drivers. |
+| `go/`, `rust/`, `js/`, `php/`, `elixir/`, `python/` | The other six full implementations. |
+| `interop/` | The multiprotocol test harness: the corpus-check runner, tier 3, the live matrix, tiers 5–10 (plus the gated tier 11 soak), and the neutral per-language node drivers. |
+| `ci/` | `test-impl.sh`, the single source of truth for how each implementation is tested; driven by `bitbucket-pipelines.yml`. |
 | `docs/` | This guide, the user guide, the plan, and the decision/defect registries. |
 
 **The governing principle is wire-compatibility, not shared code.** Each
@@ -116,12 +117,13 @@ wire encodings are what matters, not the library:
 | Go | stdlib (`crypto/ecdh`, `crypto/mlkem`, `x/crypto`) | stdlib `crypto/mlkem` + Cloudflare CIRCL for ML-DSA |
 | JS | Node built-in `crypto` (OpenSSL 3.5) | Node `crypto` (native ML-KEM/ML-DSA) |
 | PHP | libsodium | the `openssl` 3.5 CLI, shelled out |
+| Python | `cryptography` (OpenSSL 3.5) | `cryptography` (native ML-KEM/ML-DSA) |
 
 **Private-key format is a non-issue by design.** Implementations store private
 keys differently (BouncyCastle expands ML-DSA/ML-KEM keys; RustCrypto, Go, Node,
-and OpenSSL keep the seed). It never affects interop because a private key never
+Python's `cryptography`, and OpenSSL keep the seed). It never affects interop because a private key never
 crosses a node boundary — only public keys, ciphertexts, and signatures do, and
-those are the standard encodings that all six match. Cross-language PQC is proven
+those are the standard encodings that all seven match. Cross-language PQC is proven
 by the shared vector `spec/corpus/transcripts/pqc-interop.json` and, for the
 seed-keyed implementations, by the live matrix.
 
@@ -184,10 +186,22 @@ were found and fixed during cross-language convergence testing:
 Testing follows a portfolio of oracles (reaper's `testing-methodology.md`): each
 tier exists for a defect no cheaper tier can see.
 
-**Per-implementation (tiers 1–4), in each `<lang>/`:** unit tests; exact-encoding
-conformance against the shared corpus; source-as-data checks; contract /
+**Per-implementation (tiers 1, 2, 4), in each `<lang>/`:** unit tests;
+exact-encoding conformance mirrored from the shared corpus; contract /
 state-machine tests. New assertions are mutation-checked (break the code, confirm
 the test fails, restore).
+
+The byte-exact corpus comparison cannot live in a `<lang>/` tenant, because a
+tenant syncs one subtree and cannot see `spec/corpus` — it lives in
+`interop/check-<family>[-<impl>].sh`, run by `interop/run-corpus-checks.sh`, which
+also re-runs every family under a hostile non-UTF-8 default charset.
+
+**Tier 3 (source-as-data) is shared, not per-language:** `spec/conformance/cmd/specsrc`
+reads `spec/protocol.md` and `spec/security.md` as markdown and checks every
+implementation's constants, tunable names and message types against them, in both
+directions. One tool, all seven targets, because the question is identical in each
+language — and it needs the whole repository, so it runs from
+`interop/check-spec.sh`.
 
 **Shared, in `interop/` (tiers 5–10, plus the gated tier 11 soak), written once and driving every
 implementation as a black box:**
@@ -225,21 +239,41 @@ work, per the plan.
 
 ## 6. Adding an implementation
 
-The recipe, mirrored by the five non-reference ports:
+The recipe, mirrored by the six non-reference ports — most recently Python, and
+this is the order that actually worked:
 
 1. Build the layers against the spec, tier by tier, checking each against the
-   shared corpus: canonicalization (`canon.json`), key schedule
+   shared corpus as you go: canonicalization (`canon.json`), key schedule
    (`transcripts/keyschedule.json`), hybrid agreement
    (`transcripts/handshake-agreement.json`), framing (`framing.json`), message
-   schema (`messages.json`), and PQC (`transcripts/pqc-interop.json`). Write the
-   node last: handshake → transport → message → routing.
+   schema (`messages.json`), transport frame
+   (`transcripts/transport-frame.json`), and PQC
+   (`transcripts/pqc-interop.json`). Write the node last: handshake → transport →
+   message → routing.
 2. Follow the wire conventions exactly — the pinned constants, the poison
    sentinel rule, the neighbor-shadow guard, empty route maps encoded as `{}` not
-   `[]`, labels compared case-insensitively.
-3. Add a `<lang>/.reaper.toml` tenant (digest-pinned image, offline/vendored
-   build where possible) and gate the unit suite there.
-4. Drop an `interop/drivers/<name>.sh` speaking the neutral contract; it joins
-   the matrix and tiers 5–10 automatically.
+   `[]`, labels compared case-insensitively. And follow the *shipped* wire where
+   it diverges from the spec prose: `bmx2`/`bmx3` carry one sealed `auth` member
+   rather than separate `cert` and `sig`, and the transcript absorbs individual
+   field values in order rather than raw wire bytes.
+3. Write the unit suite with the corpus vectors **mirrored in code** (a tenant
+   cannot see `spec/`), each module's test file naming the corpus file it mirrors.
+   Mutation-check every assertion.
+4. Add a `<lang>/.reaper.toml` tenant (digest-pinned image, offline/vendored build
+   where possible). If the port needs third-party dependencies, gate their
+   licences too — BoneMesh is Apache-2.0, so a copyleft transitive dependency is
+   disqualifying (see `python/tools/check_licenses.py`).
+5. Add the seven `interop/check-<family>-<name>.sh` wrappers and the entry points
+   they drive. `interop/run-corpus-checks.sh` discovers them and **fails** on a
+   missing one, so there is no way to half-finish this step quietly.
+6. Drop an `interop/drivers/<name>.sh` speaking the neutral contract; it joins the
+   matrix and tiers 5–10 automatically. Put nothing else in `drivers/` — that
+   directory is the implementation registry, and a helper dropped there is
+   discovered as a language.
+7. Add the language to `impls` in `spec/conformance/cmd/specsrc/main.go` (tier 3),
+   a case to `ci/test-impl.sh` and a step to `bitbucket-pipelines.yml`, and its
+   toolchain to `interop/guest-setup.sh` — or document the omission there the way
+   Elixir's is documented.
 
 ---
 
@@ -254,3 +288,9 @@ The recipe, mirrored by the five non-reference ports:
   present. Both skip loudly where their prerequisites are absent.
 - The long-horizon soak (tier 11) is gated behind `BONEMESH_LONG_SOAK` and run
   per release, not in the standard battery; see [`testing.md`](testing.md).
+- **Chunking is Java-only** (defect D11). The spec has the origin split a payload
+  larger than a transport frame into `chunk: {i, n}` parts; only Java does. The
+  other six read `chunk.i` for the dedup key and never split on send, so a payload
+  over the 65536-byte cap is written as one over-cap frame, the peer closes the
+  session, and `send()` has already returned true. Keep application payloads under
+  the frame cap until this is resolved across all seven.

@@ -15,7 +15,9 @@ the normative wire it is all checked against, see
 
 | Tier | What it proves | Where it runs |
 |---|---|---|
-| 1–4 | Per-implementation unit behavior + byte-exact agreement with the shared corpus (canonicalization, key schedule, framing, message schema, transport frame, PQC vectors) | each `<lang>/` tenant; corpus vectors also in the `spec/` conformance tenant |
+| 1, 2, 4 | Per-implementation unit behavior, contract and state-machine tests; corpus vectors mirrored in-code | each `<lang>/` tenant |
+| 2 (byte-exact) | Byte-exact agreement with the shared corpus — canonicalization, key schedule, framing, message schema, transport frame, PQC vectors — for every implementation, and again under a hostile non-UTF-8 charset | `interop/run-corpus-checks.sh`, root tenant and CI |
+| 3 | Source-as-data: the spec read as markdown, every implementation's constants, tunables and message types checked against it both ways | `interop/check-spec.sh` (one shared tool), root tenant and CI |
 | 5 | Node vs. a fault peer: survives a battery of malformed input and delivers nothing spurious | root interop tenant |
 | 6 | A mesh under a hostile network (netem latency + loss; iptables partition and heal) | root tenant, Linux guest only |
 | 7 | Seeded, replayable fuzzing over frames / handshake / transport | root tenant |
@@ -24,9 +26,15 @@ the normative wire it is all checked against, see
 | 10 | The 3.1 features on the wire, cross-language: ack, NAK/D4, rekey, idle teardown, probe-timeout death, key-log round-trip | root tenant |
 | 11 | Long-horizon soak — sustained churn with the features cycling, run once per release | **gated**, never in the standard battery |
 
-Tiers 1–4 live with each implementation; tiers 5–10 are the shared **interop
-battery** written once and run against every implementation as a black box; tier
-11 is a deliberate, opt-in soak.
+Tiers 1, 2 and 4 live with each implementation; the byte-exact corpus comparison
+and tier 3 are shared but need the whole repository, so they live in `interop/`
+beside tiers 5–10 — the **interop battery** written once and run against every
+implementation as a black box. Tier 11 is a deliberate, opt-in soak.
+
+Why the corpus comparison is not inside a `<lang>/` tenant: a tenant syncs only its
+own subtree and cannot see `spec/corpus` at all. Each implementation's unit suite
+therefore *mirrors* the vectors in code, with a header naming the corpus file, and
+the byte-exact comparison runs where the whole tree is present.
 
 ---
 
@@ -43,6 +51,7 @@ digest-pinned container (or, for the root tenant, directly on a networked guest)
 | `bonemesh-php` | `php/.reaper.toml` | `php tests/run.php` |
 | `bonemesh-elixir` | `elixir/.reaper.toml` | `mix test` |
 | `bonemesh-java` | `java/.reaper.toml` | `./gradlew --no-daemon test` |
+| `bonemesh-python` | `python/.reaper.toml` | `uv run pytest -q` + the dependency-licence gate |
 | `bonemesh-spec` | `spec/.reaper.toml` | the corpus conformance runner (`go test ./...` in `conformance/`) |
 | `bonemesh-interop` | `.reaper.toml` (root) | the interop battery: matrix + tiers 5–10 |
 
@@ -63,19 +72,28 @@ reaper down          # destroy it
 
 The battery discovers drivers under `interop/drivers/*.sh`, **health-probes each
 one**, and keeps only the implementations whose toolchain is present — logging
-every skip, never silently narrowing. So the same scripts run six-wide on a
-developer host that has all six toolchains, and five-wide on the interop guest,
+every skip, never silently narrowing. So the same scripts run seven-wide on a
+developer host that has all seven toolchains, and six-wide on the interop guest,
 which is `ubuntu-26.04` and has no Erlang/OTP 28, so **Elixir is skipped there
-and logged as `SKIP elixir`**; its interop is covered by the six-wide runs on a
+and logged as `SKIP elixir`**; its interop is covered by the seven-wide runs on a
 host that has OTP 28.
 
 Locally you can run a single tier directly (the drivers build what they need on
 first use):
 
 ```sh
-sh interop/run-matrix.sh     # the N×N live handshake/transport/delivery matrix
-sh interop/tier5.sh          # ... through tier10.sh
+sh interop/run-corpus-checks.sh   # every corpus family x implementation, twice
+sh interop/check-spec.sh          # tier 3: the spec read as data
+sh interop/run-matrix.sh          # the N×N live handshake/transport/delivery matrix
+sh interop/tier5.sh               # ... through tier10.sh
 ```
+
+The first two are the deterministic wire contract and run ahead of the live tiers
+in the root tenant's chain, so a corpus disagreement stops the battery before the
+expensive parts. Both self-test: `run-corpus-checks.sh --self-test` proves it fails
+on a broken *and* on a missing check, and `check-spec.sh --self-test` proves the
+spec checker fails on a dropped constant, an undocumented tunable, spec drift,
+corpus drift, and a reworded spec table.
 
 Tier 6 needs Linux `tc`/netem + iptables as root, so off the guest it no-ops
 loudly. **Tier 10 is capability-gated**: each driver answers a `caps` subcommand

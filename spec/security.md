@@ -1,14 +1,14 @@
 # BoneMesh v3 — security design
 
 **Status: normative as of 3.1.0.** The design is ratified and the cryptographic
-wire contract is **frozen** — implemented by all six reference implementations
+wire contract is **frozen** — implemented by all seven reference implementations
 and pinned by the shared corpus (`corpus/`). The construction is deliberately
 conventional — it is a reassembly of well-analyzed parts (hybrid X25519+ML-KEM
 key agreement, ML-DSA certificate identity, a Noise-style key schedule,
 ChaCha20-Poly1305) rather than novel cryptography. Constants formerly marked
 **[PIN]** are resolved inline against the corpus. The items 3.0.0 deferred —
 periodic session rekey (§6), idle teardown (§6), and the key-log hook with its
-now-pinned format (§8) — are **delivered as of 3.1.0** across all six and are
+now-pinned format (§8) — are **delivered as of 3.1.0** across all seven and are
 called out as live where they appear.
 
 Companion document: [`protocol.md`](protocol.md) (framing, connections,
@@ -22,9 +22,9 @@ certificate structure and its canonicalization — §11); the *key-schedule* val
 `spec/corpus/transcripts/keyschedule.json`; and the *full handshake transcript*
 (the end-to-end ML-KEM/ML-DSA message bytes), pinned by
 `handshake-agreement.json`, `pqc-interop.json`, and `transport-frame.json` and
-exercised live by the interop matrix across all six implementations. The
+exercised live by the interop matrix across all seven implementations. The
 **key-log debug format** (§8) is now pinned too (corpus `keylog.json`) and
-emitted by all six. This document never claims a crypto constant is
+emitted by all seven. This document never claims a crypto constant is
 interop-verified before code has exercised it.
 
 ---
@@ -36,8 +36,8 @@ interop-verified before code has exercised it.
 | Node identity signatures | **ML-DSA-65** (FIPS 204, category 3) | A node *is* its ML-DSA public key; the label is a display name bound by the cert. |
 | Mesh root signatures | **ML-DSA-87** (FIPS 204, category 5) | The root is high-value and offline; it gets the strongest parameter set. |
 | Ephemeral key agreement | **X25519** *and* **ML-KEM-768** (FIPS 203), hybrid | Both shared secrets are mixed; security holds if *either* primitive holds. Mirrors TLS `X25519MLKEM768`, Signal PQXDH, Rosenpass. |
-| AEAD | **ChaCha20-Poly1305** | 256-bit key, 96-bit nonce. Uniformly available and constant-time in software across all six languages. |
-| Hash / KDF | **SHA-256** / **HKDF-SHA-256** | Ubiquitous; no BLAKE dependency to source six times. |
+| AEAD | **ChaCha20-Poly1305** | 256-bit key, 96-bit nonce. Uniformly available and constant-time in software across all seven languages. |
+| Hash / KDF | **SHA-256** / **HKDF-SHA-256** | Ubiquitous; no BLAKE dependency to source seven times. |
 | Canonical bytes for signing | **RFC 8785 JCS** | JSON Canonicalization Scheme — keeps certificates human-readable while giving a single deterministic byte string to sign. |
 
 **Why hybrid, not PQ-only.** ML-KEM and ML-DSA implementations are young. Binding
@@ -287,7 +287,7 @@ encryption via a development-only hook (decision #5), modeled on TLS
   direction and lets the Poly1305 tag pick the winner, so it never has to parse
   rekey control frames.
 
-The format is pinned in `spec/` (`corpus/keylog.json`) so **all six
+The format is pinned in `spec/` (`corpus/keylog.json`) so **all seven
 implementations emit compatible logs** — an inspector built once reads a stream
 from a node in any language, verified by interop tier 10.
 
