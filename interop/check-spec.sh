@@ -1,0 +1,137 @@
+#!/bin/sh
+# Methodology tier 3 -- source-as-data: the normative spec read as DATA and every
+# implementation checked against it.
+#
+# docs/PLAN.md §5 and docs/architecture.md §5 both list tier 3 as a per-language
+# obligation; no implementation ever had one. The checker is
+# spec/conformance/cmd/specsrc (Go, per decision #12), written once and pointed at
+# all of them, because "did this spec edit land in the code, and does the code
+# read tunables the spec never documents?" is the same question in every language.
+#
+# Runs here rather than in the bonemesh-spec reaper tenant, because that tenant
+# syncs spec/ alone and cannot see the implementations at all. This needs the
+# whole repo, like the rest of interop/.
+#
+# Usage:
+#   sh interop/check-spec.sh              check this repository
+#   sh interop/check-spec.sh --self-test  prove the checker can fail
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/.." && pwd)
+bin="$repo/spec/conformance/specsrc"
+
+build() {
+  go=go126
+  command -v "$go" >/dev/null 2>&1 || go=go
+  (cd "$repo/spec/conformance" && GOTOOLCHAIN=local GOFLAGS=-mod=vendor "$go" build -o specsrc ./cmd/specsrc)
+}
+
+# Rebuild when the source is newer than the binary, for the same reason
+# ensure-jar.sh exists: a checker that reports PASS for code that is not the code
+# under test is worse than no checker.
+if [ ! -x "$bin" ] || [ -n "$(find "$repo/spec/conformance/cmd/specsrc" -newer "$bin" -print -quit 2>/dev/null)" ]; then
+  build
+fi
+
+if [ "${1:-}" != "--self-test" ]; then
+  echo "checking every implementation against the pinned spec"
+  exec "$bin"
+fi
+
+# --- self-test ---------------------------------------------------------------
+# A synthetic tree with one fake implementation, mutated one way at a time. Each
+# mutation must make the checker exit non-zero AND name the right thing; a
+# checker observed only passing is a checker of unmeasured value.
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+mkdir -p "$work/spec/corpus" "$work/js/src" "$work/interop"
+cp "$repo/spec/protocol.md" "$repo/spec/security.md" "$work/spec/"
+cp "$repo/spec/corpus/messages.json" "$work/spec/corpus/"
+
+# A fake implementation that satisfies every check, built by asking the checker
+# what it wants: run it against the synthetic tree and let it name each missing
+# constant until it is satisfied. Hand-listing the constants here would duplicate
+# the spec a third time and rot.
+: > "$work/js/src/fake.js"
+i=0
+while [ "$i" -lt 10 ]; do
+  i=$((i + 1))
+  out=$("$bin" -root "$work" 2>&1 || true)
+  added=0
+  # Satisfy every complaint this pass makes, not just the first, so the loop
+  # converges in a handful of rounds rather than one per constant.
+  for tok in \
+    $(echo "$out" | sed -n 's/.*missing .*(spec pins "\(.*\)")/\1/p') \
+    $(echo "$out" | sed -n 's/.*does not read \(BONEMESH_[A-Z0-9_]*\),.*/\1/p') \
+    $(echo "$out" | sed -n 's/.*never names message type "\(.*\)"/\1/p')
+  do
+    printf '"%s"\n' "$tok" >> "$work/js/src/fake.js"
+    added=1
+  done
+  [ "$added" -eq 0 ] && break
+done
+
+if ! "$bin" -root "$work" >"$work/base.log" 2>&1; then
+  echo "SELF-TEST FAIL: could not build a synthetic implementation that passes"
+  sed 's/^/    /' "$work/base.log"
+  exit 1
+fi
+echo "self-test baseline: a synthetic implementation satisfying the spec passes"
+
+expect_fail() {
+  what="$1"; want="$2"
+  if "$bin" -root "$work" >"$work/m.log" 2>&1; then
+    echo "SELF-TEST FAIL: $what did not fail the check"
+    sed 's/^/    /' "$work/m.log"
+    exit 1
+  fi
+  if ! grep -q "$want" "$work/m.log"; then
+    echo "SELF-TEST FAIL: $what failed, but not for the stated reason (wanted /$want/)"
+    sed 's/^/    /' "$work/m.log"
+    exit 1
+  fi
+  echo "  ok: $what"
+}
+
+cp "$work/js/src/fake.js" "$work/fake.js.good"
+
+# 1. a constant the spec pins, dropped from the implementation
+grep -v '65536' "$work/fake.js.good" > "$work/js/src/fake.js"
+expect_fail "a dropped frame cap" "missing transport frame cap"
+cp "$work/fake.js.good" "$work/js/src/fake.js"
+
+# 2. a tunable the implementation reads that the spec never documents
+echo '"BONEMESH_UNDOCUMENTED_KNOB"' >> "$work/js/src/fake.js"
+expect_fail "an undocumented tunable" "no spec document mentions"
+cp "$work/fake.js.good" "$work/js/src/fake.js"
+
+# 3. the spec itself drifting: change a pinned value and the code no longer matches
+sed 's/^| Transport frame max (default) | 65536 bytes/| Transport frame max (default) | 65537 bytes/' \
+  "$repo/spec/protocol.md" > "$work/spec/protocol.md"
+expect_fail "a spec constant changed without the code" "missing transport frame cap"
+cp "$repo/spec/protocol.md" "$work/spec/protocol.md"
+
+# 4. the corpus using a schema the spec does not list
+sed 's/"schema": "bye"/"schema": "nosuchtype"/' "$repo/spec/corpus/messages.json" \
+  > "$work/spec/corpus/messages.json"
+expect_fail "a corpus schema absent from the spec" "which the spec's type table does not list"
+cp "$repo/spec/corpus/messages.json" "$work/spec/corpus/"
+
+# 5. a reworded spec that breaks an extraction must fail loudly, never silently
+#    stop checking -- the failure mode most likely to rot this tool.
+sed 's/^| Handshake frame max |/| Handshake frame maximum |/' "$repo/spec/protocol.md" \
+  > "$work/spec/protocol.md"
+expect_fail "a reworded spec table" "cannot extract handshake frame cap"
+cp "$repo/spec/protocol.md" "$work/spec/protocol.md"
+
+# Back to the baseline, to prove the mutations were what failed.
+if ! "$bin" -root "$work" >"$work/final.log" 2>&1; then
+  echo "SELF-TEST FAIL: the restored synthetic tree does not pass"
+  sed 's/^/    /' "$work/final.log"
+  exit 1
+fi
+echo "SELF-TEST PASS: the checker fails on dropped constants, undocumented tunables,"
+echo "                spec drift, corpus drift, and a reworded spec -- and passes when restored"

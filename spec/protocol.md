@@ -252,7 +252,8 @@ safely. The origin observes them through an ack listener; the boolean return of
 | handshake | `bmx2` | identity fields encrypted | responder → initiator |
 | handshake | `bmx3` | identity fields encrypted | initiator → responder |
 | transport | `data` | yes | any, routed |
-| transport | `ack` / NAK | yes | back toward origin |
+| transport | `ack` / `nak` | yes | back toward origin |
+| transport | `rekey` | yes (a tunneled BMX exchange, phases 1–4) | initiator ↔ responder |
 | transport | `disco` | yes | to neighbors |
 | transport | `probe` / `echo` | yes | neighbor pair |
 | transport | `bye` | yes | session close |

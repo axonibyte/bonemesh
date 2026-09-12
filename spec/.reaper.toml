@@ -23,7 +23,7 @@ cache = ["go"]
 cmd = "cd conformance && GOTOOLCHAIN=local GOFLAGS=-mod=vendor GOCACHE=\"$REAPER_CACHE_GO\" go test ./... > \"$REAPER_OUT\"/gotest.log 2>&1; s=$?; cat \"$REAPER_OUT\"/gotest.log; exit $s"
 
 [sync]
-exclude = ["/conformance/bin/"]
+exclude = ["/conformance/bin/", "/conformance/specsrc"]
 
 [resources]
 cores = 4
