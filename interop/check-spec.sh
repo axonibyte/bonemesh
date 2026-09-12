@@ -127,6 +127,39 @@ sed 's/^| Handshake frame max |/| Handshake frame maximum |/' "$repo/spec/protoc
 expect_fail "a reworded spec table" "cannot extract handshake frame cap"
 cp "$repo/spec/protocol.md" "$work/spec/protocol.md"
 
+# 6. A repository root nested under a directory named like a build artifact must
+#    still be searched. The exclusions (build/, target/, vendor/, node_modules/)
+#    are matched against the path RELATIVE to the root; matching the absolute path
+#    means any ancestor with one of those names poisons the whole tree. Bitbucket
+#    Pipelines clones into /opt/atlassian/pipelines/agent/build, so "/build/"
+#    matched every file and tier 3 found no source at all -- it failed loudly only
+#    because of the "no implementation source found" guard. This is that bug.
+nested="$work/agent/build"
+mkdir -p "$nested/spec/corpus" "$nested/js/src" "$nested/interop"
+cp "$work/spec/protocol.md" "$work/spec/security.md" "$nested/spec/"
+cp "$work/spec/corpus/messages.json" "$nested/spec/corpus/"
+cp "$work/fake.js.good" "$nested/js/src/fake.js"
+if ! "$bin" -root "$nested" >"$work/nested.log" 2>&1; then
+  echo "SELF-TEST FAIL: a root under a directory named build/ found no source"
+  sed 's/^/    /' "$work/nested.log"
+  exit 1
+fi
+echo "  ok: a root nested under build/ is still searched"
+
+# 7. And the exclusions must still actually exclude: a vendored file under the
+#    implementation root must not be able to satisfy a constant.
+mkdir -p "$nested/js/src/vendor"
+grep -v '65536' "$work/fake.js.good" > "$nested/js/src/fake.js"
+cp "$work/fake.js.good" "$nested/js/src/vendor/vendored.js"
+if "$bin" -root "$nested" >"$work/vendored.log" 2>&1; then
+  echo "SELF-TEST FAIL: a vendored file satisfied a constant the real source lacks"
+  sed 's/^/    /' "$work/vendored.log"
+  exit 1
+fi
+echo "  ok: a vendored file cannot satisfy a check"
+cp "$work/fake.js.good" "$nested/js/src/fake.js"
+rm -rf "$nested/js/src/vendor"
+
 # Back to the baseline, to prove the mutations were what failed.
 if ! "$bin" -root "$work" >"$work/final.log" 2>&1; then
   echo "SELF-TEST FAIL: the restored synthetic tree does not pass"
@@ -134,4 +167,5 @@ if ! "$bin" -root "$work" >"$work/final.log" 2>&1; then
   exit 1
 fi
 echo "SELF-TEST PASS: the checker fails on dropped constants, undocumented tunables,"
-echo "                spec drift, corpus drift, and a reworded spec -- and passes when restored"
+echo "                spec drift, corpus drift and a reworded spec; searches a root"
+echo "                nested under build/; and still excludes vendored files"

@@ -408,15 +408,28 @@ func loadSource(root string, im impl) (string, int, error) {
 			if !sourceExt[filepath.Ext(path)] {
 				return nil
 			}
+			// Match exclusions against the path RELATIVE TO THE REPOSITORY ROOT,
+			// never the absolute path. Testing the absolute path means any ancestor
+			// directory that happens to be named build/, target/, vendor/ and so on
+			// poisons the entire tree -- and Bitbucket Pipelines clones into
+			// /opt/atlassian/pipelines/agent/build, so "/build/" matched every file
+			// in the repository and tier 3 found no source at all. It failed loudly
+			// rather than passing vacuously only because of the "no implementation
+			// source found" guard below.
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return nil
+			}
+			rel = "/" + filepath.ToSlash(rel)
 			for _, s := range im.skip {
-				if strings.Contains(path, s) {
+				if strings.Contains(rel, s) {
 					return nil
 				}
 			}
 			// Never let a vendored or generated tree satisfy a check.
-			if strings.Contains(path, "/vendor/") || strings.Contains(path, "/node_modules/") ||
-				strings.Contains(path, "/target/") || strings.Contains(path, "/build/") ||
-				strings.Contains(path, "/_build/") || strings.Contains(path, "__pycache__") {
+			if strings.Contains(rel, "/vendor/") || strings.Contains(rel, "/node_modules/") ||
+				strings.Contains(rel, "/target/") || strings.Contains(rel, "/build/") ||
+				strings.Contains(rel, "/_build/") || strings.Contains(rel, "__pycache__") {
 				return nil
 			}
 			raw, err := os.ReadFile(path)
