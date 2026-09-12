@@ -94,7 +94,50 @@ public final class MessageSchema {
       return "missing-field";
     }
     if(ttl < 1 || ttl > 255) return "ttl-range";
-    if(!f.has("payload")) return "missing-field";
+    return checkChunking(f);
+  }
+
+  /**
+   * Checks the splitting half of the data schema (protocol.md &sect;6.1): the
+   * shape of {@code chunk}, its bounds, and the rule that exactly one of
+   * {@code payload} and {@code seg} is present.
+   *
+   * <p>The exclusion is the load-bearing part. It is what stops a node that does
+   * not reassemble from handing a fragment to the application as though it were
+   * a whole message -- the silent corruption D11 described. A segment has no
+   * {@code payload} to deliver, so the mistake is unavailable rather than merely
+   * forbidden.</p>
+   *
+   * <p>Carrying neither stays {@code missing-field} rather than becoming a
+   * splitting error: it is an absent field, the corpus has pinned that reason
+   * since 3.0.0, and renaming it here would have silently rewritten a vector
+   * rather than added one.</p>
+   *
+   * @param f the data message
+   * @return null when valid, else the failure reason
+   */
+  private static String checkChunking(JSONObject f) {
+    int n = 1;
+    if(f.has("chunk")) {
+      if(!(f.opt("chunk") instanceof JSONObject)) return "chunk-format";
+      JSONObject chunk = f.getJSONObject("chunk");
+      if(!(chunk.opt("i") instanceof Integer) || !(chunk.opt("n") instanceof Integer))
+        return "chunk-format";
+      n = chunk.getInt("n");
+      int i = chunk.getInt("i");
+      if(n < 1 || n > Chunker.MAX_CHUNKS) return "chunk-range";
+      if(i < 0 || i >= n) return "chunk-range";
+    }
+    boolean hasPayload = f.has("payload");
+    boolean hasSeg = f.has("seg");
+    if(!hasPayload && !hasSeg) return "missing-field";
+    // Three clauses, none redundant. A fourth -- an explicit "both present" test
+    // -- was here and was deleted: mutation showed it could not reject anything
+    // the two below do not already reject, since n is always 1 or more, so it
+    // was a check that read as coverage while asserting nothing.
+    if(n == 1 && hasSeg) return "payload-or-seg";    // a whole message carries its payload
+    if(n > 1 && hasPayload) return "payload-or-seg"; // a segment does not
+    if(hasSeg && !(f.opt("seg") instanceof String)) return "seg-format";
     return null;
   }
 

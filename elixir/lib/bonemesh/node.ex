@@ -13,7 +13,7 @@ defmodule Bonemesh.Node do
 
   use GenServer
 
-  alias Bonemesh.{Frame, Handshake, Message, Routing, Transport}
+  alias Bonemesh.{Chunk, Frame, Handshake, Message, Reassembler, Routing, Transport}
 
   @heartbeat_ms 1000
   @dedup_cap 4096
@@ -90,7 +90,7 @@ defmodule Bonemesh.Node do
       # yet (F2, protocol.md §7).
       pending: %{},
       dedup: {MapSet.new(), :queue.new()},
-      reassembler: %{},
+      reassembler: Reassembler.new(),
       listeners: [],
       ack_listeners: []
     }
@@ -296,11 +296,12 @@ defmodule Bonemesh.Node do
 
   defp route_data(s, m) do
     if String.downcase(m["to"]) == String.downcase(s.label) do
-      case Message.reassemble(s.reassembler, m) do
+      case Reassembler.offer(s.reassembler, m, System.system_time(:millisecond)) do
         {:complete, payload, acc} ->
           for pid <- s.listeners, do: Kernel.send(pid, {:bonemesh_data, payload})
           s = %{s | reassembler: acc}
-          # F6: acknowledge receipt back toward the origin.
+          # F6: acknowledge receipt back toward the origin -- once, when the whole
+          # message is reassembled, never per segment (§6.1, Ack).
           from = m["from"]
 
           if is_binary(from) and String.downcase(from) != String.downcase(s.label) do
@@ -337,8 +338,22 @@ defmodule Bonemesh.Node do
   # state. Returns {routed?, mid, state}.
   defp do_send(s, to, payload) do
     mid = Message.new_mid()
-    msgs = Message.split(mid, s.label, to, Message.default_ttl(), payload)
+    # Over a §0 bound means no conforming destination would reassemble it, so the
+    # caller is told locally rather than the mesh carrying a message that cannot
+    # arrive (§6.1, Bounds).
+    case safe_split(mid, s.label, to, Message.default_ttl(), payload) do
+      :error -> {false, mid, s}
+      {:ok, msgs} -> do_send_segments(s, mid, msgs)
+    end
+  end
 
+  defp safe_split(mid, label, to, ttl, payload) do
+    {:ok, Chunk.split(mid, label, to, ttl, payload)}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp do_send_segments(s, mid, msgs) do
     {ok, s} =
       Enum.reduce(msgs, {true, s}, fn m, {acc, st} ->
         {sent, st} = forward(st, m)

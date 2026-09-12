@@ -90,8 +90,63 @@ func validateData(f map[string]any) string {
 	if ttl < 1 || ttl > 255 {
 		return "ttl-range"
 	}
-	if _, ok := f["payload"]; !ok {
+	return checkChunking(f)
+}
+
+// checkChunking validates the splitting half of the data schema (protocol.md
+// §6.1): the shape of "chunk", its bounds, and the rule that exactly one of
+// "payload" and "seg" is present.
+//
+// The exclusion is the load-bearing part. It is what stops a node that does not
+// reassemble from handing a fragment to the application as though it were a whole
+// message -- the silent corruption D11 described. A segment has no payload to
+// deliver, so the mistake is unavailable rather than merely forbidden.
+//
+// Carrying neither stays "missing-field" rather than becoming a splitting error:
+// it is an absent field, the corpus has pinned that reason since 3.0.0, and
+// renaming it here would have rewritten a vector rather than added one.
+func checkChunking(f map[string]any) string {
+	n := int64(1)
+	if raw, has := f["chunk"]; has {
+		chunk, ok := raw.(map[string]any)
+		if !ok {
+			// Defensive, not load-bearing, and measured as such: with this branch
+			// inert a non-object chunk still reaches "chunk-format" through the
+			// nil-map path below, so the corpus cannot distinguish it. Kept for
+			// legibility; not claimed as covered.
+			return "chunk-format"
+		}
+		i, iOK := asInt(chunk["i"])
+		n, ok = asInt(chunk["n"])
+		if !ok || !iOK {
+			return "chunk-format"
+		}
+		if n < 1 || n > MaxChunks {
+			return "chunk-range"
+		}
+		if i < 0 || i >= n {
+			return "chunk-range"
+		}
+	}
+	segRaw, hasSeg := f["seg"]
+	_, hasPayload := f["payload"]
+	if !hasPayload && !hasSeg {
 		return "missing-field"
+	}
+	// Three clauses, none redundant. An explicit "both present" test was removed:
+	// mutation showed it could not reject anything these two do not already
+	// reject, since n is always 1 or more, so it read as coverage while asserting
+	// nothing.
+	if n == 1 && hasSeg {
+		return "payload-or-seg" // a whole message carries its payload
+	}
+	if n > 1 && hasPayload {
+		return "payload-or-seg" // a segment does not
+	}
+	if hasSeg {
+		if _, ok := segRaw.(string); !ok {
+			return "seg-format"
+		}
 	}
 	return ""
 }

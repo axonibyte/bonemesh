@@ -87,8 +87,60 @@ func validateData(f map[string]any) string {
 	if ttl < 1 || ttl > 255 {
 		return "ttl-range"
 	}
-	if _, ok := f["payload"]; !ok {
+	return checkChunking(f)
+}
+
+// MaxChunks is protocol.md §0's chunk-count ceiling, deliberately duplicated here
+// rather than imported from an implementation. This package is a second, independent
+// reading of the spec -- the whole point of a neutral conformance validator -- and a
+// check that shares its constant with the thing it checks agrees with itself no
+// matter what either one says.
+const MaxChunks = 1024
+
+// checkChunking validates the splitting half of the data schema (protocol.md §6.1):
+// the shape of "chunk", its bounds, and the rule that exactly one of "payload" and
+// "seg" is present.
+//
+// The exclusion is the load-bearing part. It is what stops a node that does not
+// reassemble from handing a fragment to the application as though it were a whole
+// message -- the silent corruption D11 described.
+//
+// Carrying neither stays "missing-field" rather than becoming a splitting error: it
+// is an absent field and the corpus has pinned that reason since 3.0.0.
+func checkChunking(f map[string]any) string {
+	n := int64(1)
+	if raw, has := f["chunk"]; has {
+		chunk, ok := raw.(map[string]any)
+		if !ok {
+			return "chunk-format"
+		}
+		i, iOK := asInt(chunk["i"])
+		n, ok = asInt(chunk["n"])
+		if !ok || !iOK {
+			return "chunk-format"
+		}
+		if n < 1 || n > MaxChunks {
+			return "chunk-range"
+		}
+		if i < 0 || i >= n {
+			return "chunk-range"
+		}
+	}
+	segRaw, hasSeg := f["seg"]
+	_, hasPayload := f["payload"]
+	if !hasPayload && !hasSeg {
 		return "missing-field"
+	}
+	if n == 1 && hasSeg {
+		return "payload-or-seg" // a whole message carries its payload
+	}
+	if n > 1 && hasPayload {
+		return "payload-or-seg" // a segment does not
+	}
+	if hasSeg {
+		if _, ok := segRaw.(string); !ok {
+			return "seg-format"
+		}
 	}
 	return ""
 }

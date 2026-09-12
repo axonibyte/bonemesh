@@ -96,8 +96,50 @@ def _validate_data(f: dict) -> str | None:
         return "missing-field"
     if ttl < 1 or ttl > 255:
         return "ttl-range"
-    if "payload" not in f:
+    return _check_chunking(f)
+
+
+def _check_chunking(f: dict) -> str | None:
+    """Validate the splitting half of the data schema (protocol.md section 6.1): the
+    shape of ``chunk``, its bounds, and the rule that exactly one of ``payload`` and
+    ``seg`` is present.
+
+    The exclusion is the load-bearing part. It is what stops a node that does not
+    reassemble from handing a fragment to the application as though it were a whole
+    message -- the silent corruption D11 described. A segment has no payload to
+    deliver, so the mistake is unavailable rather than merely forbidden.
+
+    Carrying neither stays ``missing-field`` rather than becoming a splitting error:
+    it is an absent field, the corpus has pinned that reason since 3.0.0, and
+    renaming it here would have rewritten a vector rather than added one.
+    """
+    from .chunk import MAX_CHUNKS
+
+    n = 1
+    if "chunk" in f:
+        chunk = f["chunk"]
+        if not isinstance(chunk, dict):
+            return "chunk-format"
+        if not _is_int(chunk.get("i")) or not _is_int(chunk.get("n")):
+            return "chunk-format"
+        n = chunk["n"]
+        if n < 1 or n > MAX_CHUNKS:
+            return "chunk-range"
+        if chunk["i"] < 0 or chunk["i"] >= n:
+            return "chunk-range"
+    has_payload = "payload" in f
+    has_seg = "seg" in f
+    if not has_payload and not has_seg:
         return "missing-field"
+    # Three clauses, none redundant. An explicit "both present" test was removed:
+    # mutation showed it could not reject anything these two do not already reject,
+    # since n is always 1 or more, so it read as coverage while asserting nothing.
+    if n == 1 and has_seg:
+        return "payload-or-seg"  # a whole message carries its payload
+    if n > 1 and has_payload:
+        return "payload-or-seg"  # a segment does not
+    if has_seg and not isinstance(f["seg"], str):
+        return "seg-format"
     return None
 
 
@@ -157,6 +199,21 @@ def new_mid() -> str:
 
 def data(mid: str, frm: str, to: str, ttl: int, payload) -> dict:
     return {"type": "data", "mid": mid, "from": frm, "to": to, "ttl": ttl, "payload": payload}
+
+
+def data_segment(mid: str, frm: str, to: str, ttl: int, i: int, n: int, seg: str) -> dict:
+    """One segment of a split application message (protocol.md section 6.1).
+
+    A segment carries ``seg`` and deliberately carries no ``payload``: the two are
+    mutually exclusive, so a node that does not reassemble sees a data message with
+    no payload and rejects it rather than handing a fragment to the application as
+    though it were whole.
+    """
+    return {
+        "type": "data", "mid": mid, "from": frm, "to": to, "ttl": ttl,
+        "chunk": {"i": i, "n": n},
+        "seg": seg,
+    }
 
 
 def ack(mid: str) -> dict:

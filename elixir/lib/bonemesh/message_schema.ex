@@ -46,8 +46,67 @@ defmodule Bonemesh.MessageSchema do
       not is_binary(f["from"]) -> "missing-field"
       not is_integer(f["ttl"]) -> "missing-field"
       f["ttl"] < 1 or f["ttl"] > 255 -> "ttl-range"
-      not Map.has_key?(f, "payload") -> "missing-field"
-      true -> nil
+      true -> check_chunking(f)
+    end
+  end
+
+  # Validates the splitting half of the data schema (protocol.md §6.1): the shape of
+  # "chunk", its bounds, and the rule that exactly one of "payload" and "seg" is
+  # present.
+  #
+  # The exclusion is the load-bearing part. It is what stops a node that does not
+  # reassemble from handing a fragment to the application as though it were a whole
+  # message -- the silent corruption D11 described. A segment has no payload to
+  # deliver, so the mistake is unavailable rather than merely forbidden.
+  #
+  # Carrying neither stays "missing-field" rather than becoming a splitting error: it
+  # is an absent field, the corpus has pinned that reason since 3.0.0, and renaming it
+  # here would have rewritten a vector rather than added one.
+  defp check_chunking(f) do
+    case chunk_reason(f) do
+      {:error, reason} ->
+        reason
+
+      {:ok, n} ->
+        has_payload = Map.has_key?(f, "payload")
+        has_seg = Map.has_key?(f, "seg")
+
+        cond do
+          not has_payload and not has_seg -> "missing-field"
+          # Three clauses, none redundant. An explicit "both present" test was removed:
+          # mutation showed it could not reject anything these two do not already
+          # reject, since n is always 1 or more, so it read as coverage while
+          # asserting nothing.
+          n == 1 and has_seg -> "payload-or-seg"
+          n > 1 and has_payload -> "payload-or-seg"
+          has_seg and not is_binary(f["seg"]) -> "seg-format"
+          true -> nil
+        end
+    end
+  end
+
+  defp chunk_reason(f) do
+    if Map.has_key?(f, "chunk") do
+      chunk = f["chunk"]
+
+      cond do
+        not is_map(chunk) ->
+          {:error, "chunk-format"}
+
+        not is_integer(chunk["i"]) or not is_integer(chunk["n"]) ->
+          {:error, "chunk-format"}
+
+        chunk["n"] < 1 or chunk["n"] > Bonemesh.Chunk.max_chunks() ->
+          {:error, "chunk-range"}
+
+        chunk["i"] < 0 or chunk["i"] >= chunk["n"] ->
+          {:error, "chunk-range"}
+
+        true ->
+          {:ok, chunk["n"]}
+      end
+    else
+      {:ok, 1}
     end
   end
 

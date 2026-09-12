@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use crate::handshake::Handshake;
 use crate::routing;
 use crate::transport::Transport;
-use crate::{frame, message};
+use crate::{chunk, frame, message};
 
 /// A node configuration and identity.
 #[derive(Clone)]
@@ -71,6 +71,7 @@ struct Inner {
     pending: Mutex<HashMap<String, Vec<PendingSend>>>,
     table: Mutex<routing::Table>,
     dedup: Mutex<routing::Dedup>,
+    reassembler: Mutex<chunk::Reassembler>,
     keylog_mu: Mutex<()>,
     stop: AtomicBool,
 }
@@ -141,6 +142,7 @@ impl Node {
             pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new(&label)),
             dedup: Mutex::new(routing::Dedup::new(4096)),
+            reassembler: Mutex::new(chunk::Reassembler::new()),
             keylog_mu: Mutex::new(()),
             stop: AtomicBool::new(false),
         });
@@ -219,14 +221,23 @@ impl Node {
     /// retry (F2) when retry is enabled, so it may still be delivered later.
     pub fn send_mid(&self, to: &str, payload: Value) -> Option<String> {
         let mid = message::new_mid();
-        let msg = message::data(&mid, &self.inner.config.label, to, message::DEFAULT_TTL, payload);
+        // Over a §0 bound means no conforming destination would reassemble it, so
+        // the caller is told locally rather than the mesh carrying a message that
+        // cannot arrive (§6.1, Bounds).
+        let segments = chunk::split(&mid, &self.inner.config.label, to, message::DEFAULT_TTL, payload).ok()?;
         let nh = self.inner.table.lock().unwrap().next_hop(to);
-        let delivered = match nh {
-            Some(nh) => send_to_link(&self.inner, &nh, &msg),
-            None => false,
-        };
-        if !delivered {
-            enqueue_retry(&self.inner, &msg);
+        let mut all = true;
+        for msg in &segments {
+            let delivered = match &nh {
+                Some(nh) => send_to_link(&self.inner, nh, msg),
+                None => false,
+            };
+            if !delivered {
+                enqueue_retry(&self.inner, msg);
+                all = false;
+            }
+        }
+        if !all {
             return None;
         }
         Some(mid)
@@ -236,9 +247,15 @@ impl Node {
     /// exhaust the hop limit and emit a NAK.
     pub fn send_with_ttl(&self, to: &str, payload: Value, ttl: i64) -> Option<String> {
         let mid = message::new_mid();
-        let msg = message::data(&mid, &self.inner.config.label, to, ttl, payload);
+        let segments = chunk::split(&mid, &self.inner.config.label, to, ttl, payload).ok()?;
         let nh = self.inner.table.lock().unwrap().next_hop(to)?;
-        if send_to_link(&self.inner, &nh, &msg) {
+        let mut all = true;
+        for msg in &segments {
+            if !send_to_link(&self.inner, &nh, msg) {
+                all = false;
+            }
+        }
+        if all {
             Some(mid)
         } else {
             None
@@ -457,7 +474,12 @@ fn handle_inner(inner: &Arc<Inner>, peer: &str, link: &Arc<Mutex<Link>>, msg: Va
 
 fn handle_data(inner: &Arc<Inner>, msg: Value) {
     let mid = msg["mid"].as_str().unwrap_or("");
-    let chunk_idx = msg["chunk"]["i"].as_i64().unwrap_or(-1);
+    let chunk_idx = msg
+        .get("chunk")
+        .and_then(|c| c.as_object())
+        .and_then(|c| c.get("i"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(-1);
     if inner.dedup.lock().unwrap().seen(&format!("d:{}:{}", mid, chunk_idx)) {
         return;
     }
@@ -465,11 +487,16 @@ fn handle_data(inner: &Arc<Inner>, msg: Value) {
     let from = msg["from"].as_str().unwrap_or("");
     let self_label = inner.config.label.to_lowercase();
     if to.to_lowercase() == self_label {
-        let payload = msg["payload"].clone();
+        let whole = inner.reassembler.lock().unwrap().offer(&msg, now_millis());
+        let payload = match whole {
+            Some(p) => p,
+            None => return, // still incomplete, or refused by a §0 bound
+        };
         for tx in inner.listeners.lock().unwrap().iter() {
             let _ = tx.send(payload.clone());
         }
-        // F6: acknowledge receipt back toward the origin.
+        // F6: acknowledge receipt back toward the origin -- once, when the whole
+        // message is reassembled, never per segment (§6.1, Ack).
         if !from.is_empty() && from.to_lowercase() != self_label {
             route_control(
                 inner,
@@ -931,6 +958,7 @@ mod lifecycle_tests {
             pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new("self")),
             dedup: Mutex::new(routing::Dedup::new(16)),
+            reassembler: Mutex::new(chunk::Reassembler::new()),
             keylog_mu: Mutex::new(()),
             stop: AtomicBool::new(false),
         })
@@ -964,6 +992,7 @@ mod lifecycle_tests {
             pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new("self")),
             dedup: Mutex::new(routing::Dedup::new(16)),
+            reassembler: Mutex::new(chunk::Reassembler::new()),
             keylog_mu: Mutex::new(()),
             stop: AtomicBool::new(false),
         })
@@ -1012,6 +1041,7 @@ mod lifecycle_tests {
             pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new("self")),
             dedup: Mutex::new(routing::Dedup::new(16)),
+            reassembler: Mutex::new(chunk::Reassembler::new()),
             keylog_mu: Mutex::new(()),
             stop: AtomicBool::new(false),
         })

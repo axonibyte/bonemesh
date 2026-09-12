@@ -67,6 +67,30 @@ public final class Messages {
   }
 
   /**
+   * Builds one segment of a split application message (protocol.md &sect;6.1).
+   * A segment carries {@code seg} and deliberately carries no {@code payload}:
+   * the two are mutually exclusive, so a node that does not reassemble sees a
+   * data message with no payload and rejects it rather than handing a fragment
+   * to the application as though it were whole.
+   *
+   * @param mid the message id shared by every segment of this message
+   * @param from the origin label
+   * @param to the destination label
+   * @param ttl the hop limit
+   * @param i this segment's index
+   * @param n the total segment count
+   * @param seg this segment's slice of the payload's UTF-8 serialization
+   * @return the data message carrying this segment
+   */
+  public static JSONObject dataSegment(String mid, String from, String to, int ttl, int i, int n, String seg) {
+    return new JSONObject()
+        .put("type", "data").put("mid", mid)
+        .put("from", from).put("to", to).put("ttl", ttl)
+        .put("chunk", new JSONObject().put("i", i).put("n", n))
+        .put("seg", seg);
+  }
+
+  /**
    * Builds an acknowledgement for a message id.
    *
    * @param mid the id being acknowledged

@@ -28,6 +28,7 @@ final class Node
     private array $pending = [];
     private RoutingTable $table;
     private Dedup $dedup;
+    private Reassembler $reassembler;
     private array $tun;
     private float $lastHeartbeat = 0.0;
 
@@ -35,6 +36,7 @@ final class Node
     {
         $this->table = new RoutingTable($cfg['label']);
         $this->dedup = new Dedup(4096);
+        $this->reassembler = new Reassembler();
         $this->tun = Tunables::load();
     }
 
@@ -74,9 +76,9 @@ final class Node
             throw new \RuntimeException("connect failed: $errstr ($errno)");
         }
         $hs = Handshake::initiator($this->cfg['mesh'], $this->cfg['rootPublic'], self::now(), $this->cfg['cert'], $this->cfg['idPrivate']);
-        fwrite($sock, $hs->writeMessage1());
+        self::writeAll($sock, $hs->writeMessage1());
         $m2 = self::readFrameBlocking($sock, Frame::HANDSHAKE_CAP);
-        fwrite($sock, $hs->readMessage2WriteMessage3($m2));
+        self::writeAll($sock, $hs->readMessage2WriteMessage3($m2));
         $sess = $hs->session();
         $peer = $sess['peerCert']['label'];
         stream_set_blocking($sock, false);
@@ -155,13 +157,24 @@ final class Node
     private function sendInternal(string $to, $payload): array
     {
         $mid = Message::newMid();
-        $msg = Message::data($mid, $this->cfg['label'], $to, Message::DEFAULT_TTL, $payload);
-        $nh = $this->table->nextHop($to);
-        $ok = $nh !== null && $this->sendToLink($nh, $msg);
-        if (!$ok) {
-            $this->enqueueRetry($msg);
+        try {
+            $segments = Chunk::split($mid, $this->cfg['label'], $to, Message::DEFAULT_TTL, $payload);
+        } catch (\InvalidArgumentException $e) {
+            // Over a §0 bound, so no conforming destination would reassemble it. §6.1
+            // requires the caller be told locally instead of the mesh carrying a
+            // message that cannot arrive.
+            return [$mid, false];
         }
-        return [$mid, $ok];
+        $nh = $this->table->nextHop($to);
+        $all = true;
+        foreach ($segments as $msg) {
+            $ok = $nh !== null && $this->sendToLink($nh, $msg);
+            if (!$ok) {
+                $this->enqueueRetry($msg);
+                $all = false;
+            }
+        }
+        return [$mid, $all];
     }
 
     // Queues an origin data message for later retry, bounded to 64 per
@@ -275,9 +288,16 @@ final class Node
     private function sendWithTtl(string $to, $payload, int $ttl): ?string
     {
         $mid = Message::newMid();
+        try {
+            $segments = Chunk::split($mid, $this->cfg['label'], $to, $ttl, $payload);
+        } catch (\InvalidArgumentException $e) {
+            return $mid;
+        }
         $nh = $this->table->nextHop($to);
         if ($nh !== null) {
-            $this->sendToLink($nh, Message::data($mid, $this->cfg['label'], $to, $ttl, $payload));
+            foreach ($segments as $msg) {
+                $this->sendToLink($nh, $msg);
+            }
         }
         return $mid;
     }
@@ -292,7 +312,51 @@ final class Node
             $this->conns[$id]['lastData'] = self::nowMs();
         }
         $frame = Frame::encode($this->conns[$id]['transport']->seal($inner));
-        return @fwrite($this->conns[$id]['sock'], $frame) !== false;
+        return self::writeAll($this->conns[$id]['sock'], $frame);
+    }
+
+    // Writes a whole frame, looping until every byte is out.
+    //
+    // This port's sockets are non-blocking (stream_set_blocking(..., false)), and on a
+    // non-blocking stream fwrite() writes only what fits in the kernel buffer and
+    // returns that count. The previous `@fwrite(...) !== false` therefore reported
+    // SUCCESS for a partial write: the peer received a truncated line, never saw its
+    // terminating newline, and buffered until the frame cap killed the session.
+    //
+    // It could not happen while every message in the fleet was a sub-100-byte probe,
+    // which is why it survived until 3.3.0 put 24000-byte segments on the wire -- and
+    // it was always latent for the handshake, where security.md notes a bmx2 with
+    // ML-DSA certificates "runs near 20 KB". PHP is the only port affected: Go's
+    // conn.Write, Rust's write_all, Java's OutputStream.write, Elixir's
+    // :gen_tcp.send, and the buffered writers in JS and Python all deliver the whole
+    // buffer or fail.
+    private static function writeAll($sock, string $data): bool
+    {
+        $total = strlen($data);
+        $sent = 0;
+        // Bounded so a peer that stops reading cannot wedge the loop forever.
+        $deadline = microtime(true) + 5.0;
+        while ($sent < $total) {
+            $n = @fwrite($sock, substr($data, $sent));
+            if ($n === false) {
+                return false;
+            }
+            if ($n === 0) {
+                // Would block. Wait for writability rather than spinning.
+                if (microtime(true) >= $deadline) {
+                    return false;
+                }
+                $read = [];
+                $write = [$sock];
+                $except = [];
+                if (@stream_select($read, $write, $except, 0, 50000) === false) {
+                    return false;
+                }
+                continue;
+            }
+            $sent += $n;
+        }
+        return true;
     }
 
     // Run the accept/read loop for $seconds. Fires a 1 s heartbeat (probe +
@@ -484,7 +548,7 @@ final class Node
     private function sendRaw(int $id, array $inner): void
     {
         if (isset($this->conns[$id])) {
-            @fwrite($this->conns[$id]['sock'], Frame::encode($this->conns[$id]['transport']->seal($inner)));
+            self::writeAll($this->conns[$id]['sock'], Frame::encode($this->conns[$id]['transport']->seal($inner)));
         }
     }
 
@@ -565,7 +629,7 @@ final class Node
         switch ($this->conns[$id]['phase']) {
             case 'resp_m1':
                 $m2 = $this->conns[$id]['hs']->readMessage1WriteMessage2($obj);
-                fwrite($sock, $m2);
+                self::writeAll($sock, $m2);
                 $this->conns[$id]['phase'] = 'resp_m3';
                 break;
             case 'resp_m3':
@@ -629,17 +693,24 @@ final class Node
     private function handleData(array $msg): void
     {
         $mid = (string) ($msg['mid'] ?? '');
-        $chunkIdx = isset($msg['chunk']['i']) ? (int) $msg['chunk']['i'] : -1;
+        $chunkIdx = is_array($msg['chunk'] ?? null) && isset($msg['chunk']['i'])
+            ? (int) $msg['chunk']['i']
+            : -1;
         if ($this->dedup->sawBefore('d:' . $mid . ':' . $chunkIdx)) {
             return;
         }
         $to = (string) ($msg['to'] ?? '');
         $from = (string) ($msg['from'] ?? '');
         if (strtolower($to) === strtolower($this->cfg['label'])) {
-            foreach ($this->listeners as $cb) {
-                $cb($msg['payload'] ?? null);
+            $whole = $this->reassembler->offer($msg, self::nowMs());
+            if ($whole === null) {
+                return; // still incomplete, or refused by a §0 bound
             }
-            // F6: acknowledge receipt back toward the origin.
+            foreach ($this->listeners as $cb) {
+                $cb($whole[0]);
+            }
+            // F6: acknowledge receipt back toward the origin -- once, when the whole
+            // message is reassembled, never per segment (§6.1, Ack).
             if ($from !== '' && strtolower($from) !== strtolower($this->cfg['label'])) {
                 $this->routeControl(Message::ackTo($mid, $this->cfg['label'], $from, Message::DEFAULT_TTL));
             }

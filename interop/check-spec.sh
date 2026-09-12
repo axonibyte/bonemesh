@@ -109,10 +109,32 @@ expect_fail "an undocumented tunable" "no spec document mentions"
 cp "$work/fake.js.good" "$work/js/src/fake.js"
 
 # 3. the spec itself drifting: change a pinned value and the code no longer matches
-sed 's/^| Transport frame max (default) | 65536 bytes/| Transport frame max (default) | 65537 bytes/' \
+sed 's/^| Transport frame max | 65536 bytes/| Transport frame max | 65537 bytes/' \
   "$repo/spec/protocol.md" > "$work/spec/protocol.md"
 expect_fail "a spec constant changed without the code" "missing transport frame cap"
 cp "$repo/spec/protocol.md" "$work/spec/protocol.md"
+
+# 3b. A constant written with digit-group separators must still be FOUND. This is
+#     the positive direction, and it needs asserting in both: a checker that closed
+#     up separators too eagerly would also match 1677721 inside 16_777_216_0, and a
+#     checker that did not close them at all would fail every Elixir and Rust
+#     constant over four digits. The repository's own Elixir port writes
+#     16_777_216, so without this the tool either rejects idiomatic source or has
+#     an untested special case.
+sed 's/"16777216"/"16_777_216"/' "$work/fake.js.good" > "$work/js/src/fake.js"
+if ! "$bin" -root "$work" >"$work/sep.log" 2>&1; then
+  echo "SELF-TEST FAIL: a digit-separated constant (16_777_216) was not recognised"
+  sed 's/^/    /' "$work/sep.log"
+  exit 1
+fi
+echo "  ok: a digit-separated constant is recognised"
+
+# 3c. ...and separators must not make a WRONG value look right: 1_677_721 closes up
+#     to 1677721, which is a prefix of 16777216 only if the search is done on the
+#     wrong side. Dropping the real constant entirely must still fail.
+sed 's/"16777216"/"1_677_721"/' "$work/fake.js.good" > "$work/js/src/fake.js"
+expect_fail "a digit-separated near-miss" "missing reassembly buffer max"
+cp "$work/fake.js.good" "$work/js/src/fake.js"
 
 # 4. the corpus using a schema the spec does not list
 sed 's/"schema": "bye"/"schema": "nosuchtype"/' "$repo/spec/corpus/messages.json" \
@@ -167,5 +189,6 @@ if ! "$bin" -root "$work" >"$work/final.log" 2>&1; then
   exit 1
 fi
 echo "SELF-TEST PASS: the checker fails on dropped constants, undocumented tunables,"
-echo "                spec drift, corpus drift and a reworded spec; searches a root"
+echo "                spec drift, corpus drift, a reworded spec and a digit-separated"
+echo "                near-miss; recognises idiomatic 16_777_216; searches a root"
 echo "                nested under build/; and still excludes vendored files"

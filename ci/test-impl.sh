@@ -28,10 +28,36 @@ log() { echo "test-impl[$impl]: $*"; }
 go=go126
 command -v "$go" >/dev/null 2>&1 || go=go
 
-# The seven corpus families. Java's scripts carry no -<impl> suffix (it is the
-# reference implementation); every other language's do.
+# The corpus families, DISCOVERED rather than listed. This used to be a hardcoded
+# list -- under a comment that said "seven" while listing eight -- and it was the
+# second, undiscovered copy of something interop/run-corpus-checks.sh already works
+# out by globbing the same namespace. A family added to interop/ was picked up by the
+# runner and silently absent from CI, which is the quiet half of a coverage gap: the
+# grid looks complete in one place and is short in the other. One derivation, used by
+# both. (check-spec.sh is excluded for the same reason the runner excludes it: it is
+# one whole-repo tool, not a per-implementation family.)
+#
+# Java's scripts carry no -<impl> suffix, being the reference implementation; every
+# other language's do.
+corpus_families() {
+  for s in interop/check-*.sh; do
+    base=$(basename "$s" .sh)
+    fam=${base#check-}
+    case "$fam" in
+      *-*) continue ;;   # check-<family>-<impl>.sh, handled per family
+      spec) continue ;;  # a whole-repo checker, not a family
+    esac
+    printf '%s\n' "$fam"
+  done
+}
+
 corpus_checks() {
-  for fam in canon framing messages keyschedule agreement pqc transport keylog; do
+  fams=$(corpus_families)
+  if [ -z "$fams" ]; then
+    echo "test-impl[$impl]: FAIL discovered no corpus families" >&2
+    return 1
+  fi
+  for fam in $fams; do
     if [ "$1" = java ]; then s="interop/check-$fam.sh"; else s="interop/check-$fam-$1.sh"; fi
     if [ ! -f "$s" ]; then
       # A missing check is not coverage. Fail loudly rather than skipping, which

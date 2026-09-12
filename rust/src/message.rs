@@ -9,6 +9,8 @@ use serde_json::{json, Value};
 /// The default hop limit for application data.
 pub const DEFAULT_TTL: i64 = 16;
 
+use crate::chunk::MAX_CHUNKS;
+
 /// Validates a message against a named schema. Returns `None` if valid, else a
 /// reason tag. Schemas: `bmx1`, `envelope`, `data`, `ack`, `nak`, `bye`.
 pub fn validate(schema: &str, f: &Value) -> Option<&'static str> {
@@ -72,11 +74,66 @@ fn validate_data(f: &Value) -> Option<&'static str> {
         Some(t) if !(1..=255).contains(&t) => return Some("ttl-range"),
         _ => {}
     }
-    if f.get("payload").is_none() {
+    check_chunking(f)
+}
+
+/// Validates the splitting half of the data schema (protocol.md §6.1): the shape
+/// of `chunk`, its bounds, and the rule that exactly one of `payload` and `seg`
+/// is present.
+///
+/// The exclusion is the load-bearing part. It is what stops a node that does not
+/// reassemble from handing a fragment to the application as though it were a
+/// whole message -- the silent corruption D11 described. A segment has no payload
+/// to deliver, so the mistake is unavailable rather than merely forbidden.
+///
+/// Carrying neither stays `missing-field` rather than becoming a splitting error:
+/// it is an absent field, the corpus has pinned that reason since 3.0.0, and
+/// renaming it here would have rewritten a vector rather than added one.
+fn check_chunking(f: &Value) -> Option<&'static str> {
+    let mut n: i64 = 1;
+    if let Some(raw) = f.get("chunk") {
+        let chunk = match raw.as_object() {
+            Some(o) => o,
+            None => return Some("chunk-format"),
+        };
+        let i = match chunk.get("i").and_then(Value::as_i64) {
+            Some(v) => v,
+            None => return Some("chunk-format"),
+        };
+        n = match chunk.get("n").and_then(Value::as_i64) {
+            Some(v) => v,
+            None => return Some("chunk-format"),
+        };
+        if !(1..=MAX_CHUNKS).contains(&n) {
+            return Some("chunk-range");
+        }
+        if i < 0 || i >= n {
+            return Some("chunk-range");
+        }
+    }
+    let has_payload = f.get("payload").is_some();
+    let seg = f.get("seg");
+    if !has_payload && seg.is_none() {
         return Some("missing-field");
+    }
+    // Three clauses, none redundant. An explicit "both present" test was removed:
+    // mutation showed it could not reject anything these two do not already
+    // reject, since n is always 1 or more, so it read as coverage while asserting
+    // nothing.
+    if n == 1 && seg.is_some() {
+        return Some("payload-or-seg"); // a whole message carries its payload
+    }
+    if n > 1 && has_payload {
+        return Some("payload-or-seg"); // a segment does not
+    }
+    if let Some(v) = seg {
+        if !v.is_string() {
+            return Some("seg-format");
+        }
     }
     None
 }
+
 
 fn validate_ack(f: &Value) -> Option<&'static str> {
     if f["type"].as_str() != Some("ack") {
@@ -148,6 +205,19 @@ pub fn new_mid() -> String {
 /// An application data message.
 pub fn data(mid: &str, from: &str, to: &str, ttl: i64, payload: Value) -> Value {
     json!({"type":"data","mid":mid,"from":from,"to":to,"ttl":ttl,"payload":payload})
+}
+
+/// Builds one segment of a split application message (protocol.md §6.1). A
+/// segment carries `seg` and deliberately carries no `payload`: the two are
+/// mutually exclusive, so a node that does not reassemble sees a data message
+/// with no payload and rejects it rather than handing a fragment to the
+/// application as though it were whole.
+pub fn data_segment(mid: &str, from: &str, to: &str, ttl: i64, i: i64, n: i64, seg: &str) -> Value {
+    json!({
+        "type": "data", "mid": mid, "from": from, "to": to, "ttl": ttl,
+        "chunk": { "i": i, "n": n },
+        "seg": seg
+    })
 }
 
 /// An acknowledgement for a message id.

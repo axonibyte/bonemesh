@@ -237,8 +237,17 @@ public final class Node {
 
   private SendResult sendInternal(String to, JSONObject payload, int ttl) {
     String mid = Messages.newMid(rng);
+    List<JSONObject> segments;
+    try {
+      segments = Chunker.split(mid, label, to, ttl, payload);
+    } catch(IllegalArgumentException e) {
+      // Over a bound §0 pins, so no conforming destination would reassemble it.
+      // §6.1 requires the caller be told locally instead of the mesh carrying a
+      // message that cannot arrive.
+      return new SendResult(mid, false);
+    }
     boolean all = true;
-    for(JSONObject msg : Chunker.split(mid, label, to, ttl, payload)) {
+    for(JSONObject msg : segments) {
       boolean ok = forward(msg);
       if(!ok) enqueueRetry(msg);
       all = ok && all;
@@ -456,7 +465,12 @@ public final class Node {
     String type = inner.optString("type", "");
     switch(type) {
       case "data": {
-        int chunkIndex = inner.has("chunk") ? inner.getJSONObject("chunk").getInt("i") : -1;
+        // optJSONObject yields null for a chunk that is not an object and
+        // optInt yields the default for a non-integer index, so a hostile
+        // chunk degrades to the unsplit dedup key instead of throwing out of
+        // the read loop and killing the session.
+        JSONObject chunkMeta = inner.optJSONObject("chunk");
+        int chunkIndex = chunkMeta == null ? -1 : chunkMeta.optInt("i", -1);
         String mid = inner.getString("mid");
         // Dedup per (mid, chunk) with a type prefix so a relayed ack, which
         // carries the same mid as the data it answers, cannot be mistaken for a

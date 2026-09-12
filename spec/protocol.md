@@ -29,9 +29,14 @@ not depend on a two-party handshake, so they are testable and pinned now.
 | Frame encoding | one UTF-8 JSON object per line, `\n`-terminated, no interior `\n` |
 | Binary-in-JSON encoding | RFC 4648 **standard** Base64, **with** padding, **no** line breaks |
 | Handshake frame max | 32768 bytes (including the terminating `\n`); post-quantum certs and signatures are large |
-| Transport frame max (default) | 65536 bytes; configurable up to an implementation ceiling ≥ 65536 |
+| Transport frame max | 65536 bytes (including the terminating `\n`) |
 | `mid` (message id) | 128-bit value, lowercase hex, 32 chars |
 | `ttl` default | 16; range 1–255; decremented per relay hop |
+| Chunk segment max | 24000 bytes of the payload's UTF-8 serialization, cut on a character boundary (§6.1) |
+| Chunk count max (`n`) | 1024 |
+| Reassembly buffer max | 16777216 bytes, summed across every in-flight message |
+| Concurrent reassemblies max | 256 in-flight messages |
+| Reassembly timeout | 30000 ms |
 | AEAD nonce | 96-bit: 4 zero bytes then the per-direction 64-bit **little-endian** sequence counter; starts at 0, +1 per frame, never reused (matches `security.md` §5 and corpus `transport-frame.json`) |
 
 Operational tunables (local behavior, not the wire contract, so two nodes with
@@ -75,10 +80,10 @@ the handshake are in `security.md`; everything else is here.
   seen a newline within the limit closes the connection rather than growing an
   unbounded buffer. Limits (frozen, §0; corpus `framing.json`):
   - handshake frames: **32 KiB** (a bmx2 with ML-DSA cert + signatures runs near 20 KB);
-  - transport frames: default **64 KiB**, configurable up to a ceiling.
-- Application payloads larger than a transport frame are **chunked** by the
-  origin (§6) and reassembled by the destination, so the frame cap never limits
-  application data — it only bounds any single read.
+  - transport frames: **64 KiB**.
+- Application payloads larger than a transport frame are **split** by the
+  origin into segments and reassembled by the destination (§6.1), so the frame
+  cap never limits application data — it only bounds any single read.
 - A frame that is not valid JSON, exceeds its limit, or violates the expected
   type for the connection state closes the connection. There is no partial
   recovery within a connection; the session re-handshakes.
@@ -122,15 +127,25 @@ plaintext object always has a `type` and a `mid`:
 
 `mid` is a **message id**: a 128-bit random value (lowercase hex, 32 chars; §0),
 unique per application message (all chunks of one message share it). Message ids
-give v3 what v2 never had — **dedup** (a re-delivered `mid` already seen is
-dropped) and **ack correlation** (an `ack` names the `mid` it answers). A replay
-window of recently-seen `mid`s per peer (4096; §0) bounds the dedup memory.
+give v3 what v2 never had — **dedup** (a re-delivered (`mid`, chunk index) pair
+already seen is dropped; §6.1 says why the index is part of the key) and **ack
+correlation** (an `ack` names the `mid` it answers). A replay window of 4096
+recently-seen keys per peer (§0) bounds the dedup memory.
 
 ### 4.1 Application data
+
+A whole message carries its payload directly:
 
 ```json
 { "type": "data", "mid": "<128-bit hex>", "to": "gamma", "from": "alpha",
   "ttl": 16, "chunk": { "i": 0, "n": 1 }, "payload": { ... } }
+```
+
+One segment of a split message carries `seg` in its place (§6.1):
+
+```json
+{ "type": "data", "mid": "<128-bit hex>", "to": "gamma", "from": "alpha",
+  "ttl": 16, "chunk": { "i": 0, "n": 3 }, "seg": "{\"reading\":[1,2,3" }
 ```
 
 - `to`/`from` are final destination and origin labels (as v2), authenticated —
@@ -138,8 +153,15 @@ window of recently-seen `mid`s per peer (4096; §0) bounds the dedup memory.
 - `ttl` is a hop limit, decremented at each relay; a message reaching `ttl == 0`
   is dropped and NAKed (§7). This bounds routing loops, which v2 had no guard
   against.
-- `chunk` gives this chunk's index and the total count; `n == 1` for
-  unchunked messages.
+- `chunk` gives this segment's index and the total count. A whole message
+  omits `chunk` or sends `n == 1`, and carries `payload`; one segment of a
+  split message carries `chunk` with `n > 1` and carries `seg` in place of
+  `payload`. **`payload` and `seg` never appear together, and exactly one of
+  them is present** — so a node that does not reassemble cannot mistake a
+  segment for a complete payload (§6.1).
+- `seg` is this segment's slice of the payload's UTF-8 serialization, carried
+  as a JSON string. It is not Base64: §0's Base64 rule covers binary fields,
+  and a segment is text (decision #25).
 
 ## 5. Discovery and latency (defect D3)
 
@@ -180,6 +202,82 @@ measures **real round-trip time**:
   trust each other; a relay sees plaintext.
 - **Broadcast** targets every known reachable label except the node's own (the
   v2 M1 fix, D5, now the specified behavior).
+
+### 6.1 Splitting and reassembly
+
+An application payload too large for one transport frame is split by the origin
+and reassembled by the destination, so the frame cap (§0) bounds a single read
+and never bounds application data (§2).
+
+**Splitting.** The origin serializes `payload` to JSON, takes its UTF-8 bytes,
+and cuts them into `n` segments of at most **24000 bytes** (§0), every cut made
+on a UTF-8 character boundary so each segment is itself valid UTF-8 and can be
+carried in a JSON string. Cutting on a byte budget rather than a character
+count keeps the split identical in every language: UTF-8 has no surrogates, so a
+code point is either wholly inside a segment or wholly outside it, and the
+divergence between counting UTF-16 code units and counting code points — which
+`security.md` §11.1 has to legislate for canonicalization — cannot arise here.
+
+**Wire shape.** Every segment is a `data` message (§4.1) sharing one `mid`,
+carrying `chunk` as `{"i": <index>, "n": <count>}` with `0 <= i < n`, and
+carrying its slice in a top-level **`seg`** string. A segment has **no
+`payload`**; a whole message has `payload` and no `seg`. The two are mutually
+exclusive, which is what makes the failure mode structurally impossible rather
+than merely forbidden: a node that does not reassemble sees a `data` with no
+`payload` and rejects it, instead of handing a fragment to the application as
+though it were a complete message.
+
+**Reassembly.** The destination buffers segments under their `mid`, concatenates
+their `seg` values as UTF-8 bytes in ascending `i`, and parses the result as the
+payload. Segments may arrive in any order — §9 does not guarantee ordering, so
+out-of-order arrival is the expected case and not an error.
+
+**Dedup.** The duplicate-suppression key is the pair (`mid`, chunk index), not
+`mid` alone. Every segment of one message shares that message's `mid`, so a
+destination keying on `mid` would discard segments 1..n-1 as already-seen
+duplicates and reassembly would never complete — §4's dedup rule read literally
+defeats splitting outright. A whole message uses index 0.
+
+**Bounds.** These are wire constants (§0), not local policy, so an origin knows
+what every conforming destination will accept. Together they bound destination
+memory absolutely, which is the point: splitting exists to lift the frame cap off
+application data, and a feature that lifts one bound must not remove every other
+one — that is how defect D7 (unbounded reads) would come back wearing a new hat.
+
+A destination rejects a segment whose `chunk` is not an object, whose `i` or `n`
+is not an integer, whose `n` is outside 1..1024, or whose `i` is outside 0..n-1,
+and it rejects it **before reserving space for `n` segments**, so one frame
+cannot make a destination allocate on a number its peer chose. Beyond that:
+
+- **16777216 bytes** of segment data may be buffered at once, summed across
+  every in-flight message — not per message. A segment that would carry the
+  total past it is refused and its message abandoned. Since `n` cannot exceed
+  1024, this is also the largest payload any conforming destination will
+  reassemble, so an origin needs no second number.
+- **256** messages may be in flight at once. Buffered bytes alone would not
+  bound the bookkeeping, because a flood of distinct `mid`s each carrying an
+  empty segment costs nothing against a byte budget and still costs memory.
+- a partially-filled message is discarded once it is **30000 ms** old, so an
+  abandoned message cannot pin memory for the life of the session.
+
+An origin whose payload would need more than 1024 segments, or would exceed the
+reassembly buffer, fails the send locally and tells the caller (§6, Send) rather
+than emitting a message no conforming destination can accept.
+
+**Relay.** A relay forwards segments individually, decrementing `ttl` at each
+hop, and does not reassemble: reassembly is a destination behavior, so a relay
+needs no per-message buffer and inherits none of the bounds above.
+
+**Ack.** The destination acks the `mid` once, when reassembly completes — not
+once per segment. An `ack` or `nak` (§7) therefore always refers to the whole
+application message, never to part of one.
+
+**What this does not provide.** There is no per-segment retransmission. A lost
+segment means the message never completes: the destination discards the partial
+at the timeout and sends no `ack`, and the origin learns of the failure exactly
+as it learns of any unacknowledged message (§7). Reliability stronger than that
+is the application's to build, and splitting deliberately does not pretend
+otherwise.
 
 ## 7. Acknowledgement and liveness (defect D4)
 

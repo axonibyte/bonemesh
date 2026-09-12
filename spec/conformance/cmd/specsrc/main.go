@@ -147,6 +147,15 @@ func main() {
 		}
 		present++
 		norm := normalize(src)
+		// Digit-group separators are idiomatic in several of these languages --
+		// Elixir writes 16_777_216 and Rust writes 1_000_000_000 -- and a plain
+		// substring search for "16777216" does not find either. Searching a copy
+		// with separators closed up finds both, and closing them only BETWEEN
+		// DIGITS leaves identifiers like MAX_SEGMENT_BYTES intact, so the tunable
+		// regex below is unaffected. The alternative was to make two ports spell
+		// their constants un-idiomatically to suit the checker, which is fixing
+		// the wrong thing.
+		joined := closeDigitSeparators(src)
 		bad := 0
 
 		// A. literal constants the spec pins.
@@ -156,7 +165,7 @@ func main() {
 			if lit.normalized {
 				hay, needle = norm, normalize(lit.value)
 			}
-			if !strings.Contains(hay, needle) {
+			if !strings.Contains(hay, needle) && !strings.Contains(joined, needle) {
 				fail("%-7s missing %s (spec pins %q)", im.name, lit.what, lit.value)
 				bad++
 			}
@@ -252,7 +261,23 @@ func extractSpec(protocol, security string) specPins {
 			regexp.MustCompile(`(?m)^\| Handshake frame max \| (\d+) bytes`)))
 	add("transport frame cap",
 		mustFind("transport frame cap", protocol,
-			regexp.MustCompile(`(?m)^\| Transport frame max \(default\) \| (\d+) bytes`)))
+			regexp.MustCompile(`(?m)^\| Transport frame max \| (\d+) bytes`)))
+
+	// Two of §0's four splitting bounds are pinned here and two deliberately are
+	// not. 24000 and 16777216 are distinctive enough that finding them in a tree
+	// means something. A substring search for the other three -- 1024, 256 and 30000 --
+	// is satisfied by any buffer size, port number or timeout already in the
+	// source, so pinning them here would assert nothing while reading as
+	// coverage. All four are pinned behaviourally by interop/check-chunk-<impl>.sh,
+	// which splits a known payload and compares the segment boundaries, and by the
+	// negative cases in corpus/messages.json, which drive n past 1024. That is the
+	// same portfolio argument as the frame cap above.
+	add("chunk segment max",
+		mustFind("chunk segment max", protocol,
+			regexp.MustCompile(`(?m)^\| Chunk segment max \| (\d+) bytes`)))
+	add("reassembly buffer max",
+		mustFind("reassembly buffer max", protocol,
+			regexp.MustCompile(`(?m)^\| Reassembly buffer max \| (\d+) bytes`)))
 
 	ttl := mustFind("ttl default/range", protocol,
 		regexp.MustCompile(`(?m)^\| `+"`ttl`"+` default \| (\d+; range \d+–\d+)`))
@@ -392,6 +417,21 @@ func corpusSchemas(path string) ([]string, error) {
 // ---------------------------------------------------------------------------
 // source loading
 // ---------------------------------------------------------------------------
+
+// closeDigitSeparators removes an underscore that sits between two digits, so
+// 16_777_216 reads as 16777216 while MAX_SEGMENT_BYTES is left alone.
+func closeDigitSeparators(src string) string {
+	var b strings.Builder
+	b.Grow(len(src))
+	for i := 0; i < len(src); i++ {
+		if src[i] == '_' && i > 0 && i+1 < len(src) &&
+			src[i-1] >= '0' && src[i-1] <= '9' && src[i+1] >= '0' && src[i+1] <= '9' {
+			continue
+		}
+		b.WriteByte(src[i])
+	}
+	return b.String()
+}
 
 func loadSource(root string, im impl) (string, int, error) {
 	var b strings.Builder

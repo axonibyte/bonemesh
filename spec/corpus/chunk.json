@@ -1,0 +1,82 @@
+{
+  "description": "Splitting and reassembly (protocol.md section 6.1). Each split case names a payload built as {key: unit repeated times} -- generative rather than literal, following size_cases in framing.json, so a 96 KB vector costs no 96 KB of corpus. A conforming implementation must serialize that payload, split it, and produce exactly the segment byte lengths given, then rebuild the payload by concatenating the segments as UTF-8 bytes.\n\nWhat this family uniquely proves: that all seven implementations put the cuts in the SAME places. Nothing else can see that. The bounds (chunk count, buffer, in-flight count, timeout) are pinned by the per-language unit suites and the negative cases in messages.json; the wire shape is pinned by messages.json. This file deliberately does not duplicate either.\n\nVectors avoid the characters < > and & on purpose. Go's encoding/json escapes them to \\u003c, \\u003e and \\u0026 by default where the other six emit them raw, which would move Go's cuts; go/message/chunk.go disables that for splitting so the fleet agrees, and these vectors would catch it coming back.",
+  "constants": {
+    "max_segment_bytes": 24000,
+    "max_chunks": 1024,
+    "max_reassembly_buffer": 16777216,
+    "max_concurrent_reassemblies": 256,
+    "reassembly_timeout_millis": 30000
+  },
+  "mid": "0123456789abcdef0123456789abcdef",
+  "split_cases": [
+    {
+      "name": "whole-well-under-the-segment-maximum",
+      "note": "A payload that fits travels whole: one message, payload present, no seg.",
+      "key": "blob",
+      "unit": "abcdefghij",
+      "times": 10,
+      "expect_whole": true,
+      "segment_byte_lengths": []
+    },
+    {
+      "name": "whole-exactly-at-the-segment-maximum",
+      "note": "The boundary itself is still whole -- the cap is inclusive, so a payload serializing to exactly 24000 bytes is not split.",
+      "key": "b",
+      "unit": "a",
+      "times": 23992,
+      "expect_whole": true,
+      "segment_byte_lengths": []
+    },
+    {
+      "name": "two-segments-one-byte-over",
+      "note": "One byte past the maximum is the smallest split there is, and its second segment is a single byte.",
+      "key": "b",
+      "unit": "a",
+      "times": 23993,
+      "expect_whole": false,
+      "segment_byte_lengths": [
+        24000,
+        1
+      ]
+    },
+    {
+      "name": "five-segments-ascii",
+      "note": "96000 filler bytes: four full segments and a short tail.",
+      "key": "blob",
+      "unit": "0123456789abcdef",
+      "times": 6000,
+      "expect_whole": false,
+      "segment_byte_lengths": [
+        24000,
+        24000,
+        24000,
+        24000,
+        11
+      ]
+    },
+    {
+      "name": "multi-byte-cut-needs-back-off",
+      "note": "Every character is 3 UTF-8 bytes and the 7-byte key prefix leaves 24000 misaligned with the character grid, so a naive byte cut would split a character. The segment lengths below are therefore NOT all 24000: the first cut walks back to the boundary. A port slicing code points rather than bytes, or forgetting the back-off, disagrees here and nowhere else.",
+      "key": "bl",
+      "unit": "日",
+      "times": 9000,
+      "expect_whole": false,
+      "segment_byte_lengths": [
+        23998,
+        3011
+      ]
+    },
+    {
+      "name": "multi-byte-cut-already-aligned",
+      "note": "The same payload with a 9-byte key prefix, which leaves 24000 aligned with the 3-byte character grid. Pinned alongside the case above so the back-off is shown to fire only when it must, rather than shortening every cut.",
+      "key": "blob",
+      "unit": "日",
+      "times": 9000,
+      "expect_whole": false,
+      "segment_byte_lengths": [
+        24000,
+        3011
+      ]
+    }
+  ]
+}

@@ -40,8 +40,8 @@ trap 'rm -rf "$work"; kill $(jobs -p) 2>/dev/null || true; pkill -f "$mesh" 2>/d
 ca() { "$cabin" "$@" >/dev/null 2>&1; }
 # Prefer the pinned go126 toolchain when present, as the drivers and the
 # helper builds above already do; the developer driver has no bare "go".
-[ -x "$cabin" ] || (cd "$repo/go" && g=go126; command -v "$g" >/dev/null 2>&1 || g=go; GOTOOLCHAIN=local GOFLAGS=-mod=vendor "$g" build -o bonemesh-ca ./cmd/bonemesh-ca)
-[ -x "$inspect" ] || (cd "$repo/go" && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o bonemesh-inspect ./cmd/bonemesh-inspect)
+sh "$here/ensure-bin.sh" go bonemesh-ca
+sh "$here/ensure-bin.sh" go bonemesh-inspect
 
 # --- usable implementations + capability probe --------------------------------
 usable=""

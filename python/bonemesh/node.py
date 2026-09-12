@@ -22,6 +22,7 @@ import sys
 import time
 
 from bonemesh import message
+from bonemesh.chunk import Reassembler, split
 from bonemesh.frame import HANDSHAKE_CAP, TRANSPORT_CAP, classify, encode
 from bonemesh.handshake import Handshake
 from bonemesh.routing import Dedup, Table
@@ -125,6 +126,7 @@ class Node:
         self.server: asyncio.Server | None = None
         self.table = Table(config.label)
         self.dedup = Dedup(DEDUP_WINDOW)
+        self.reassembler = Reassembler()
         self._hb_task: asyncio.Task | None = None
         self._tasks: set[asyncio.Task] = set()
         # Connections still inside the handshake, i.e. accepted but not yet a
@@ -351,12 +353,20 @@ class Node:
         """send_mid with an explicit initial TTL, so a test can force a relay to
         exhaust the hop limit and emit a NAK."""
         mid = message.new_mid()
-        msg = message.data(mid, self.cfg.label, to, ttl, payload)
-        nh = self.table.next_hop(to)
-        if not nh or not self._send_to_link(nh, msg):
-            self._enqueue_retry(msg)  # F2: retry when a route or link appears
+        try:
+            segments = split(mid, self.cfg.label, to, ttl, payload)
+        except ValueError:
+            # Over a §0 bound, so no conforming destination would reassemble it.
+            # §6.1 requires the caller be told locally instead of the mesh carrying
+            # a message that cannot arrive.
             return mid, False
-        return mid, True
+        nh = self.table.next_hop(to)
+        ok = True
+        for msg in segments:
+            if not nh or not self._send_to_link(nh, msg):
+                self._enqueue_retry(msg)  # F2: retry when a route or link appears
+                ok = False
+        return mid, ok
 
     # --- wire --------------------------------------------------------------
 
@@ -576,12 +586,16 @@ class Node:
         frm = str(msg.get("from") or "")
         me = self.cfg.label.lower()
         if str(msg.get("to") or "").lower() == me:
+            whole = self.reassembler.offer(msg, _now_ms())
+            if whole is Reassembler.INCOMPLETE:
+                return  # still incomplete, or refused by a §0 bound
             for cb in self.listeners:
                 try:
-                    cb(msg.get("payload"))
+                    cb(whole)
                 except Exception:
                     pass  # a listener's errors are its own
-            # F6: acknowledge receipt back toward the origin.
+            # F6: acknowledge receipt back toward the origin -- once, when the whole
+            # message is reassembled, never per segment (§6.1, Ack).
             if frm and frm.lower() != me:
                 self._route_control(
                     message.ack_to(msg.get("mid"), self.cfg.label, frm, message.DEFAULT_TTL))

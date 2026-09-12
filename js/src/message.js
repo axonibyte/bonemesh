@@ -5,6 +5,12 @@ import crypto from 'node:crypto';
 
 export const DEFAULT_TTL = 16;
 
+// chunk.js imports the builders below and this imports its bound back, which is a
+// module cycle. It is safe here and only here: both directions are read inside
+// function bodies rather than at module evaluation, so ESM's live bindings are
+// resolved by the time either is called. Do not move either use to top level.
+import { MAX_CHUNKS } from './chunk.js';
+
 // Returns null if valid, else a reason tag. Schemas: bmx1, envelope, data, ack,
 // nak, bye.
 export function validate(schema, f) {
@@ -46,7 +52,43 @@ function validateData(f) {
   if (typeof f.from !== 'string') return 'missing-field';
   if (!isInt(f.ttl)) return 'missing-field';
   if (f.ttl < 1 || f.ttl > 255) return 'ttl-range';
-  if (!('payload' in f)) return 'missing-field';
+  return checkChunking(f);
+}
+
+// Validates the splitting half of the data schema (protocol.md §6.1): the shape
+// of `chunk`, its bounds, and the rule that exactly one of `payload` and `seg` is
+// present.
+//
+// The exclusion is the load-bearing part. It is what stops a node that does not
+// reassemble from handing a fragment to the application as though it were a whole
+// message -- the silent corruption D11 described. A segment has no payload to
+// deliver, so the mistake is unavailable rather than merely forbidden.
+//
+// Carrying neither stays 'missing-field' rather than becoming a splitting error:
+// it is an absent field, the corpus has pinned that reason since 3.0.0, and
+// renaming it here would have rewritten a vector rather than added one.
+function checkChunking(f) {
+  let n = 1;
+  if ('chunk' in f) {
+    const c = f.chunk;
+    // An array passes typeof 'object' and is caught by the isInt checks below,
+    // since c.i is undefined for one; mutation showed an explicit Array.isArray
+    // test could not reject anything this does not already reject.
+    if (c === null || typeof c !== 'object') return 'chunk-format';
+    if (!isInt(c.i) || !isInt(c.n)) return 'chunk-format';
+    n = c.n;
+    if (n < 1 || n > MAX_CHUNKS) return 'chunk-range';
+    if (c.i < 0 || c.i >= n) return 'chunk-range';
+  }
+  const hasPayload = 'payload' in f;
+  const hasSeg = 'seg' in f;
+  if (!hasPayload && !hasSeg) return 'missing-field';
+  // Three clauses, none redundant. An explicit "both present" test was removed:
+  // mutation showed it could not reject anything these two do not already reject,
+  // since n is always 1 or more, so it read as coverage while asserting nothing.
+  if (n === 1 && hasSeg) return 'payload-or-seg'; // a whole message carries its payload
+  if (n > 1 && hasPayload) return 'payload-or-seg'; // a segment does not
+  if (hasSeg && typeof f.seg !== 'string') return 'seg-format';
   return null;
 }
 
@@ -109,6 +151,17 @@ export function newMid() {
 
 export function data(mid, from, to, ttl, payload) {
   return { type: 'data', mid, from, to, ttl, payload };
+}
+
+/**
+ * Builds one segment of a split application message (protocol.md §6.1). A
+ * segment carries `seg` and deliberately carries no `payload`: the two are
+ * mutually exclusive, so a node that does not reassemble sees a data message with
+ * no payload and rejects it rather than handing a fragment to the application as
+ * though it were whole.
+ */
+export function dataSegment(mid, from, to, ttl, i, n, seg) {
+  return { type: 'data', mid, from, to, ttl, chunk: { i, n }, seg };
 }
 
 export function ack(mid) {

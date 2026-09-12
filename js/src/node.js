@@ -17,6 +17,7 @@ import { Transport } from './transport.js';
 import { classify, encode, HANDSHAKE_CAP, TRANSPORT_CAP } from './frame.js';
 import * as message from './message.js';
 import { Table, Dedup } from './routing.js';
+import { split, Reassembler } from './chunk.js';
 import { loadTunables } from './tunables.js';
 
 // A per-socket frame reader: buffers bytes, splits on newlines under a cap, and
@@ -89,6 +90,7 @@ export class Node {
     this.server = null;
     this.table = new Table(config.label);
     this.dedup = new Dedup(4096);
+    this.reassembler = new Reassembler();
     this.hb = null;
   }
 
@@ -250,13 +252,24 @@ export class Node {
 
   #sendWithTtl(to, payload, ttl) {
     const mid = message.newMid();
-    const msg = message.data(mid, this.cfg.label, to, ttl, payload);
-    const nh = this.table.nextHop(to);
-    if (!nh || !this.#sendToLink(nh, msg)) {
-      this.#enqueueRetry(msg); // F2: retry when a route/link appears
+    let segments;
+    try {
+      segments = split(mid, this.cfg.label, to, ttl, payload);
+    } catch {
+      // Over a §0 bound, so no conforming destination would reassemble it. §6.1
+      // requires the caller be told locally instead of the mesh carrying a message
+      // that cannot arrive.
       return { mid, ok: false };
     }
-    return { mid, ok: true };
+    const nh = this.table.nextHop(to);
+    let ok = true;
+    for (const msg of segments) {
+      if (!nh || !this.#sendToLink(nh, msg)) {
+        this.#enqueueRetry(msg); // F2: retry when a route/link appears
+        ok = false;
+      }
+    }
+    return { mid, ok };
   }
 
   #sendToLink(label, inner) {
@@ -468,14 +481,20 @@ export class Node {
   }
 
   #handleData(msg) {
-    const chunkIdx = msg.chunk && typeof msg.chunk.i === 'number' ? msg.chunk.i : -1;
+    const chunkIdx =
+      msg.chunk !== null && typeof msg.chunk === 'object' && typeof msg.chunk.i === 'number'
+        ? msg.chunk.i
+        : -1;
     if (this.dedup.sawBefore(`d:${msg.mid}:${chunkIdx}`)) return;
     const from = String(msg.from || '');
     if (String(msg.to || '').toLowerCase() === this.cfg.label.toLowerCase()) {
+      const payload = this.reassembler.offer(msg, nowMs());
+      if (payload === undefined) return; // still incomplete, or refused by a §0 bound
       for (const cb of this.listeners) {
-        try { cb(msg.payload); } catch { /* listener errors are its own */ }
+        try { cb(payload); } catch { /* listener errors are its own */ }
       }
-      // F6: acknowledge receipt back toward the origin.
+      // F6: acknowledge receipt back toward the origin -- once, when the whole
+      // message is reassembled, never per segment (§6.1, Ack).
       if (from && from.toLowerCase() !== this.cfg.label.toLowerCase()) {
         this.#routeControl(message.ackTo(msg.mid, this.cfg.label, from, message.DEFAULT_TTL));
       }
