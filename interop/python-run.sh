@@ -20,5 +20,11 @@ if [ -z "${BONEMESH_PY:-}" ] && [ ! -x "$py" ]; then
   }
 fi
 
+# When BONEMESH_PY names an external interpreter, the `bonemesh` package is not
+# installed in it -- only its dependencies are -- so put the source tree on the
+# import path. PYTHONPATH is harmless for the venv case, where the package is
+# installed and takes precedence anyway.
+export PYTHONPATH="$repo/python${PYTHONPATH:+:$PYTHONPATH}"
+
 script="$1"; shift
 exec "$py" "$repo/python/$script" "$@"
