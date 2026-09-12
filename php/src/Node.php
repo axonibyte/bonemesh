@@ -596,6 +596,12 @@ final class Node
 
     public function kill(): void
     {
+        // Say goodbye before closing (protocol.md section 8, reason 'shutdown'), so a
+        // peer learns the close was deliberate instead of waiting out its probe
+        // timeout. Best-effort: a link already broken simply cannot be told.
+        foreach (array_keys($this->links) as $peer) {
+            $this->sendToLink((string) $peer, Message::bye('shutdown'));
+        }
         if ($this->server !== null) {
             fclose($this->server);
             $this->server = null;

@@ -591,6 +591,12 @@ export class Node {
   }
 
   kill() {
+    // Say goodbye before closing (protocol.md §8, reason 'shutdown'), so a peer learns
+    // the close was deliberate instead of waiting out its probe timeout. Best-effort:
+    // a link already broken simply cannot be told.
+    for (const peer of this.links.keys()) {
+      try { this.#sendToLink(peer, message.bye('shutdown')); } catch { /* going away */ }
+    }
     if (this.hb) clearInterval(this.hb);
     if (this.server) this.server.close();
     for (const link of this.links.values()) link.socket.destroy();

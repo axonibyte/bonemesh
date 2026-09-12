@@ -56,3 +56,22 @@ test('broadcast with no peers reaches nobody', function () {
     [$node, $ref] = feat_node('self');
     assertEq(0, $node->broadcast(['m' => 'all']));
 });
+
+// Close reasons on the wire (protocol.md section 8). This port's socketpair harness
+// can read exactly what the node wrote, which is what makes the reason assertable at
+// all: a bye is followed by the link closing, so no port surfaces the peer's reason
+// to a listener. The enum itself is pinned by spec/corpus/messages.json; what is
+// pinned here is that kill() actually emits one, and names 'shutdown'.
+test('kill says goodbye with reason shutdown before closing', function () {
+    [$node, $ref] = feat_node('self');
+    $key = str_repeat("\x01", 32);
+    [$aNode, $aPeer] = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+    feat_inject_keyed($node, $ref, 1, $aNode, 'alpha', $key);
+
+    $node->kill();
+
+    $inner = feat_read_inner($aPeer, $key);
+    assertTrue($inner !== null, 'kill() closed the link without saying anything');
+    assertEq('bye', $inner['type']);
+    assertEq('shutdown', $inner['reason'], 'the close reason was not "shutdown"');
+});

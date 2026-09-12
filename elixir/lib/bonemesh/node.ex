@@ -81,6 +81,30 @@ defmodule Bonemesh.Node do
   # --- GenServer ---
 
   @impl true
+  def terminate(_reason, s) do
+    # Say goodbye before closing (protocol.md §8, reason "shutdown"), so a peer learns
+    # the close was deliberate instead of waiting out its probe timeout, and then stop
+    # the link processes.
+    #
+    # There was no terminate/2 at all before 3.3.0. The listening socket is owned by
+    # this process and so closed on exit, but the link processes are plain spawns: they
+    # are not linked, so nothing reaped them and a stopped node left one running per
+    # peer. The other six close their links on kill.
+    for {_peer, e} <- s.links do
+      Kernel.send(e.pid, {:send, Message.bye("shutdown")})
+    end
+
+    # Give the writes a moment to leave before the sockets go with their owners.
+    Process.sleep(50)
+
+    for {_peer, e} <- s.links do
+      Process.exit(e.pid, :shutdown)
+    end
+
+    :ok
+  end
+
+  @impl true
   def init(opts) do
     label = Keyword.fetch!(opts, :label)
     {:ok, listen} = :gen_tcp.listen(Keyword.get(opts, :port, 0), tcp_opts())

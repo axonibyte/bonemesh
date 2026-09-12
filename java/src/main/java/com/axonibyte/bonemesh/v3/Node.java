@@ -383,6 +383,16 @@ public final class Node {
    */
   public void kill() {
     running = false;
+    // Say goodbye before closing (protocol.md §8, reason "shutdown"), so a peer
+    // learns the close was deliberate instead of waiting out its probe timeout.
+    // Best-effort: a link already broken simply cannot be told.
+    for(PeerLink link : links.values()) {
+      try {
+        link.send(Messages.bye("shutdown"));
+      } catch(Exception ignored) {
+        // the link is going away regardless
+      }
+    }
     acceptThread.interrupt();
     heartbeatThread.interrupt();
     closeQuietly(serverSocket);

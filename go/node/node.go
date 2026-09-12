@@ -915,6 +915,19 @@ func (n *Node) sendToLink(label string, inner map[string]any) bool {
 
 // Kill stops the node.
 func (n *Node) Kill() error {
+	// Say goodbye before closing (protocol.md §8, reason "shutdown"), so a peer learns
+	// the close was deliberate instead of waiting out its probe timeout. Best-effort: a
+	// link already broken simply cannot be told.
+	n.mu.Lock()
+	peers := make([]string, 0, len(n.links))
+	for label := range n.links {
+		peers = append(peers, label)
+	}
+	n.mu.Unlock()
+	for _, label := range peers {
+		n.sendToLink(label, message.Bye("shutdown"))
+	}
+
 	err := n.listener.Close()
 	close(n.done)
 	n.mu.Lock()

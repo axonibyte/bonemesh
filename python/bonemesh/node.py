@@ -151,6 +151,14 @@ class Node:
         return self.server.sockets[0].getsockname()[1]
 
     def kill(self) -> None:
+        # Say goodbye before closing (protocol.md section 8, reason "shutdown"), so a
+        # peer learns the close was deliberate instead of waiting out its probe
+        # timeout. Best-effort: a link already broken simply cannot be told.
+        for peer in list(self.links):
+            try:
+                self._send_to_link(peer, message.bye("shutdown"))
+            except Exception:
+                pass  # the link is going away regardless
         if self._hb_task:
             self._hb_task.cancel()
         for t in list(self._tasks):

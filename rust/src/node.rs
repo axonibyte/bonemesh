@@ -153,6 +153,9 @@ impl Node {
         let accept_inner = inner.clone();
         thread::spawn(move || {
             for stream in listener.incoming() {
+                if accept_inner.stop.load(Ordering::SeqCst) {
+                    break; // kill() unblocks this loop so the port is released
+                }
                 if let Ok(stream) = stream {
                     let inner = accept_inner.clone();
                     thread::spawn(move || {
@@ -338,8 +341,34 @@ impl Node {
     }
 
     /// Stops the node's heartbeat.
+    /// Stops the node: every session is closed with a `bye` naming `shutdown`
+    /// (protocol.md §8), the links are shut down, and the listening socket is
+    /// released.
+    ///
+    /// This used to be the single `stop` store below and nothing else, which left a
+    /// "killed" node still bound to its port and still serving every open link until
+    /// the process exited -- where the other six closed both. The accept loop blocks
+    /// in `incoming()`, so setting the flag alone cannot wake it; a throwaway
+    /// connection to our own port does.
     pub fn kill(&self) {
         self.inner.stop.store(true, Ordering::SeqCst);
+
+        // Say goodbye before closing, so a peer learns this was deliberate rather
+        // than waiting out its probe timeout to find out.
+        let peers: Vec<String> = self.inner.links.lock().unwrap().keys().cloned().collect();
+        for peer in &peers {
+            send_to_link(&self.inner, peer, &message::bye(Some("shutdown")));
+        }
+
+        let links: Vec<_> = self.inner.links.lock().unwrap().drain().collect();
+        for (_peer, link) in links {
+            if let Ok(l) = link.lock() {
+                let _ = l.write.shutdown(std::net::Shutdown::Both);
+            }
+        }
+
+        // Unblock the accept loop so it observes `stop`, exits, and frees the port.
+        let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
     }
 }
 
