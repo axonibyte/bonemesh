@@ -44,7 +44,13 @@ log "uv (Astral) for the Python port's dependency set"
 # installer is checksum-free by design upstream, so pin the version rather than
 # tracking latest, matching how the rest of this file pins toolchains.
 if ! command -v uv >/dev/null 2>&1; then
-  curl -fsSL https://astral.sh/uv/0.12.0/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh >/dev/null 2>&1
+  # `|| true` because this file runs under `set -e` and the fetch is the only
+  # command in this branch: without it a network hiccup would abort the whole guest
+  # build instead of skipping one implementation. The `command -v` below is the
+  # actual error handling -- it logs the omission loudly, the same way the Elixir
+  # exclusion is logged rather than silently dropped.
+  curl -fsSL https://astral.sh/uv/0.12.0/install.sh \
+    | env UV_INSTALL_DIR=/usr/local/bin sh >/dev/null 2>&1 || true
 fi
 command -v uv >/dev/null 2>&1 || log "WARNING: uv did not install; the Python driver will be skipped and logged"
 
