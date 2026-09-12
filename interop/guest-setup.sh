@@ -6,10 +6,12 @@
 # Four toolchains come from apt at versions that match the driver and link the
 # system OpenSSL 3.5 (so their post-quantum crypto works): OpenJDK 25, Go 1.26,
 # PHP 8.5 (+sodium), and Rust. Node 24 comes from NodeSource (apt's Node 22
-# bundles an OpenSSL without ML-KEM/ML-DSA). Erlang/Elixir are attempted from the
-# Erlang Solutions repo for an OTP with the native PQC API (apt's OTP 27.3 lacks
-# it); if that install does not land, the Elixir node is left out of the guest
-# run and the omission is logged — never silently dropped.
+# bundles an OpenSSL without ML-KEM/ML-DSA). Python 3 comes from apt with uv from
+# Astral, because the Python port's post-quantum primitives come from the
+# `cryptography` wheel rather than from the stdlib. Erlang/Elixir are attempted
+# from the Erlang Solutions repo for an OTP with the native PQC API (apt's OTP
+# 27.3 lacks it); if that install does not land, the Elixir node is left out of
+# the guest run and the omission is logged — never silently dropped.
 set -eu
 
 export DEBIAN_FRONTEND=noninteractive
@@ -25,6 +27,7 @@ apt-get install -y -qq \
   openjdk-25-jdk-headless golang-go \
   php8.5-cli \
   rustc cargo \
+  python3 python3-venv \
   iproute2 iptables build-essential curl ca-certificates gnupg git >/dev/null
 # php8.5-cli bundles the sodium extension on Ubuntu (no separate package).
 
@@ -34,12 +37,29 @@ if ! node --version 2>/dev/null | grep -q '^v24'; then
   apt-get install -y -qq nodejs >/dev/null
 fi
 
+log "uv (Astral) for the Python port's dependency set"
+# The Python node needs ML-KEM-768 and ML-DSA-65/87, which CPython's stdlib does
+# not provide; they come from the `cryptography` wheel. uv installs it from a
+# committed uv.lock, so the guest gets exactly the audited dependency set. The
+# installer is checksum-free by design upstream, so pin the version rather than
+# tracking latest, matching how the rest of this file pins toolchains.
+if ! command -v uv >/dev/null 2>&1; then
+  # `|| true` because this file runs under `set -e` and the fetch is the only
+  # command in this branch: without it a network hiccup would abort the whole guest
+  # build instead of skipping one implementation. The `command -v` below is the
+  # actual error handling -- it logs the omission loudly, the same way the Elixir
+  # exclusion is logged rather than silently dropped.
+  curl -fsSL https://astral.sh/uv/0.12.0/install.sh \
+    | env UV_INSTALL_DIR=/usr/local/bin sh >/dev/null 2>&1 || true
+fi
+command -v uv >/dev/null 2>&1 || log "WARNING: uv did not install; the Python driver will be skipped and logged"
+
 # Elixir is deliberately NOT installed here. The node needs Erlang/OTP 28 for the
 # native ML-DSA/ML-KEM crypto API; ubuntu-26.04 apt ships OTP 27.3 (which lacks
 # that API — verified: :crypto.generate_key(:mldsa65,...) raises), and Erlang
 # Solutions has no 26.04 suite yet. Building OTP 28 from source on every
 # ephemeral guest is too costly for a routine gate. Elixir's cross-language
-# interop is fully covered by the six-language matrix on the driver (which has
+# interop is fully covered by the seven-language matrix on the driver (which has
 # OTP 28); the netem tiers here run the other five. The runners health-probe each
 # driver and log the skip, so this exclusion is explicit, never silent.
 
@@ -49,6 +69,8 @@ go version 2>/dev/null || true
 php -v 2>/dev/null | head -1 || true
 rustc --version 2>/dev/null || true
 node --version 2>/dev/null || true
+python3 --version 2>/dev/null || true
+uv --version 2>/dev/null || true
 elixir --version 2>/dev/null | tail -1 || true
 openssl version || true
 tc -V 2>/dev/null || true
@@ -67,5 +89,16 @@ log "pre-building Go + Rust interop binaries, the CA/inspector tools, and the ti
 (cd interop/tier5 && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o faultpeer .)
 (cd interop/tier7 && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o fuzzer .)
 (cd rust && cargo build --offline --quiet --bin interop_node)
+
+# The Python venv is created up front for the same reason: `uv sync` downloading
+# and installing cryptography inside a health probe reads as an unavailable
+# driver. On a manylinux guest this is a wheel install and takes seconds (unlike
+# the from-source build on hosts with no wheel).
+log "pre-creating the Python venv from the committed uv.lock"
+if command -v uv >/dev/null 2>&1; then
+  (cd python && uv sync --locked) || log "WARNING: uv sync failed; the Python driver will be skipped and logged"
+else
+  log "WARNING: no uv; skipping the Python venv (the driver health-probe will log the skip)"
+fi
 
 log "done"

@@ -2,7 +2,7 @@
 # Tier 8 — concurrency / convergence (methodology tier 8), language-agnostic.
 #
 # Every implementation now routes, so this tier builds a mixed-language diamond
-# from whatever implementations are usable on this host (six on the driver, five
+# from whatever implementations are usable on this host (seven on the driver, six
 # on the interop guest which lacks Erlang/OTP 28):
 #
 #         bravo (relay)
@@ -31,7 +31,9 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"; kill $(jobs -p) 2>/dev/null || true; pkill -f "$mesh" 2>/dev/null || true' EXIT
 
 ca() { "$cabin" "$@" >/dev/null 2>&1; }
-[ -x "$cabin" ] || (cd "$repo/go" && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o bonemesh-ca ./cmd/bonemesh-ca)
+# Prefer the pinned go126 toolchain when present, as the drivers and the
+# helper builds above already do; the developer driver has no bare "go".
+[ -x "$cabin" ] || (cd "$repo/go" && g=go126; command -v "$g" >/dev/null 2>&1 || g=go; GOTOOLCHAIN=local GOFLAGS=-mod=vendor "$g" build -o bonemesh-ca ./cmd/bonemesh-ca)
 
 # Every implementation routes, so any usable driver can play any role.
 usable=""
@@ -99,23 +101,35 @@ portB=$(free_port)
 portD=$(free_port $((portB + 1)))
 echo "starting relay bravo (:$portB, $r_bravo)"
 # shellcheck disable=SC2046
-"$here/drivers/$r_bravo.sh" listen --port "$portB" $(common bravo) --out "$work/bravo.out" --seconds 60 &
+"$here/drivers/$r_bravo.sh" listen --port "$portB" $(common bravo) --out "$work/bravo.out" --seconds 90 &
 wait_bind "$portB"
 echo "starting relay delta (:$portD, $r_delta)"
 # shellcheck disable=SC2046
-"$here/drivers/$r_delta.sh" listen --port "$portD" $(common delta) --out "$work/delta.out" --seconds 60 &
+"$here/drivers/$r_delta.sh" listen --port "$portD" $(common delta) --out "$work/delta.out" --seconds 90 &
 wait_bind "$portD"
 
 echo "starting charlie (dest, $r_charlie) and alpha (sender, $r_alpha), both dialing both relays"
 # shellcheck disable=SC2046
-"$here/drivers/$r_charlie.sh" mesh $(common charlie) --peers "127.0.0.1:$portB,127.0.0.1:$portD" --out "$outC" --seconds 60 &
+"$here/drivers/$r_charlie.sh" mesh $(common charlie) --peers "127.0.0.1:$portB,127.0.0.1:$portD" --out "$outC" --seconds 90 &
 # shellcheck disable=SC2046
 "$here/drivers/$r_alpha.sh" mesh $(common alpha) --peers "127.0.0.1:$portB,127.0.0.1:$portD" \
-  --send-to charlie --message "$work/msg.json" --routes "$routesA" --seconds 60 &
+  --send-to charlie --message "$work/msg.json" --routes "$routesA" --seconds 90 &
 
 echo "waiting for routes to converge and delivery to begin"
+# 30s, not 15s. This window has to absorb process startup for up to four
+# different runtimes before distance-vector convergence can even begin, and a
+# cold `mix run` or JVM alone can eat most of 15s. Under load -- immediately
+# after tier 7 has driven seven implementations through a fuzz battery -- 15s was
+# not enough, and this tier failed with "topology never converged" while passing
+# on a rerun seconds later. A flaky gate is worse than no gate: it teaches you to
+# re-run until green.
+#
+# This is patience, not a weakened oracle. The assertion is unchanged -- delivery
+# must still happen before any fault is injected -- so a real convergence failure
+# still fails, just after waiting long enough to mean it. The node lifetime above
+# was raised to 90s to keep headroom for the two waits that follow.
 ok=no; t=0
-while [ "$t" -lt 60 ]; do
+while [ "$t" -lt 120 ]; do
   if grep -q "$marker" "$outC" 2>/dev/null; then ok=yes; break; fi
   t=$((t + 1)); sleep 0.25
 done

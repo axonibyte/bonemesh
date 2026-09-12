@@ -145,7 +145,7 @@ the v3 delta reviewable and gives ports a map of legacy behavior they must
 - **Shared corpora** (`spec/corpus/`): canonical encodings, hostile/malformed
   message corpus, handshake transcripts (with fixed test keys), routing
   scenario vectors ("given this topology and these advertisements, A reaches D
-  via B"). Consumed by every tenant — this is what makes six implementations
+  via B"). Consumed by every tenant — this is what makes seven implementations
   one project.
 - **Conformance runner** (`spec/conformance/`): language-agnostic black-box
   driver that speaks v3 over TCP to any node binary and executes the corpus.
@@ -234,7 +234,7 @@ test does not prove" rule. See [testing.md](testing.md).
 |---|---|---|
 | 1 unit | each language | `<lang>/` |
 | 2 exact-encoding conformance | each language, shared vectors | `<lang>/` ← `spec/corpus/` |
-| 3 source-as-data | each language (impl↔spec coverage checks) | `<lang>/` |
+| 3 source-as-data | shared, one tool over every implementation | `spec/conformance/cmd/specsrc`, driven by `interop/check-spec.sh` |
 | 4 contract / state machine | each language | `<lang>/` |
 | 5 fake-peer fault injection | shared, written once | `interop/` |
 | 6 containerized mesh | shared | `interop/` |
@@ -309,5 +309,8 @@ language-level concurrency).
 | M7 | Rust, Go, JS ports (parallelizable) | M4 | L |
 | M8 | PHP port | M4, ideally M6 | M |
 | M9 | Interop tiers 8–9 + validation gate over all six | M6, M7, M8 | L |
+| M10 | Python port + tenant; methodology tier 3; corpus checks gated in CI and the root tenant | M9 | M |
 
 The critical path is M0 → M2 → M3 → M4; everything else fans out from M4.
+(M9's "all six" is left as written: a milestone row records what was in scope when
+it was defined, and the seventh implementation arrived in M10.)

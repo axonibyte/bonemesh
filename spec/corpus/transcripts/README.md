@@ -41,21 +41,21 @@ PHP side (openssl 3.5 CLI, `check-pqc-php.sh`):
   expanded decapsulation key — but a decapsulation key never crosses a node, so
   this is a key-*representation* detail, not an interop gap (see below).
 
-So the post-quantum primitives interoperate across six independent
-implementations, and the BMX handshake works across all six.
+So the post-quantum primitives interoperate across seven independent
+implementations, and the BMX handshake works across all seven.
 
 Note on private-key formats (a non-issue by design): implementations differ on
 how they *store* private keys — BouncyCastle expands the ML-DSA/ML-KEM keys,
 RustCrypto, Go, Node, and openssl keep the seed. This never affects interop
 because private keys never cross a node boundary; only public keys, ciphertexts,
-and signatures do, and those are the standard FIPS encodings, which all six match.
+and signatures do, and those are the standard FIPS encodings, which all seven match.
 
 ## Live cross-language matrix
 
-`interop/run-matrix.sh` runs every (responder, initiator) pair across all six
+`interop/run-matrix.sh` runs every (responder, initiator) pair across all seven
 implementations — Java, Elixir, Rust, Go, JS, PHP — completing a real BMX
 handshake, encrypted transport, and application delivery in each direction. All
-36 cells pass. The harness is implementation-agnostic: it discovers drivers in
+49 cells pass. The harness is implementation-agnostic: it discovers drivers in
 `interop/drivers/*.sh` and pairs them without any per-language logic, so a client
 never depends on what implementation answers, only that the protocol is obeyed.
 
@@ -63,9 +63,9 @@ never depends on what implementation answers, only that the protocol is obeyed.
 
 - **Byte-exact full transcript** (the whole bmx1/bmx2/bmx3 bytes) — a static
   vector is unnecessary now that the live cross-language handshake is proven end
-  to end across all six languages. A pinned transcript vector remains optional
+  to end across all seven languages. A pinned transcript vector remains optional
   future work for offline conformance.
 
 Nothing frozen is weakened: the key agreement and schedule are proven across
 Java, Go, Elixir, Rust, JS, and PHP, and the post-quantum layer is now proven
-across all six.
+across all seven.

@@ -4,9 +4,9 @@
 multiple languages.
 
 Traffic is authenticated and encrypted on every hop with NIST post-quantum
-cryptography, and nodes route for one another. Six implementations — Java, Go,
-Rust, PHP, Elixir, and JavaScript (Node.js) — all speak the same wire protocol,
-so a mesh can be any mix of languages.
+cryptography, and nodes route for one another. Seven implementations — Java, Go,
+Rust, PHP, Elixir, JavaScript (Node.js), and Python — all speak the same wire
+protocol, so a mesh can be any mix of languages.
 
 This repository is organized as a super-repo:
 
@@ -16,7 +16,7 @@ This repository is organized as a super-repo:
 | `spec/` | The protocol specification, shared test corpora, and the conformance runner |
 | `interop/` | The multiprotocol test suite that exercises implementations together |
 | `java/` | The Java implementation (the original, and the v3 reference) |
-| `go/`, `rust/`, `php/`, `elixir/`, `js/` | The other five full implementations |
+| `go/`, `rust/`, `php/`, `elixir/`, `js/`, `python/` | The other six full implementations |
 
 ### Documentation
 
@@ -30,7 +30,7 @@ This repository is organized as a super-repo:
 - **Per-language quickstarts** — build, test, and run the interop driver for one
   implementation: [go](go/README.md) · [rust](rust/README.md) ·
   [js](js/README.md) · [php](php/README.md) · [elixir](elixir/README.md) ·
-  [java](java/README.md).
+  [python](python/README.md) · [java](java/README.md).
 - **[spec/protocol.md](spec/protocol.md)** and
   **[spec/security.md](spec/security.md)** — the normative wire and security
   specifications.

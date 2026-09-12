@@ -1,0 +1,46 @@
+# Reaper tenant for the Python implementation. Runs the pytest suite and the
+# dependency-licence gate in a digest-pinned uv container on the generic Ubuntu
+# guest.
+#
+# Unlike the JS and Elixir ports, this one has a runtime dependency: CPython's
+# stdlib has no ML-KEM or ML-DSA, so the post-quantum primitives come from
+# `cryptography` over OpenSSL 3.5. That is the only one, it is
+# Apache-2.0 OR BSD-3-Clause, and tools/check_licenses.py gates its whole
+# transitive set against BoneMesh's Apache-2.0 -- so a future `uv lock` that pulls
+# in something copyleft fails here rather than shipping.
+
+schema = 1
+project = "bonemesh-python"
+
+guests = ["ubuntu-26.04"]
+exec = "container"
+
+[build]
+# docker.io/astral/uv:python3.12-bookworm, pinned by manifest-list digest. The
+# NON-slim variant deliberately, matching axb-iconography's reasoning: the slim
+# image carries no git, and Pipelines and some reaper verbs clone inside the
+# container. `uv sync --locked` refuses to update uv.lock, so the tenant tests the
+# dependency set that is committed rather than whatever resolves today.
+image = "docker.io/astral/uv@sha256:85d4cb1afa769a7338e095b927bee941cf5ec92266c7424b3f6c0f2748567248"
+cmd = "UV_CACHE_DIR=\"$REAPER_CACHE_UV\" uv sync --locked"
+cache = ["uv"]
+
+[run]
+# No pipe into tee: /bin/sh may be dash (no pipefail, no PIPESTATUS), and the
+# suite's exit status is the whole point. Redirect to a file, capture the real
+# status, echo the log for the live view, then re-raise the status.
+#
+# The licence gate runs in the same breath as the tests: it is a build-breaking
+# check, not a report, so it must not be possible to have a green tenant with an
+# incompatible dependency tree.
+cmd = "{ UV_CACHE_DIR=\"$REAPER_CACHE_UV\" uv run pytest -q && UV_CACHE_DIR=\"$REAPER_CACHE_UV\" uv run tools/check_licenses.py; } > \"$REAPER_OUT\"/pytest.log 2>&1; s=$?; cat \"$REAPER_OUT\"/pytest.log; exit $s"
+
+[sync]
+# .venv is host-built and architecture-specific -- a FreeBSD venv with a compiled
+# cryptography rsynced onto a Linux guest would satisfy the driver's -x check and
+# then fail to exec, which is exactly the hazard the root manifest warns about.
+exclude = ["/.venv/", "/out/", "/.pytest_cache/", "__pycache__/"]
+
+[resources]
+cores = 4
+ram_gb = 8

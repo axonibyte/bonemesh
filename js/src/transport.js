@@ -18,7 +18,7 @@ export class Transport {
   seal(inner) {
     const seq = this.sendSeq;
     const pt = Buffer.from(JSON.stringify(inner), 'utf8');
-    const ct = aeadSeal(this.sendKey, nonce(seq), null, pt);
+    const ct = sealCiphertext(this.sendKey, seq, pt);
     this.sendSeq++;
     return { seq: Number(seq), ct: ct.toString('base64') };
   }
@@ -47,11 +47,25 @@ export class Transport {
     const seq = BigInt(carrier.seq);
     if (seq !== this.receiveSeq) throw new Error('out-of-order frame');
     const ct = Buffer.from(carrier.ct, 'base64');
-    const pt = aeadOpen(this.receiveKey, nonce(seq), null, ct);
+    const pt = openCiphertext(this.receiveKey, seq, ct);
     if (pt === null) throw new Error('frame authentication failed');
     this.receiveSeq++;
     return JSON.parse(pt.toString('utf8'));
   }
+}
+
+// The frame body alone, addressed by sequence number rather than by session
+// state. This is the form the shared transport-frame vector
+// (spec/corpus/transcripts/transport-frame.json) is stated in, and the form
+// bonemesh-inspect needs; Transport.seal/open are the stateful wrappers, so the
+// nonce is constructed in exactly one place.
+export function sealCiphertext(key, seq, plaintext) {
+  return aeadSeal(key, nonce(BigInt(seq)), null, plaintext);
+}
+
+// Returns the plaintext, or null if authentication fails.
+export function openCiphertext(key, seq, ct) {
+  return aeadOpen(key, nonce(BigInt(seq)), null, ct);
 }
 
 function nonce(seq) {

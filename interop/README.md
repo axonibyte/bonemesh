@@ -8,9 +8,17 @@ every implementation against every other.
 ## Corpus conformance checks (`check-*.sh`)
 
 Each script confirms one implementation reproduces a shared corpus artifact
-byte-for-byte (canonicalization, key schedule, framing, message schema,
-transport frame, post-quantum vectors). Run on the driver, where the whole repo
-is present. These prove agreement on the *deterministic* wire contract.
+byte-for-byte. Eight families -- canonicalization, key schedule, hybrid agreement,
+framing, message schema, transport frame, post-quantum vectors, and the key-log
+capture -- times seven implementations, with no gaps. Run on the driver, where the
+whole repo is present, because a per-language reaper tenant syncs one subtree and
+cannot see `spec/corpus` at all. These prove agreement on the *deterministic* wire
+contract.
+
+`run-corpus-checks.sh` runs the whole grid, twice (the second pass under a hostile
+non-UTF-8 default charset), and treats a **missing** script as a failure rather
+than a skip: an absent check must not read as coverage. `--self-test` proves it
+fails on both a broken and a missing check.
 
 ## The interop matrix (`run-matrix.sh`)
 
@@ -72,9 +80,14 @@ application payloads only. `BONEMESH_KEYLOG=<path>` makes a node write its
 directional transport keys (security.md §8).
 
 Current drivers: `drivers/java.sh`, `drivers/elixir.sh`, `drivers/rust.sh`,
-`drivers/go.sh`, `drivers/js.sh`, `drivers/php.sh`. The matrix confirms all
-thirty-six pairs (each of the six implementations as both responder and
-initiator, cross and same) interoperate.
+`drivers/go.sh`, `drivers/js.sh`, `drivers/php.sh`, `drivers/python.sh`. The
+matrix confirms all forty-nine pairs (each of the seven implementations as both
+responder and initiator, cross and same) interoperate.
+
+Note `python-run.sh` lives in `interop/`, **not** in `drivers/`: that directory is
+the implementation registry, so anything in it is discovered as a language and
+health-probed with `keygen`. It is the shared launcher the seven
+`check-*-python.sh` wrappers use to resolve an interpreter.
 
 ## Tiers
 
@@ -102,11 +115,14 @@ initiator, cross and same) interoperate.
   tier 5. This tier found and drove fixes for two robustness defects: the Go node
   panicked (crashing the process) on malformed handshake input, and the PHP node
   emitted warnings on a bmx1 missing a field — both now reject cleanly.
-- **`tier8.sh`** — methodology tier 8, concurrency/convergence. Only Java and
-  Elixir route (the others do direct delivery), so this tier is scoped to them
-  and needs both — it runs on the driver and skips loudly where either is
-  missing. It builds a diamond (Java endpoints, Elixir relays) with two disjoint
-  paths, drives continuous sends, then kills the relay the sender is using, and
+- **`tier8.sh`** — methodology tier 8, concurrency/convergence. Every
+  implementation routes, so the four diamond roles are assigned round-robin over
+  whatever drivers are usable on the host; it needs at least two and skips loudly
+  below that. (This paragraph previously said only Java and Elixir route, which
+  stopped being true when routing parity landed across every port — the script's
+  own header and code had said so for some time.) It builds a diamond with two
+  disjoint paths, drives continuous sends, then kills the relay the sender is
+  using, and
   asserts convergence with two oracles: no live node keeps a route through the
   dead relay (via the nodes' new route-table accessors) and delivery heals over
   the alternate path. The convergence oracle is self-tested first against a
@@ -125,25 +141,26 @@ initiator, cross and same) interoperate.
 
 The runners **discover drivers and health-probe each one**, keeping only the
 implementations whose toolchain is present and logging every skip. So the same
-scripts run six-wide on the driver and, on the interop guest (which lacks
-Erlang/OTP 28), five-wide with Elixir logged as skipped — never silently.
+scripts run seven-wide on the driver and, on the interop guest (which lacks
+Erlang/OTP 28), six-wide with Elixir logged as skipped — never silently.
 
 ## The interop reaper tenant
 
 `../.reaper.toml` (project `bonemesh-interop`) is the root tenant: host execution
 on an `ubuntu-26.04` guest, syncing the whole repo. `interop/guest-setup.sh`
-provisions the toolchains — Java 25, Go 1.26, Rust, PHP 8.5, and Node 24 (from
-NodeSource; apt's Node 22 bundles an OpenSSL without ML-KEM/ML-DSA), all over the
-guest's system OpenSSL 3.5 — plus `tc`/netem and iptables. The run gates the
-matrix, tiers 5, 6, and 7. Elixir is not provisioned here: its node needs
-Erlang/OTP 28 for the native PQC API, which ubuntu-26.04 does not package; its
-interop is covered by the six-language matrix on the driver (which has OTP 28).
+provisions the toolchains — Java 25, Go 1.26, Rust, PHP 8.5, Node 24 (from
+NodeSource; apt's Node 22 bundles an OpenSSL without ML-KEM/ML-DSA), and Python 3
+with uv (the Python port's post-quantum primitives come from the `cryptography`
+wheel, not the stdlib), all over the guest's system OpenSSL 3.5 — plus `tc`/netem
+and iptables. The run gates the corpus checks, tier 3, the matrix, and tiers
+5–10. Elixir is not provisioned here: its node needs Erlang/OTP 28 for the native
+PQC API, which ubuntu-26.04 does not package; its interop is covered by the
+seven-language matrix on the driver (which has OTP 28).
 
 ## Status and future work
 
-Runs on the driver (six languages) and as the `bonemesh-interop` reaper tenant
-(five languages under netem; tier 8 needs both Java and Elixir, so it runs on
-the driver and skips on the guest). Methodology tiers 5–10 are all implemented
+Runs on the driver (seven languages) and as the `bonemesh-interop` reaper tenant
+(six languages under netem). Methodology tiers 5–10 are all implemented
 and in the standard battery: tier 10 (`tier10.sh`) is the feature-behavior tier
 covering the 3.1.0 session-lifecycle features (ack, NAK/D4 attribution, rekey
 under traffic, idle teardown, probe-timeout death, key-log round-trip). Tier 11

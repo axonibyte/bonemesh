@@ -6,6 +6,6 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd); repo=$(cd "$here/.." && pwd)
 jar="$repo/java/build/libs/bonemesh.jar"
-[ -f "$jar" ] || (cd "$repo/java" && ./gradlew --no-daemon --quiet shadowJar)
+sh "$here/ensure-jar.sh"
 echo "checking the Java transport frame against the shared vector"
 java -cp "$jar" com.axonibyte.bonemesh.v3.transport.TransportDump "$repo/spec/corpus/transcripts/transport-frame.json"
