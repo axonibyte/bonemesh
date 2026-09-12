@@ -52,6 +52,14 @@ mode="${1:-both}"
 
 # --- discovery ---------------------------------------------------------------
 
+# Whole-repo checkers that live in the check-*.sh namespace but are NOT
+# per-implementation families. check-spec.sh is one tool covering every
+# implementation at once (methodology tier 3), so there is no check-spec-<impl>.sh
+# to look for and demanding one would fail every language. Listed explicitly, with
+# the reason, rather than pattern-matched: a new whole-repo checker should have to
+# declare itself here.
+NOT_A_FAMILY="spec"
+
 families=""
 for s in "$here"/check-*.sh; do
   base=$(basename "$s" .sh)
@@ -59,6 +67,11 @@ for s in "$here"/check-*.sh; do
   case "$fam" in
     *-*) continue ;;          # check-<family>-<impl>.sh, handled per family
   esac
+  skip=no
+  for n in $NOT_A_FAMILY; do
+    [ "$fam" = "$n" ] && skip=yes
+  done
+  [ "$skip" = yes ] && continue
   families="$families $fam"
 done
 
@@ -202,6 +215,7 @@ case "$mode" in
     ;;
   --plain)
     run_pass plain
+    passes="the plain pass"
     ;;
   both)
     run_pass plain
@@ -252,6 +266,7 @@ case "$mode" in
     run_pass "hostile-charset (LC_ALL=C, JVM+CPython forced off UTF-8)"
 
     unset LC_ALL LANG LC_CTYPE JAVA_TOOL_OPTIONS PYTHONUTF8 PYTHONCOERCECLOCALE
+    passes="both passes"
     ;;
   *)
     echo "usage: $0 [--plain|--self-test]" >&2
@@ -264,4 +279,4 @@ if [ "$fail" -gt 0 ]; then
   echo "corpus checks: $fail failure(s):$failed"
   exit 1
 fi
-echo "corpus checks: every family agrees with the shared corpus, in both passes"
+echo "corpus checks: every family agrees with the shared corpus, in ${passes}"

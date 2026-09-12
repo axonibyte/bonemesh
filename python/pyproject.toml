@@ -1,0 +1,29 @@
+[project]
+name = "bonemesh"
+version = "3.2.0"
+description = "BoneMesh v3 mesh node — Python implementation"
+requires-python = ">=3.12"
+# The only runtime dependency. `cryptography` is Apache-2.0 OR BSD-3-Clause and
+# brings ML-KEM-768, ML-DSA-65/87, X25519, HKDF-SHA-256 and ChaCha20-Poly1305
+# over OpenSSL 3.5 -- the same primitive set Node, OTP 28 and the openssl CLI
+# give the other ports. Its licence chain is gated by tools/check_licenses.py,
+# because BoneMesh is Apache-2.0 and a copyleft transitive dependency would be
+# disqualifying.
+dependencies = ["cryptography>=46"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# Keep the node's own loud stderr warnings (the key-log forward-secrecy notice)
+# out of the report unless a test fails.
+filterwarnings = ["error"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["bonemesh"]

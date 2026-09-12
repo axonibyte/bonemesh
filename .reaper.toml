@@ -35,6 +35,8 @@ exclude = [
   "/go/bonemesh-inspect",
   "/interop/tier5/faultpeer",
   "/spec/conformance/specsrc",
+  "/python/.venv/",
+  "/python/.pytest_cache/",
   "/interop/tier7/fuzzer",
   "/rust/target/",
   "/java/build/",
