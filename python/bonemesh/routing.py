@@ -108,12 +108,6 @@ class Table:
     def route_table(self) -> dict:
         return {dest: r["via"] for dest, r in self.routes.items()}
 
-    def reachable(self) -> list[str]:
-        """Every label this node can deliver to, excluding itself."""
-        out = set(self.neighbors) | set(self.routes)
-        out.discard(self.self_label)
-        return sorted(out)
-
     def _neighbor_latency(self, k: str) -> int:
         e = self.neighbors.get(k)
         return e.millis() if e else UNREACHABLE

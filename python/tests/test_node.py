@@ -139,22 +139,6 @@ def test_a_duplicate_message_id_is_delivered_only_once(run_async, spawn, issue):
     run_async(body())
 
 
-def test_broadcast_reaches_every_reachable_neighbour(run_async, spawn, issue):
-    async def body():
-        alpha = await spawn(issue("alpha"))
-        beta = await spawn(issue("beta"))
-        gamma = await spawn(issue("gamma"))
-        b_got, g_got = [], []
-        beta.on_message(b_got.append)
-        gamma.on_message(g_got.append)
-        await alpha.connect("127.0.0.1", beta.port())
-        await alpha.connect("127.0.0.1", gamma.port())
-        assert alpha.broadcast({"all": "hands"}) == 2
-        assert await until(lambda: b_got and g_got)
-        assert b_got == [{"all": "hands"}] and g_got == [{"all": "hands"}]
-    run_async(body())
-
-
 def test_kill_closes_the_listener_and_drops_links(run_async, spawn, issue):
     async def body():
         alpha, beta, _, _, _ = await _two(spawn, issue)

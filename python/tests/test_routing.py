@@ -144,13 +144,6 @@ def test_sat_sum_saturates_rather_than_wrapping():
     assert sat_sum(POISON_THRESHOLD - 1, 5) == UNREACHABLE
 
 
-def test_reachable_lists_neighbours_and_routes_but_never_self():
-    t = Table("alpha")
-    t.observe_neighbor("bravo", 1)
-    t.learn_route("charlie", "bravo", 1)
-    assert t.reachable() == ["bravo", "charlie"]
-
-
 def test_dedup_reports_repeats_and_stays_bounded():
     d = Dedup(3)
     assert [d.saw_before(k) for k in ("a", "b", "a", "c")] == [False, False, True, False]

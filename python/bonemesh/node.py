@@ -358,10 +358,6 @@ class Node:
             return mid, False
         return mid, True
 
-    def broadcast(self, payload) -> int:
-        """Send to every reachable label except this node. Returns the count."""
-        return sum(1 for label in self.table.reachable() if self.send(label, payload))
-
     # --- wire --------------------------------------------------------------
 
     def _write_on(self, link: _Link, inner: dict) -> None:
