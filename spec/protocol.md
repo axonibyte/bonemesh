@@ -37,12 +37,14 @@ not depend on a two-party handshake, so they are testable and pinned now.
 | Reassembly buffer max | 16777216 bytes, summed across every in-flight message |
 | Concurrent reassemblies max | 256 in-flight messages |
 | Reassembly timeout | 30000 ms |
+| Unreachable path cost | any advertised cost **≥ 1000000000** is unreachable (§6) |
 | AEAD nonce | 96-bit: 4 zero bytes then the per-direction 64-bit **little-endian** sequence counter; starts at 0, +1 per frame, never reused (matches `security.md` §5 and corpus `transport-frame.json`) |
 
 Operational tunables (local behavior, not the wire contract, so two nodes with
 different values still interoperate): heartbeat/probe interval **1 s** (the value
 all seven reference nodes use), latency EWMA **α = 0.2**, dedup window **4096**
-recent `mid`s per peer. The 3.1.0 features add more, all read once from the
+recent keys per peer, and a retry queue bounded at **64** messages per destination
+(§7) so one unreachable peer cannot grow memory without limit. The 3.1.0 features add more, all read once from the
 environment at node start and all with defaults chosen so a peer never has to
 assume anything about them: `BONEMESH_PROBE_TIMEOUT_MS` (15000), `BONEMESH_IDLE_MS`
 (0 = disabled), `BONEMESH_RETRY_BASE_MS`/`_CAP_MS`/`_MAX_MS` (500 / 30000 /
@@ -114,8 +116,17 @@ via the key-log inspector, `security.md` §8):
 { "seq": 42, "ct": "<base64 ChaCha20-Poly1305 ciphertext of the inner JSON>" }
 ```
 
-`seq` is the per-direction nonce counter (also the AEAD nonce input). The inner
-plaintext object always has a `type` and a `mid`:
+`seq` is the per-direction nonce counter (also the AEAD nonce input).
+
+**Frames are accepted strictly in order.** A receiver keeps the next expected
+`seq` per direction and rejects anything else — including a `seq` ahead of it —
+rather than buffering or reordering; the session is then torn down, because a gap
+means the stream is no longer the one the nonce sequence describes. The window is
+exactly one, not a range. This relies on the ordering TCP already provides, and it
+is why §9's "ordered delivery is not guaranteed" is a statement about the *mesh*,
+where a message may take different paths between relays, and not about a link.
+
+The inner plaintext object always has a `type` and a `mid`:
 
 | Inner `type` | Meaning |
 |---|---|
@@ -130,7 +141,10 @@ unique per application message (all chunks of one message share it). Message ids
 give v3 what v2 never had — **dedup** (a re-delivered (`mid`, chunk index) pair
 already seen is dropped; §6.1 says why the index is part of the key) and **ack
 correlation** (an `ack` names the `mid` it answers). A replay window of 4096
-recently-seen keys per peer (§0) bounds the dedup memory.
+recently-seen keys per peer (§0) bounds the dedup memory. How a node keys that
+window internally — all seven prefix by message kind, so a relayed `ack` cannot be
+mistaken for a duplicate of the `data` it answers — is an implementation matter and
+not part of the wire contract.
 
 ### 4.1 Application data
 
@@ -163,6 +177,95 @@ One segment of a split message carries `seg` in its place (§6.1):
   as a JSON string. It is not Base64: §0's Base64 rule covers binary fields,
   and a segment is text (decision #25).
 
+### 4.2 Control messages
+
+Every inner type other than `data` is a control message. Before 3.3.0 only `ack`,
+`nak` and `bye` had a wire definition anywhere, and `disco`, `probe`, `echo` and
+`rekey` had none at all — four of the nine kinds in Appendix A interoperated on a
+shape that existed solely as seven agreeing implementations. These are those
+shapes; none of them is new.
+
+**`ack` — receipt, routed back toward the origin (§7).**
+
+```json
+{ "type": "ack", "mid": "<the id being acknowledged>",
+  "to": "alpha", "from": "gamma", "ttl": 16 }
+```
+
+`to` is the origin the ack travels back to and `from` is the node sending it, so an
+ack is routed exactly like a `data` message. §7 has always said acks are routed
+back toward `from`; the routing fields that make that possible were not written
+down. A destination sends one ack per application message, on completed reassembly
+(§6.1).
+
+**`nak` — non-delivery, naming the hop that failed (§7, defect D4).**
+
+```json
+{ "type": "nak", "mid": "<the id that failed>", "hop": "beta",
+  "reason": "ttl", "to": "alpha", "from": "beta", "ttl": 16 }
+```
+
+`hop` is the node that actually failed — itself for a local drop, the dead
+next-hop label for a broken onward link — never the final destination. `reason` is
+a short token; `ttl`, `no-route` and `link-dead` are the ones the reference
+implementations emit, and a receiver tolerates any other (§8).
+
+**`disco` — reachability and cost, to neighbors (§5, §6).**
+
+```json
+{ "type": "disco", "routes": { "gamma": 42, "delta": 1000000000 } }
+```
+
+`routes` maps a destination label to this node's advertised path cost in
+milliseconds. A cost at or above the unreachable sentinel (§0) withdraws the
+route; that is how split-horizon with poisoned reverse is expressed on the wire
+(§6). An empty advertisement is `{}`, never `[]`.
+
+**`probe` / `echo` — round-trip measurement (§5).**
+
+```json
+{ "type": "probe", "token": 1788600000123 }
+{ "type": "echo",  "token": 1788600000123 }
+```
+
+`token` is opaque to the responder, which copies it back unchanged in an `echo`.
+The prober measures RTT by comparing the returned token against its own clock, so
+the value is a local matter — the reference implementations use a millisecond
+timestamp. A node echoes any probe; it never interprets the token.
+
+**`rekey` — a tunneled BMX exchange, in four phases (`security.md` §6).**
+
+```json
+{ "type": "rekey", "mid": "<exchange id>", "phase": 1,
+  "body": "<base64 of the BMX message for this phase>" }
+```
+
+The BMX messages of a fresh handshake ride inside transport frames on the live
+session, so they arrive through the normal reader with no raw-stream race. `mid`
+correlates the four phases of one exchange. `body` carries the BMX bytes and is
+**absent on phase 4**, which carries no BMX message:
+
+| Phase | Sender | `body` | Effect |
+|---|---|---|---|
+| 1 | initiator | `bmx1` | opens the exchange |
+| 2 | responder | `bmx2` | replies; responder now holds the new session |
+| 3 | initiator | `bmx3` | last frame under the old send key, then the initiator swaps its send key |
+| 4 | responder | — | responder has swapped its receive key, sends this, then swaps its send key; on receipt the initiator swaps its receive key and the rekey is complete |
+
+Each side swaps a key immediately after sealing its last old-key frame in that
+direction, and swaps its receive key immediately after opening the peer's, so the
+two directions cut over independently and no frame is ever sealed under a key the
+peer has already discarded. A failed or abandoned exchange leaves the link on its
+current keys; liveness (§7) tears it down if it has truly broken.
+
+**`bye` — graceful close (§8).**
+
+```json
+{ "type": "bye", "reason": "idle" }
+```
+
+`reason` is optional and drawn from the enum in §8.
+
 ## 5. Discovery and latency (defect D3)
 
 v2's "latency" was time since the last heartbeat tick — meaningless (D3). v3
@@ -193,9 +296,13 @@ measures **real round-trip time**:
   `ttl` hop limit (§4.1), together bounding the count-to-infinity behavior v2
   left open.
 - **Send.** Look up the destination: a live session to it (direct) wins;
-  otherwise forward to the best-cost next-hop neighbor over that session. No
-  route and no direct session ⇒ the send fails locally and the caller is told
-  (a real return, not a silent drop).
+  otherwise forward to the best-cost next-hop neighbor over that session. No route
+  and no direct session ⇒ the call reports failure to the caller — a real return,
+  not a silent drop — **and** the message is queued for bounded retry (§7). Those
+  are not alternatives: the boolean answers "was this handed to a next hop now?",
+  which is false, while the queue may still deliver it when a route appears. A
+  caller that needs to know the outcome rather than the attempt uses the ack
+  (§7).
 - **Relay** is hop-by-hop: a relaying node decrypts the transport frame from the
   previous hop, and re-encrypts the same inner message (decrementing `ttl`) to
   the next hop's session. This is the trust model of `security.md` §7 — members
@@ -317,11 +424,21 @@ safely. The origin observes them through an ack listener; the boolean return of
 
 - The handshake carries `v: 3` (`security.md` §4). A node that receives a
   handshake with a `v` it does not implement rejects it, closing the connection,
-  rather than failing opaquely. The machine-readable close reasons are the
-  pinned enum on the `bye` control (`corpus/messages.json`): `shutdown`, `idle`,
-  `rekey-failed`, `protocol-error`, plus `unsupported-version` for this
-  version-mismatch case (reported in logs; a pre-session rejection carries no
-  session in which to send a `bye`).
+  rather than failing opaquely.
+- The **defined** close reasons on the `bye` control (§4.2) are `shutdown` (the
+  node is stopping), `idle` (the idle timeout fired, §7), `rekey-failed` (a rekey
+  exchange did not complete, `security.md` §6) and `protocol-error` (a malformed
+  inner message), plus `unsupported-version` for the version-mismatch case above
+  — which is reported in logs rather than sent, because a pre-session rejection
+  has no session in which to send a `bye`.
+
+  "Defined" is not "exhaustive", and this previously read "the pinned enum …
+  (`corpus/messages.json`)", which that file does not pin and deliberately does
+  not: a validator that rejected an unknown reason would contradict the
+  forward-compatibility rule in the next bullet, and case `bye-ok-unknown-reason`
+  expects **valid** for exactly that reason. So a conforming sender uses one of
+  the reasons above when one applies, and a conforming receiver accepts any
+  string and acts on none of them — the reason is diagnostic, never control.
 - Minor, backward-compatible additions (new optional inner `type`s, new optional
   fields) do **not** bump `v`; an implementation ignores inner types it does not
   recognize, except that an unrecognized `type` where a `data` message is
