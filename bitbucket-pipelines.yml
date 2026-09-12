@@ -17,6 +17,10 @@
 image: atlassian/default-image:3
 
 definitions:
+  # Bitbucket predefines only: docker, composer, dotnetcore, gradle, ivy2, maven,
+  # node, pip, sbt. Anything else -- `uv` here -- must be defined, or referencing it
+  # is a configuration error. `gradle` below is predefined; Rust and Elixir take no
+  # cache at all (see their steps).
   caches:
     uv:
       key:
@@ -64,11 +68,13 @@ definitions:
         script:
           - sh ci/test-impl.sh go
 
+    # No cache: the Rust port builds from its committed vendor/ tree with
+    # --offline, so there is no registry download to cache. (And `cargo` is not one
+    # of Bitbucket's predefined cache names, so referencing it without a
+    # definitions.caches entry would be a configuration error rather than a no-op.)
     - step: &doTestRust
         name: Test rust
         image: docker.io/library/rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
-        caches:
-          - cargo
         script:
           - sh ci/test-impl.sh rust
 
@@ -84,11 +90,12 @@ definitions:
         script:
           - sh ci/test-impl.sh php
 
+    # No cache: elixir/mix.exs declares `deps: []` -- OTP 28's :crypto provides
+    # everything -- so there is nothing to fetch. `mix` is not a predefined cache
+    # name either.
     - step: &doTestElixir
         name: Test elixir
         image: docker.io/library/elixir@sha256:d170fadffd75b36146ff40b6e8d5cc881c59d136ae5a2c34a1b394ec33b6cffa
-        caches:
-          - mix
         script:
           - sh ci/test-impl.sh elixir
 
