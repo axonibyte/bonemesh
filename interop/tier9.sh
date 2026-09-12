@@ -59,7 +59,9 @@ fi
 echo "oracle self-test passed: invariant checks fire on known-bad logs"
 
 echo "provisioning meshes (real root + a foreign root; seed=$seed rounds=$rounds)"
-[ -x "$cabin" ] || (cd "$repo/go" && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o bonemesh-ca ./cmd/bonemesh-ca)
+# Prefer the pinned go126 toolchain when present, as the drivers and the
+# helper builds above already do; the developer driver has no bare "go".
+[ -x "$cabin" ] || (cd "$repo/go" && g=go126; command -v "$g" >/dev/null 2>&1 || g=go; GOTOOLCHAIN=local GOFLAGS=-mod=vendor "$g" build -o bonemesh-ca ./cmd/bonemesh-ca)
 ca init-root --out "$work/ca"
 ca init-root --out "$work/ca-foreign"
 

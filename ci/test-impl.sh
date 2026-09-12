@@ -31,7 +31,7 @@ command -v "$go" >/dev/null 2>&1 || go=go
 # The seven corpus families. Java's scripts carry no -<impl> suffix (it is the
 # reference implementation); every other language's do.
 corpus_checks() {
-  for fam in canon framing messages keyschedule agreement pqc transport; do
+  for fam in canon framing messages keyschedule agreement pqc transport keylog; do
     if [ "$1" = java ]; then s="interop/check-$fam.sh"; else s="interop/check-$fam-$1.sh"; fi
     if [ ! -f "$s" ]; then
       # A missing check is not coverage. Fail loudly rather than skipping, which

@@ -31,7 +31,9 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"; kill $(jobs -p) 2>/dev/null || true; pkill -f "$mesh" 2>/dev/null || true' EXIT
 
 ca() { "$cabin" "$@" >/dev/null 2>&1; }
-[ -x "$cabin" ] || (cd "$repo/go" && GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -o bonemesh-ca ./cmd/bonemesh-ca)
+# Prefer the pinned go126 toolchain when present, as the drivers and the
+# helper builds above already do; the developer driver has no bare "go".
+[ -x "$cabin" ] || (cd "$repo/go" && g=go126; command -v "$g" >/dev/null 2>&1 || g=go; GOTOOLCHAIN=local GOFLAGS=-mod=vendor "$g" build -o bonemesh-ca ./cmd/bonemesh-ca)
 
 # Every implementation routes, so any usable driver can play any role.
 usable=""
