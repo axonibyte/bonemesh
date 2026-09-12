@@ -16,7 +16,7 @@ the normative wire it is all checked against, see
 | Tier | What it proves | Where it runs |
 |---|---|---|
 | 1, 2, 4 | Per-implementation unit behavior, contract and state-machine tests; corpus vectors mirrored in-code | each `<lang>/` tenant |
-| 2 (byte-exact) | Byte-exact agreement with the shared corpus — canonicalization, key schedule, framing, message schema, transport frame, PQC vectors — for every implementation, and again under a hostile non-UTF-8 charset | `interop/run-corpus-checks.sh`, root tenant and CI |
+| 2 (byte-exact) | Byte-exact agreement with the shared corpus — canonicalization, key schedule, hybrid agreement, framing, message schema, transport frame, PQC vectors, key-log capture — for every implementation, and again under a hostile non-UTF-8 charset | `interop/run-corpus-checks.sh`, root tenant and CI |
 | 3 | Source-as-data: the spec read as markdown, every implementation's constants, tunables and message types checked against it both ways | `interop/check-spec.sh` (one shared tool), root tenant and CI |
 | 5 | Node vs. a fault peer: survives a battery of malformed input and delivers nothing spurious | root interop tenant |
 | 6 | A mesh under a hostile network (netem latency + loss; iptables partition and heal) | root tenant, Linux guest only |

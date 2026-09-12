@@ -8,9 +8,17 @@ every implementation against every other.
 ## Corpus conformance checks (`check-*.sh`)
 
 Each script confirms one implementation reproduces a shared corpus artifact
-byte-for-byte (canonicalization, key schedule, framing, message schema,
-transport frame, post-quantum vectors). Run on the driver, where the whole repo
-is present. These prove agreement on the *deterministic* wire contract.
+byte-for-byte. Eight families -- canonicalization, key schedule, hybrid agreement,
+framing, message schema, transport frame, post-quantum vectors, and the key-log
+capture -- times seven implementations, with no gaps. Run on the driver, where the
+whole repo is present, because a per-language reaper tenant syncs one subtree and
+cannot see `spec/corpus` at all. These prove agreement on the *deterministic* wire
+contract.
+
+`run-corpus-checks.sh` runs the whole grid, twice (the second pass under a hostile
+non-UTF-8 default charset), and treats a **missing** script as a failure rather
+than a skip: an absent check must not read as coverage. `--self-test` proves it
+fails on both a broken and a missing check.
 
 ## The interop matrix (`run-matrix.sh`)
 
