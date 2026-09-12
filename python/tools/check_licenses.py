@@ -1,9 +1,20 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.12"
-# dependencies = []
-# ///
+#!/usr/bin/env python3
 """Gate every installed dependency's licence against BoneMesh's own.
+
+Deliberately NOT a PEP 723 script, unlike everything under bin/. `uv run` treats
+any file carrying inline script metadata as an ISOLATED script and gives it a fresh
+environment containing only its declared dependencies -- so with a `/// script`
+block and `dependencies = []` this audited an empty environment and passed
+trivially, in CI and in the reaper tenant both. A licence gate that inspects
+nothing is worse than no gate, because it reports success.
+
+Run it inside the project environment:
+
+    uv run --no-project python tools/check_licenses.py   # explicit
+    .venv/bin/python tools/check_licenses.py             # equivalent
+
+and the assertion below refuses to pass if it cannot see the dependency it exists
+to audit.
 
 BoneMesh is Apache-2.0, which is one-way incompatible with GPL-2.0, so a single
 copyleft dependency anywhere in the transitive set is disqualifying. Checking once
@@ -84,8 +95,27 @@ def verdict(name: str, declared: list[str]) -> tuple[bool, str]:
     return False, f"unrecognized: {' OR '.join(declared)}"
 
 
-def check(dists) -> int:
+# The gate exists to audit the runtime dependency; if it cannot see it, it is
+# looking at the wrong environment and must not report success.
+REQUIRED_PRESENT = {"cryptography"}
+
+
+def check(dists, *, require_present=True) -> int:
     failures = 0
+    dists = list(dists)
+    names = {(d.metadata["Name"] or "").lower() for d in dists}
+    if require_present:
+        absent = {n for n in REQUIRED_PRESENT if n not in names}
+        if absent or not dists:
+            print(f"FAIL  this environment has no {', '.join(sorted(absent)) or 'packages'} in it,",
+                  file=sys.stderr)
+            print("      so there is nothing to audit and this is not a pass. Run the gate",
+                  file=sys.stderr)
+            print("      inside the project environment (uv run --no-project python ...,",
+                  file=sys.stderr)
+            print("      or .venv/bin/python ...), not as an isolated PEP 723 script.",
+                  file=sys.stderr)
+            return 1
     for dist in sorted(dists, key=lambda d: (d.metadata["Name"] or "").lower()):
         name = dist.metadata["Name"] or "<unnamed>"
         ok, detail = verdict(name, licences_of(dist))
@@ -151,17 +181,31 @@ def self_test() -> int:
     bad = _Meta({"Name": "gpl-thing", "License-Expression": "GPL-3.0-only"})
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-        rc = check([_Fake("gpl-thing", "1.0", bad)])
+        rc = check([_Fake("gpl-thing", "1.0", bad)], require_present=False)
     if rc == 0:
         print("SELF-TEST FAIL: a GPL dependency did not fail the whole run")
         print(buf.getvalue())
         failures += 1
     else:
         print("  ok: a GPL dependency fails the whole run (exit 1)")
+    # And the guard that stops the whole gate being vacuous: an environment with
+    # nothing in it must FAIL, not pass. This is the bug this self-test exists to
+    # prevent recurring -- the gate shipped once with a PEP 723 block, ran in an
+    # isolated env, audited zero packages and reported success.
+    buf2 = io.StringIO()
+    with contextlib.redirect_stdout(buf2), contextlib.redirect_stderr(buf2):
+        rc_empty = check([])
+    if rc_empty == 0:
+        print("SELF-TEST FAIL: an empty environment passed the gate")
+        failures += 1
+    else:
+        print("  ok: an empty environment fails (the gate cannot be vacuous)")
+
     if failures:
         print(f"\n{failures} self-test case(s) wrong", file=sys.stderr)
         return 1
-    print("\nSELF-TEST PASS: permissive accepted, copyleft and unknown rejected")
+    print("\nSELF-TEST PASS: permissive accepted, copyleft and unknown rejected,")
+    print("                and an environment with nothing in it is not a pass")
     return 0
 
 

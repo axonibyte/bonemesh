@@ -35,8 +35,10 @@ dependency anywhere in the transitive set would be disqualifying.
 permissive allowlist and runs in CI and in the reaper tenant, so a future
 `uv lock` that pulls in something incompatible **fails the build** rather than
 shipping quietly. It is self-tested (`--self-test`) against synthetic GPL, LGPL,
-MPL, unknown and absent licences, because an allowlist that never rejects anything
-is indistinguishable from no allowlist.
+MPL, unknown and absent licences — and against an empty environment, which must
+fail rather than pass, because an allowlist that never rejects anything is
+indistinguishable from no allowlist and a gate that inspects nothing is worse than
+none.
 
 ## Interop
 
@@ -53,13 +55,21 @@ anything in it is discovered as a language.
 
 ## Scripts
 
-Every entry point under `bin/` and `tools/` is a PEP 723 script: it carries its own
-inline dependency metadata and a `#!/usr/bin/env -S uv run --script` shebang, so it
-runs standalone without activating anything.
+Every entry point under `bin/` is a PEP 723 script: it carries its own inline
+dependency metadata and a `#!/usr/bin/env -S uv run --script` shebang, so it runs
+standalone without activating anything.
 
 ```sh
 ./bin/canon_check.py ../spec/corpus/canon.json
 ```
+
+`tools/check_licenses.py` is deliberately **not** one. `uv run` treats any file
+carrying inline script metadata as an *isolated* script and gives it a fresh
+environment holding only its declared dependencies — so as a PEP 723 script with no
+dependencies, the licence gate audited an empty environment and passed trivially.
+It now has no inline metadata, so `uv run tools/check_licenses.py` uses the project
+environment, and it refuses to report success if it cannot see the dependency it
+exists to audit.
 
 The interop driver is invoked through the venv rather than `uv run`, because uv
 re-resolves the environment per invocation and the harness calls the driver many
