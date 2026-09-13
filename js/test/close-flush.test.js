@@ -49,8 +49,11 @@ const waitFor = (predicate, timeoutMs = 15000) => new Promise((resolve, reject) 
   tick();
 });
 
-const MESSAGES = 60;
-const PAYLOAD = 'y'.repeat(16 * 1024); // ~1 MB total, far past any socket buffer
+const PAYLOAD = 'y'.repeat(16 * 1024);
+// Enough queued that no socket buffer on any machine could have absorbed it, so
+// what arrives after the close is a statement about the close and not about the
+// kernel. Reached by looping, never by assuming a count.
+const BACKED_UP = 4 * 1024 * 1024;
 
 test('a deliberate close delivers what was already queued, rather than discarding it', async (t) => {
   const root = newRoot();
@@ -68,21 +71,33 @@ test('a deliberate close delivers what was already queued, rather than discardin
   const betaSide = beta.links.get('alpha').socket;
   betaSide.pause();
 
-  for (let i = 0; i < MESSAGES; i += 1) alpha.send('beta', { i, blob: PAYLOAD });
+  // Send until the pipe is demonstrably backed up rather than a fixed count: how
+  // much a paused peer absorbs before anything queues is the kernel's business and
+  // differs per machine. A fixed 60 messages staged the condition on the developer
+  // driver and drained entirely inside a CI container, where the precondition below
+  // then failed the test -- correctly, since it could not have proven anything, but
+  // the staging is what needed fixing.
+  const alphaSide = alpha.links.get('beta').socket;
+  let sent = 0;
+  while (sent < 4000 && alphaSide.writableLength < BACKED_UP) {
+    alpha.send('beta', { i: sent, blob: PAYLOAD });
+    sent += 1;
+  }
 
   // Precondition, asserted before the success indicator: the writes really are
   // still queued, so a pass cannot come from everything having flushed already.
-  assert.ok(alpha.links.get('beta').socket.writableLength > 0,
-    'nothing was queued on the socket; the test never exercised the close path');
+  assert.ok(alphaSide.writableLength >= BACKED_UP,
+    `could not stage a backed-up socket (${alphaSide.writableLength} bytes queued after `
+    + `${sent} messages); the close path is untested, so this is a failure not a pass`);
   assert.equal(got.length, 0, 'beta read messages while its socket was paused');
 
   alpha.kill();
   betaSide.resume();
 
-  await waitFor(() => got.length === MESSAGES).catch(() => {
-    throw new Error(`the close discarded queued frames: beta received ${got.length} of ${MESSAGES}`);
+  await waitFor(() => got.length === sent, 30000).catch(() => {
+    throw new Error(`the close discarded queued frames: beta received ${got.length} of ${sent}`);
   });
-  assert.equal(got.length, MESSAGES);
+  assert.equal(got.length, sent);
 });
 
 test('the flush does not let a peer that never reads hold the socket open', async (t) => {
@@ -107,7 +122,6 @@ test('the flush does not let a peer that never reads hold the socket open', asyn
   // absorbed: the flush then completed on its own, and the test passed just as
   // happily with the deadline deleted. Mutation testing is what caught that, and
   // it is why the volume is now established rather than assumed.
-  const BACKED_UP = 8 * 1024 * 1024;
   for (let i = 0; i < 5000 && alphaSide.writableLength < BACKED_UP; i += 1) {
     alpha.send('beta', { i, blob: 'y'.repeat(64 * 1024) });
   }
