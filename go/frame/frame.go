@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"unicode/utf8"
 )
@@ -59,6 +60,12 @@ func Encode(object map[string]any) []byte {
 	return append(b, '\n')
 }
 
+// ErrViolation marks a framing fault that is the peer's protocol error (an
+// oversize frame, or bytes that are not a single JSON object) as opposed to the
+// stream simply ending. A caller distinguishes them with errors.Is, because only
+// the former earns a bye naming "protocol-error" (protocol.md §8).
+var ErrViolation = errors.New("framing violation")
+
 // ReadFrame reads one frame from r, bounded by cap.
 func ReadFrame(r *bufio.Reader, cap int) (map[string]any, error) {
 	line, err := readLine(r, cap)
@@ -67,7 +74,7 @@ func ReadFrame(r *bufio.Reader, cap int) (map[string]any, error) {
 	}
 	m, reason := Classify(line, cap)
 	if reason != "" {
-		return nil, errors.New(reason)
+		return nil, fmt.Errorf("%w: %s", ErrViolation, reason)
 	}
 	return m, nil
 }
@@ -80,7 +87,7 @@ func readLine(r *bufio.Reader, cap int) ([]byte, error) {
 			return nil, err
 		}
 		if len(buf) >= cap {
-			return nil, errors.New("oversize")
+			return nil, fmt.Errorf("%w: oversize", ErrViolation)
 		}
 		buf = append(buf, b)
 		if b == '\n' {

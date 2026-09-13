@@ -7,7 +7,7 @@
 //! Java, Elixir, Go, JS, and PHP implementations.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
@@ -192,7 +192,7 @@ impl Node {
         let mut hs = Handshake::initiator(&c.mesh, &c.root_public, now, c.cert.clone(), c.id_private);
         write.write_all(&hs.write_message1()).map_err(|e| e.to_string())?;
         write.flush().ok();
-        let m2 = read_line(&mut reader)?;
+        let m2 = read_line(&mut reader, frame::HANDSHAKE_CAP).map_err(|e| e.to_string())?;
         let m3 = hs.read_message2_write_message3(&m2)?;
         write.write_all(&m3).map_err(|e| e.to_string())?;
         write.flush().ok();
@@ -396,11 +396,11 @@ fn respond(inner: &Arc<Inner>, stream: TcpStream) -> Result<(), String> {
     let now = now_secs();
     let mut hs = Handshake::responder(&c.mesh, &c.root_public, now, c.cert.clone(), c.id_private);
 
-    let m1 = read_line(&mut reader)?;
+    let m1 = read_line(&mut reader, frame::HANDSHAKE_CAP).map_err(|e| e.to_string())?;
     let m2 = hs.read_message1_write_message2(&m1)?;
     write.write_all(&m2).map_err(|e| e.to_string())?;
     write.flush().ok();
-    let m3 = read_line(&mut reader)?;
+    let m3 = read_line(&mut reader, frame::HANDSHAKE_CAP).map_err(|e| e.to_string())?;
     hs.read_message3(&m3)?;
 
     let peer = hs.session().peer_cert["label"].as_str().unwrap_or("").to_string();
@@ -488,9 +488,14 @@ fn register(
 
 fn read_loop(inner: Arc<Inner>, peer: String, mut reader: BufReader<TcpStream>, link: Arc<Mutex<Link>>) {
     loop {
-        let raw = match read_line(&mut reader) {
+        let raw = match read_line(&mut reader, frame::TRANSPORT_CAP) {
             Ok(r) => r,
-            Err(_) => {
+            Err(fault) => {
+                // An oversize frame is the peer's protocol error and is named as
+                // such; a stream that merely ended is not (protocol.md §8).
+                if matches!(fault, ReadFault::Oversize) {
+                    protocol_error(&link);
+                }
                 deregister(&inner, &peer, &link);
                 break;
             }
@@ -498,6 +503,7 @@ fn read_loop(inner: Arc<Inner>, peer: String, mut reader: BufReader<TcpStream>, 
         let carrier: Value = match serde_json::from_slice(&raw) {
             Ok(v) => v,
             Err(_) => {
+                protocol_error(&link);
                 deregister(&inner, &peer, &link);
                 break;
             }
@@ -512,7 +518,17 @@ fn read_loop(inner: Arc<Inner>, peer: String, mut reader: BufReader<TcpStream>, 
                     }
                     v
                 }
-                Err(_) => continue,
+                // An AEAD or ordering fault tears the session down
+                // (protocol.md §4): receive_seq advances only on a successful
+                // open, so continuing here would leave this end expecting a seq
+                // the peer will never send again — a link that is up and can
+                // never deliver (D20).
+                Err(_) => {
+                    drop(l);
+                    protocol_error(&link);
+                    deregister(&inner, &peer, &link);
+                    break;
+                }
             }
         };
         if inner_msg["type"] == "bye" {
@@ -984,6 +1000,21 @@ fn write_keylog(inner: &Arc<Inner>, epoch: i64, i2r: &[u8], r2i: &[u8], h: &[u8]
     }
 }
 
+/// Tells the peer why this session is closing (protocol.md §8).
+///
+/// Send keys and counters are per-direction, so a receive-side fault leaves this
+/// end able to seal one last frame. It writes to the faulting link directly
+/// rather than looking the peer up: a reconnect may already have made a different
+/// link current, and announcing this link's fault on that one would be a lie
+/// sealed with the wrong keys. Best effort — the socket may already be gone, and
+/// the close happens either way.
+fn protocol_error(link: &Arc<Mutex<Link>>) {
+    let mut l = link.lock().unwrap();
+    let carrier = l.transport.seal(&message::bye(Some("protocol-error")));
+    let bytes = frame::encode(&carrier);
+    let _ = l.write.write_all(&bytes).and_then(|_| l.write.flush());
+}
+
 fn send_to_link(inner: &Arc<Inner>, label: &str, inner_msg: &Value) -> bool {
     let link = { inner.links.lock().unwrap().get(&label.to_lowercase()).cloned() };
     match link {
@@ -1000,13 +1031,45 @@ fn send_to_link(inner: &Arc<Inner>, label: &str, inner_msg: &Value) -> bool {
     }
 }
 
-fn read_line(reader: &mut BufReader<TcpStream>) -> Result<Vec<u8>, String> {
+/// Reads one newline-terminated frame, refusing to buffer past `cap`.
+///
+/// The cap is not decoration: `read_until` on its own grows without limit, so a
+/// peer could make this node buffer arbitrarily much (D21 — the same class as D7,
+/// and the one port where §0's frame cap was never enforced on the wire path).
+/// `Oversize` is distinguished from a closed stream because only a violation
+/// earns a bye naming "protocol-error" (protocol.md §8).
+fn read_line(reader: &mut BufReader<TcpStream>, cap: usize) -> Result<Vec<u8>, ReadFault> {
     let mut buf = Vec::new();
-    let n = reader.read_until(b'\n', &mut buf).map_err(|e| e.to_string())?;
-    if n == 0 {
-        return Err("stream closed".into());
+    loop {
+        let mut byte = [0u8; 1];
+        match reader.read(&mut byte) {
+            Ok(0) => return Err(ReadFault::Closed),
+            Ok(_) => {}
+            Err(_) => return Err(ReadFault::Closed),
+        }
+        if buf.len() >= cap {
+            return Err(ReadFault::Oversize);
+        }
+        buf.push(byte[0]);
+        if byte[0] == b'\n' {
+            return Ok(buf);
+        }
     }
-    Ok(buf)
+}
+
+/// Why a frame read ended. Only `Oversize` is the peer's protocol error.
+enum ReadFault {
+    Closed,
+    Oversize,
+}
+
+impl std::fmt::Display for ReadFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadFault::Closed => write!(f, "stream closed"),
+            ReadFault::Oversize => write!(f, "oversize frame"),
+        }
+    }
 }
 
 fn now_secs() -> i64 {
@@ -1348,5 +1411,193 @@ mod lifecycle_tests {
             disabled.links.lock().unwrap().contains_key("peer"),
             "idle teardown fired even though it is disabled (idle_ms=0)"
         );
+    }
+}
+
+// A transport-level fault tears the session down and names the reason
+// (protocol.md §4 and §8, defects D20 and D21).
+//
+// The injection is a seq gap rather than a flipped ciphertext byte: it is
+// deterministic and it exercises the ordering rule §4 actually states. Both take
+// the same branch (Transport::open returns Err either way).
+//
+// What these tests do NOT prove: that the node re-dials and recovers. That is
+// tier 10's job over real sockets. The claim here is narrower — the link is torn
+// down instead of being kept in a state where receive_seq can never again match
+// what the peer sends, and the peer is told why.
+#[cfg(test)]
+mod transport_fault_tests {
+    use super::*;
+    use std::io::BufRead;
+    use std::net::TcpListener;
+
+    fn bare_inner() -> Arc<Inner> {
+        Arc::new(Inner {
+            config: Config {
+                label: "self".into(),
+                mesh: "m".into(),
+                root_public: vec![],
+                cert: Value::Null,
+                id_private: [0u8; 32],
+            },
+            tun: load_tunables(),
+            links: Mutex::new(HashMap::new()),
+            listeners: Mutex::new(Vec::new()),
+            ack_listeners: Mutex::new(Vec::new()),
+            pending: Mutex::new(HashMap::new()),
+            table: Mutex::new(routing::Table::new("self")),
+            dedup: Mutex::new(routing::Dedup::new(16)),
+            reassembler: Mutex::new(chunk::Reassembler::new()),
+            keylog_mu: Mutex::new(()),
+            stop: AtomicBool::new(false),
+        })
+    }
+
+    fn mirror() -> Transport {
+        // Both directions use the same all-zero key, so one constructor serves as
+        // the peer-side mirror of the link the node registered.
+        Transport::new(&crate::handshake::Session {
+            send_key: vec![0u8; 32],
+            receive_key: vec![0u8; 32],
+            peer_cert: json!({"label": "peer"}),
+            h: [0u8; 32],
+        })
+    }
+
+    fn pair(listener: &TcpListener) -> (TcpStream, TcpStream) {
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (client, server)
+    }
+
+    /// Reads one inner message, or None if nothing arrives before the deadline.
+    ///
+    /// The deadline matters: without it a regression that stops sending the bye
+    /// makes this block forever, so the suite would hang rather than fail — a
+    /// worse outcome than a red test (the callers' `set_read_timeout` supplies it).
+    fn read_inner(reader: &mut BufReader<TcpStream>, peer: &mut Transport) -> Option<Value> {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => {
+                let carrier: Value = serde_json::from_str(&line).ok()?;
+                peer.open(&carrier).ok()
+            }
+        }
+    }
+
+    fn wait_gone(inner: &Arc<Inner>) -> bool {
+        for _ in 0..250 {
+            if !inner.links.lock().unwrap().contains_key("peer") {
+                return true;
+            }
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[test]
+    fn out_of_order_frame_tears_session_down_naming_protocol_error() {
+        let inner = bare_inner();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (c1, s1) = pair(&listener);
+        let r1 = BufReader::new(c1.try_clone().unwrap());
+        register(&inner, "peer", c1, r1, mirror(), true, "");
+
+        let mut peer = mirror();
+        peer.seal(&json!({"type":"probe","token":1})); // burns seq 0, never written
+        let gap = peer.seal(&message::data(
+            "m-gap", "peer", "self", message::DEFAULT_TTL, json!({"x":1}),
+        ));
+
+        s1.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(s1.try_clone().unwrap());
+        let mut writer = s1;
+        writer.write_all(&frame::encode(&gap)).unwrap();
+        writer.flush().unwrap();
+
+        // Oracle 1: the reason is read off the wire, not inferred from the close.
+        let inner_msg = read_inner(&mut reader, &mut peer)
+            .expect("the node closed the session without saying why");
+        assert_eq!(inner_msg["type"], "bye", "expected a bye, got {inner_msg}");
+        assert_eq!(
+            inner_msg["reason"], "protocol-error",
+            "wrong close reason: {inner_msg}"
+        );
+
+        // Oracle 2: the session is gone, not merely silent.
+        assert!(
+            wait_gone(&inner),
+            "the node kept a session whose nonce stream it can never follow again"
+        );
+    }
+
+    // §8 requires ignoring inner types a node does not recognize, so an unknown
+    // type is NOT a protocol error. This is the guard on the test above: making
+    // every unparseable thing close the link would break forward compatibility.
+    #[test]
+    fn unrecognized_inner_type_does_not_close_the_session() {
+        let inner = bare_inner();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (c1, s1) = pair(&listener);
+        let r1 = BufReader::new(c1.try_clone().unwrap());
+        register(&inner, "peer", c1, r1, mirror(), true, "");
+
+        let mut peer = mirror();
+        let carrier = peer.seal(&json!({"type":"quux-from-the-future","mid":"m1"}));
+        s1.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(s1.try_clone().unwrap());
+        let mut writer = s1;
+        writer.write_all(&frame::encode(&carrier)).unwrap();
+        writer.flush().unwrap();
+
+        // Assert the absence with time allowed to pass, then prove the link is
+        // still usable rather than merely still listed.
+        thread::sleep(std::time::Duration::from_millis(500));
+        assert!(
+            inner.links.lock().unwrap().contains_key("peer"),
+            "the node closed a session over an inner type it must ignore"
+        );
+        assert!(
+            send_to_link(&inner, "peer", &message::bye(Some("idle"))),
+            "the link survived the unknown type but could no longer be written to"
+        );
+        let echoed = read_inner(&mut reader, &mut peer)
+            .expect("the link survived the unknown type but carried nothing afterwards");
+        assert_eq!(
+            echoed["type"], "bye",
+            "the link survived but its frames no longer open: {echoed}"
+        );
+    }
+
+    // D21: the node must refuse to buffer past §0's transport cap. An oversize
+    // frame is a protocol error, and the read must stop rather than grow a Vec
+    // without limit.
+    #[test]
+    fn an_oversize_frame_is_refused_and_named() {
+        let inner = bare_inner();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (c1, s1) = pair(&listener);
+        let r1 = BufReader::new(c1.try_clone().unwrap());
+        register(&inner, "peer", c1, r1, mirror(), true, "");
+
+        let mut peer = mirror();
+        s1.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(s1.try_clone().unwrap());
+        let mut writer = s1;
+        // No newline: a peer that never terminates its frame must not be able to
+        // make this node buffer unboundedly.
+        let flood = vec![b'x'; frame::TRANSPORT_CAP + 4096];
+        let _ = writer.write_all(&flood);
+        let _ = writer.flush();
+
+        let inner_msg = read_inner(&mut reader, &mut peer)
+            .expect("an oversize frame produced no bye at all");
+        assert_eq!(
+            inner_msg["reason"], "protocol-error",
+            "an oversize frame was not reported as a protocol error: {inner_msg}"
+        );
+        assert!(wait_gone(&inner), "the node kept a session after an oversize frame");
     }
 }

@@ -63,7 +63,7 @@ defmodule Bonemesh.Message do
   @doc "A graceful session-close message with no stated reason."
   def bye, do: %{"type" => "bye"}
 
-  @doc "A graceful session-close message stating why (e.g. \"idle\", \"rekey-failed\")."
+  @doc "A graceful session-close message stating why (e.g. \"idle\", \"protocol-error\")."
   def bye(reason) when is_binary(reason) and reason != "", do: Map.put(bye(), "reason", reason)
 
 end

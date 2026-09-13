@@ -274,8 +274,12 @@ file is now true rather than self-contradictory.
   re-verifies the peer's certificate, so an expired cert ends the session at the
   next rekey. A peer that does not implement rekey ignores the `rekey` frames;
   the initiator abandons the attempt after `BONEMESH_REKEY_TIMEOUT_MS` and keeps
-  the old keys (safe degrade). AEAD-nonce-counter exhaustion (§5) remains an
-  independent rekey trigger.
+  the old keys (safe degrade). The attempt is retried on a later heartbeat while
+  the trigger still holds, so a peer that gains rekey support mid-session is
+  picked up without a reconnect. This is why `protocol.md` §8 defines **no**
+  `rekey-failed` close reason: the degrade is the specified outcome, and a close
+  would turn "the peer is older than me" into a dropped session.
+  AEAD-nonce-counter exhaustion (§5) remains an independent rekey trigger.
 - **Idle teardown (delivered in 3.1.0, off by default).** When
   `BONEMESH_IDLE_MS > 0`, a link carrying no `data` traffic (probe/echo/disco do
   not count) for that long is closed after a `bye`; it re-handshakes on demand.

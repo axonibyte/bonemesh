@@ -84,3 +84,28 @@ Everything underneath — identity, encryption, framing, routing metrics — is 
 
   Within a single version there is no such caveat: the 49-cell interop matrix sends
   96 KB in every pair.
+
+## Notes for 3.3.1
+
+- **A transport-level fault now closes the session in every port, and says why.**
+  Nothing on the wire changed — `v` stays 3, no pinned vector moves, and the
+  `bye` control already carried an open-ended `reason` that receivers are
+  required to accept and act on none of. What changed is behaviour after a frame
+  fails to open (an AEAD tag that does not verify, a `seq` out of order, an
+  oversize frame, bytes that are not one JSON object): Go, Rust, JS and Python
+  used to drop that frame and keep the link, which left them expecting a `seq`
+  the peer had already moved past, so the session was up and permanently
+  undeliverable (D20). They now close, as Java, PHP and Elixir already did, and
+  all seven send `bye{reason:"protocol-error"}` first.
+
+  A mixed 3.3.0/3.3.1 mesh is unaffected: the reason is diagnostic, a 3.3.0 node
+  ignores it exactly as §8 requires, and the faults that trigger it were already
+  session-ending in three ports and session-killing in the other four. The
+  practical difference is that a link which would previously have wedged until
+  the process restarted now re-dials.
+
+- **`rekey-failed` is gone from the spec's defined close reasons.** No
+  implementation ever emitted it, and it contradicted the safe degrade
+  `security.md` §6 specifies for a peer that does not implement rekey (D22,
+  decision #28). Nothing to do on upgrade; a receiver that special-cased the
+  string would simply never have seen it.

@@ -780,6 +780,14 @@ public final class Node {
           }
           handleInner(peer, this, inner);
         }
+      } catch(FrameCodec.FrameException | TransportSession.TransportException e) {
+        // The peer's protocol error, as distinct from the stream merely ending:
+        // an oversize or non-object frame, an AEAD failure, or a seq out of order.
+        // Say why before closing (protocol.md §8) -- send keys and counters are
+        // per-direction, so a receive-side fault leaves this end able to seal one
+        // last frame. Best effort; the close happens either way.
+        send(Messages.bye("protocol-error"));
+        close();
       } catch(Exception e) {
         close();
       }
