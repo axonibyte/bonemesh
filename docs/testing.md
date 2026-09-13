@@ -25,6 +25,8 @@ the normative wire it is all checked against, see
 | 9 | Seeded nemesis churn (sends, intrusions, kills, restarts) with security invariants | root tenant |
 | 10 | The 3.1 features on the wire, cross-language: ack, NAK/D4, rekey, idle teardown, probe-timeout death, key-log round-trip | root tenant |
 | 11 | Long-horizon soak — sustained churn with the features cycling, run once per release | **gated**, never in the standard battery |
+| 12 | Emitted-message conformance: every field a node actually puts on the wire is one the spec names | root interop tenant |
+| 13 | Public API parity: every implementation exposes the same callable surface, and nothing the protocol does not denote | root interop tenant |
 
 Tiers 1, 2 and 4 live with each implementation; the byte-exact corpus comparison
 and tier 3 are shared but need the whole repository, so they live in `interop/`
@@ -65,6 +67,23 @@ reaper down          # destroy it
 
 `reaper test` needs a live session, so `reaper up` first. Sessions expire (~2 h);
 `reaper down` then `reaper up` recycles a stale one.
+
+**reaper 0.1.1 or newer.** 0.1.0 returns success from `reaper test` when the run
+finished but its results could not be collected, so a tenant that never reported
+reads as a pass — that is defect D19, and it is fixed upstream rather than here
+(0.1.1 returns the collection failure as an error, and bounds the rsync and its own
+control commands with `session.io_timeout`). The whole-battery script below still
+takes the root tenant's verdict from the retrieved guest log rather than from the
+exit status, because defence in depth is cheap and because that check also catches
+a harness pointed at a stale result.
+
+## 2.1 The whole battery
+
+`sh ci/battery.sh` runs all nine tenants in sequence, tearing each one down even
+on failure. It lives in the repository rather than in somebody's shell history
+because it is the gate that decides whether a release is green, and a gate that
+is rewritten from memory each time is one whose lessons are lost — D19's evidence
+check was learned twice for exactly that reason.
 
 ---
 

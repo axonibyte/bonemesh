@@ -66,6 +66,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -163,6 +164,34 @@ func main() {
 		}
 		fmt.Printf("PASS  spec types and corpus schemas agree in both directions (%d)\n",
 			len(corpusTypes))
+	}
+
+	// --- D2. spec vs the emitted-field allowlist, in both directions ---------
+	// tier 12 checks what a node actually put on the wire against
+	// corpus/emitted.json. That check is only as complete as the allowlist, so an
+	// inner type added to the spec without an entry there would be emitted with
+	// nothing watching its fields -- the same hole decision #24 closed for corpus
+	// schemas, one artifact along. "envelope" is excluded for the same reason as
+	// above: it is the transport carrier, not an inner type.
+	emitTypes, err := emittedTypeList(filepath.Join(root, "spec", "corpus", "emitted.json"))
+	if err != nil {
+		fail("corpus emitted.json: %v", err)
+	} else {
+		for _, t := range emitTypes {
+			if !contains(s.messageTypes, t) {
+				fail("corpus emitted.json names %q, which the spec's type table does not list", t)
+			}
+		}
+		for _, t := range s.messageTypes {
+			if t == "envelope" || strings.HasPrefix(t, "bmx") {
+				continue // handshake frames are not inner messages; tier 12 never sees them
+			}
+			if !contains(emitTypes, t) {
+				fail("spec lists inner type %q, which corpus emitted.json declares no fields for", t)
+			}
+		}
+		fmt.Printf("PASS  spec types and the emitted-field allowlist agree in both directions (%d)\n",
+			len(emitTypes))
 	}
 
 	// --- per implementation --------------------------------------------------
@@ -648,4 +677,30 @@ func repoRoot() (string, error) {
 		}
 		d = parent
 	}
+}
+
+// emittedTypeList returns the inner types corpus/emitted.json declares fields for.
+// Read as data, like every other corpus artifact, so the allowlist and the spec
+// stay two independent statements that must agree rather than one derived from
+// the other.
+func emittedTypeList(path string) ([]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		Types map[string][]string `json:"types"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	if len(doc.Types) == 0 {
+		return nil, fmt.Errorf("declares no types")
+	}
+	out := make([]string, 0, len(doc.Types))
+	for t := range doc.Types {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out, nil
 }
