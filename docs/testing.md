@@ -26,6 +26,7 @@ the normative wire it is all checked against, see
 | 10 | The 3.1 features on the wire, cross-language: ack, NAK/D4, rekey, idle teardown, probe-timeout death, key-log round-trip | root tenant |
 | 11 | Long-horizon soak — sustained churn with the features cycling, run once per release | **gated**, never in the standard battery |
 | 12 | Emitted-message conformance: every field a node actually puts on the wire is one the spec names | root interop tenant |
+| 13 | Public API parity: every implementation exposes the same callable surface, and nothing the protocol does not denote | root interop tenant |
 
 Tiers 1, 2 and 4 live with each implementation; the byte-exact corpus comparison
 and tier 3 are shared but need the whole repository, so they live in `interop/`

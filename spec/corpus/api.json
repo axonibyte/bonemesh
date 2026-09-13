@@ -1,0 +1,25 @@
+{
+  "description": "The public API surface every implementation exposes, and nothing more (decision #23). This is the axis that had no gate: the rule was enforced for BONEMESH_* tunables, message types and corpus schemas, but nothing asked whether a port exposes a method the protocol never denoted. That is exactly how a public broadcast() lived in one implementation alone through the whole 8x7 corpus grid run twice, specsrc, the 49-cell matrix and tiers 5-10, and was caught only by a human diffing two ports method-for-method. Names differ per language because idiom differs, so the mapping is spelled out rather than inferred: a check that guessed names would fail on SendM and routes and be turned off within a week.",
+  "capabilities": {
+    "start":        {"go": "Start",       "java": "start",          "rust": "start",            "js": "start",     "php": "start",     "python": "start",        "elixir": "start_link"},
+    "connect":      {"go": "Connect",     "java": "connect",        "rust": "connect",          "js": "connect",   "php": "connect",   "python": "connect",      "elixir": "connect"},
+    "send":         {"go": "Send",        "java": "send",           "rust": "send",             "js": "send",      "php": "send",      "python": "send",         "elixir": "send"},
+    "send_mid":     {"go": "SendM",       "java": "sendMid",        "rust": "send_mid",         "js": "sendMid",   "php": "sendMid",   "python": "send_mid",     "elixir": "send_mid"},
+    "broadcast":    {"go": "Broadcast",   "java": "broadcast",      "rust": "broadcast",        "js": "broadcast", "php": "broadcast", "python": "broadcast",    "elixir": "broadcast"},
+    "on_message":   {"go": "AddListener", "java": "addDataListener","rust": "add_listener",     "js": "onMessage", "php": "onMessage", "python": "on_message",   "elixir": "add_listener"},
+    "on_ack":       {"go": "AckListener", "java": "addAckListener", "rust": "add_ack_listener", "js": "onAck",     "php": "onAck",     "python": "on_ack",       "elixir": "add_ack_listener"},
+    "port":         {"go": "Port",        "java": "port",           "rust": "port",             "js": "port",      "php": "port",      "python": "port",         "elixir": "port"},
+    "route_table":  {"go": "RouteTable",  "java": "routeTable",     "rust": "route_table",      "js": "routeTable","php": "routeTable","python": "route_table",  "elixir": "routes"},
+    "session_info": {"go": "SessionInfo", "java": "sessionInfo",    "rust": "session_info",     "js": "sessionInfo","php": "sessionInfo","python": "session_info","elixir": "session_info"},
+    "kill":         {"go": "Kill",        "java": "kill",           "rust": "kill",             "js": "kill",      "php": "kill",      "python": "kill",         "elixir": "stop"}
+  },
+  "allowed_extra": {
+    "php": {
+      "serve": "PHP has no threads, so the caller must pump the event loop; decision #23 names this as the carve-out for what a language forces on a port, and it is the only member of that carve-out with an API cost."
+    }
+  },
+  "notes": {
+    "internal-by-convention": "Each port marks a reachable-but-not-API seam its own way and interop/api-surface.sh honours the marker: Go keeps it unexported, Java package-private, Rust #[doc(hidden)], Elixir @doc false, JS and Python a leading underscore, PHP an @internal docblock. A check that ignored those would report Rust's send_with_ttl and rekey_epoch, which carry an explicit 'Not API' rationale citing decision #23.",
+    "constructors": "A language's own construction ceremony is not a capability: PHP's __construct and Elixir's GenServer callbacks are filtered by the extractor, not listed here."
+  }
+}
