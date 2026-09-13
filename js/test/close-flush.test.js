@@ -26,6 +26,24 @@ import { mldsa65Generate } from '../src/crypto.js';
 
 const MESH = 'acme-prod';
 
+// These tests deliberately wedge a link and then time a close, so the node's own
+// liveness sweep must not be a second thing that can close it. A paused peer sends
+// no probes, so lastInbound stops advancing and the sweep would tear the link down
+// on its own schedule -- which on a loaded machine can land inside the window
+// under test and, worse, can remove the link before kill() is even reached, so
+// kill() closes nothing and the failure looks like a missed deadline. Tunables are
+// read once at node start, so this is set before any node is created and restored
+// afterwards.
+const PROBE_ENV = 'BONEMESH_PROBE_TIMEOUT_MS';
+function withSweepDisabled(t) {
+  const prior = process.env[PROBE_ENV];
+  process.env[PROBE_ENV] = '600000';
+  t.after(() => {
+    if (prior === undefined) delete process.env[PROBE_ENV];
+    else process.env[PROBE_ENV] = prior;
+  });
+}
+
 function newRoot() {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ml-dsa-87');
   return { pubRaw: Buffer.from(publicKey.export({ format: 'jwk' }).pub, 'base64url'), privateKey };
@@ -56,6 +74,7 @@ const PAYLOAD = 'y'.repeat(16 * 1024);
 const BACKED_UP = 4 * 1024 * 1024;
 
 test('a deliberate close delivers what was already queued, rather than discarding it', async (t) => {
+  withSweepDisabled(t);
   const root = newRoot();
   const beta = await Node.start(config(root, 'beta'), 0);
   const alpha = await Node.start(config(root, 'alpha'), 0);
@@ -90,6 +109,8 @@ test('a deliberate close delivers what was already queued, rather than discardin
     `could not stage a backed-up socket (${alphaSide.writableLength} bytes queued after `
     + `${sent} messages); the close path is untested, so this is a failure not a pass`);
   assert.equal(got.length, 0, 'beta read messages while its socket was paused');
+  assert.ok(alpha.links.has('beta'),
+    'the link was gone before kill(), so kill() closed nothing and this run proved nothing');
 
   alpha.kill();
   betaSide.resume();
@@ -101,6 +122,7 @@ test('a deliberate close delivers what was already queued, rather than discardin
 });
 
 test('the flush does not let a peer that never reads hold the socket open', async (t) => {
+  withSweepDisabled(t);
   const root = newRoot();
   const beta = await Node.start(config(root, 'beta'), 0);
   const alpha = await Node.start(config(root, 'alpha'), 0);
@@ -129,6 +151,8 @@ test('the flush does not let a peer that never reads hold the socket open', asyn
     `could not stage a blocked flush (only ${alphaSide.writableLength} bytes queued); `
     + 'the deadline is untested, so this is a failure rather than a pass');
 
+  assert.ok(alpha.links.has('beta'),
+    'the link was gone before kill(), so kill() closed nothing and this run proved nothing');
   alpha.kill();
 
   // Precondition before the success indicator: the flush really is stuck, so a
@@ -137,12 +161,12 @@ test('the flush does not let a peer that never reads hold the socket open', asyn
   assert.equal(alphaSide.destroyed, false,
     'the socket closed on its own, so this run never exercised the deadline');
 
-  // Only the deadline can close it now -- and the window has to say so. At 20 s
-  // this assertion passed with the deadline deleted, because the peer's own 15 s
-  // probe-timeout sweep tears its side down and that closes this socket too. The
-  // window must exclude that alternative cause, so it sits between the 5 s
-  // deadline and the 15 s sweep.
-  await waitFor(() => alphaSide.destroyed, 8000).catch(() => {
+  // Only the deadline can close it now. An earlier version of this assertion used
+  // a 20 s window and passed with the deadline deleted, because the peer's own
+  // probe-timeout sweep closed the socket instead; that alternative cause is now
+  // disabled outright rather than dodged by timing, which also means the window
+  // can be generous enough to survive a loaded machine.
+  await waitFor(() => alphaSide.destroyed, 12000).catch(() => {
     throw new Error('a peer that never reads kept the socket open past the flush deadline');
   });
 });
