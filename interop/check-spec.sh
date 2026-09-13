@@ -136,6 +136,26 @@ sed 's/"16777216"/"1_677_721"/' "$work/fake.js.good" > "$work/js/src/fake.js"
 expect_fail "a digit-separated near-miss" "missing reassembly buffer max"
 cp "$work/fake.js.good" "$work/js/src/fake.js"
 
+# 3d. An implementation that EMITS a type the spec does not list must fail. This is
+#     the direction decision #24 exists for, and the one that was missing: the
+#     broadcast() only Python had survived the whole corpus grid twice, specsrc, the
+#     49-cell matrix and tiers 5-10, because every check ran spec -> code.
+printf "const m = { type: 'teleport', mid: 1 };\n" >> "$work/js/src/fake.js"
+expect_fail "an emitted type the spec never lists" "emits inner type \"teleport\""
+cp "$work/fake.js.good" "$work/js/src/fake.js"
+
+# 3e. ...and a type the spec lists with no corpus schema must fail too. Six of twelve
+#     were in exactly that state before 3.3.0.
+python3 - "$repo/spec/corpus/messages.json" "$work/spec/corpus/messages.json" <<'PYDROP'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+d = json.load(open(src, encoding="utf-8"))
+d["cases"] = [c for c in d["cases"] if c["schema"] != "rekey"]
+json.dump(d, open(dst, "w", encoding="utf-8"), indent=1)
+PYDROP
+expect_fail "a spec'd type with no corpus schema" "corpus messages.json has no schema for"
+cp "$repo/spec/corpus/messages.json" "$work/spec/corpus/"
+
 # 4. the corpus using a schema the spec does not list
 sed 's/"schema": "bye"/"schema": "nosuchtype"/' "$repo/spec/corpus/messages.json" \
   > "$work/spec/corpus/messages.json"
@@ -189,6 +209,8 @@ if ! "$bin" -root "$work" >"$work/final.log" 2>&1; then
   exit 1
 fi
 echo "SELF-TEST PASS: the checker fails on dropped constants, undocumented tunables,"
-echo "                spec drift, corpus drift, a reworded spec and a digit-separated"
-echo "                near-miss; recognises idiomatic 16_777_216; searches a root"
-echo "                nested under build/; and still excludes vendored files"
+echo "                spec drift, corpus drift, a reworded spec, a digit-separated"
+echo "                near-miss, an EMITTED type the spec never lists, and a spec'd"
+echo "                type with no corpus schema; recognises idiomatic 16_777_216;"
+echo "                searches a root nested under build/; and still excludes"
+echo "                vendored files"

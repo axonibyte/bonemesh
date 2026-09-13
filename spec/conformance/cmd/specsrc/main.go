@@ -39,8 +39,26 @@
 //
 // What this tier catches that no other can see: a tunable renamed in code and not
 // in the spec (or added to code and never documented), a message type the spec
-// gained that an implementation never learned, and a corpus schema the spec does
-// not list.
+// gained that an implementation never learned, a message type an implementation
+// EMITS that the spec never listed, a spec'd type with no corpus schema behind it,
+// and a corpus schema the spec does not list.
+//
+// Three of those five run code -> spec, which is the direction decision #24 is
+// about. Before 3.3.0 only the tunable check did, and the consequence is on the
+// record: the broadcast() that only the Python port had survived the entire 8x7
+// corpus grid run twice, this tool, the 49-cell matrix and tiers 5-10, and was
+// caught by a human diffing two implementations method-for-method.
+//
+// What the emitted-type direction does NOT prove, stated because the gap is the
+// interesting part: it sees the type TOKEN an implementation constructs, not the
+// set of FIELDS it puts beside it. An implementation that emits a spec'd type with
+// an extra member is still invisible here, and cannot be caught by making readers
+// strict either, because protocol.md section 8 mandates tolerating unknown fields.
+// Catching that needs an oracle over what a node actually WROTE -- the --capture
+// flag and bonemesh-inspect already decode inner plaintext, so the pieces exist and
+// are not yet wired into a gate. Public API surface (the broadcast() case itself) is
+// likewise out of reach from source text: it needs a declared surface to compare
+// against, which the spec does not yet have.
 //
 // Every extraction asserts that it actually extracted something. A parser that
 // silently matches nothing would turn this whole tool into a vacuous pass, which
@@ -134,7 +152,17 @@ func main() {
 				fail("corpus messages.json uses schema %q, which the spec's type table does not list", t)
 			}
 		}
-		fmt.Printf("PASS  corpus schemas are all spec'd types (%d)\n", len(corpusTypes))
+		// ...and the reverse, which is the direction that was missing. A type the
+		// spec lists with no vector behind it is invisible: that is how bmx2, bmx3,
+		// disco, probe, echo and rekey -- six of twelve -- reached 3.2.0 with no
+		// corpus schema at all and nothing noticed (decision #24).
+		for _, t := range s.messageTypes {
+			if !contains(corpusTypes, t) {
+				fail("spec lists message type %q, which corpus messages.json has no schema for", t)
+			}
+		}
+		fmt.Printf("PASS  spec types and corpus schemas agree in both directions (%d)\n",
+			len(corpusTypes))
 	}
 
 	// --- per implementation --------------------------------------------------
@@ -186,11 +214,41 @@ func main() {
 			}
 		}
 
-		// C. message types from the spec's type table.
+		// C. message types, both directions.
+		//
+		// spec -> code: every type the spec lists must be named in the source.
 		for _, t := range s.messageTypes {
 			if !strings.Contains(src, `"`+t+`"`) && !strings.Contains(src, `'`+t+`'`) &&
-				!strings.Contains(src, `:`+t) && !strings.Contains(src, `"`+t+`"`) {
+				!strings.Contains(src, `:`+t) {
 				fail("%-7s never names message type %q", im.name, t)
+				bad++
+			}
+		}
+		// code -> spec: no implementation may EMIT a type the spec does not list.
+		//
+		// Scanned over the source MINUS the crypto modules. That exclusion is the
+		// narrowest one that works and it covers exactly what it says: a key encoding
+		// is named with the same `type:` property an inner message uses
+		// (`privateKey.export({ type: 'pkcs8', format: 'der' })`), and no inner message
+		// is ever constructed in a crypto module. Everything else -- the message
+		// builders, the node, the transport, the handshake, the drivers -- stays in
+		// scope. This check found that false positive on its first run, which is a
+		// reasonable sign it is looking at something.
+		// This is the direction decision #24 is about, and the reason it is worth
+		// having is on the record: the `broadcast()` only Python had survived the
+		// whole corpus grid twice, specsrc, the 49-cell matrix and tiers 5-10,
+		// because every check ran spec -> code.
+		//
+		// It matches type ASSIGNMENTS, not bare occurrences -- the six shapes the
+		// seven ports actually use to build a message -- so a token appearing in a
+		// comment or a dispatch arm does not count as emitting it.
+		emitSrc, _, emitErr := loadSource(root, im, "crypto")
+		if emitErr != nil {
+			emitSrc = src // a read failure must not silently skip the check
+		}
+		for _, t := range emittedTypes(emitSrc) {
+			if !contains(s.messageTypes, t) {
+				fail("%-7s emits inner type %q, which no spec document lists", im.name, t)
 				bad++
 			}
 		}
@@ -433,7 +491,42 @@ func closeDigitSeparators(src string) string {
 	return b.String()
 }
 
-func loadSource(root string, im impl) (string, int, error) {
+// emittedTypes finds the inner `type` values an implementation constructs.
+//
+// Deliberately narrow: it matches the shapes used to ASSIGN a type when building a
+// message, not every occurrence of a token. A type named in a switch arm, a comment
+// or a test fixture is reading or describing, not emitting, and flagging those would
+// make the check noise rather than a gate.
+//
+// Six patterns for seven languages, because Go and Rust share one. Like the
+// per-language source roots, they are duplicated here on purpose rather than derived:
+// the duplication is what makes this an independent check.
+func emittedTypes(src string) []string {
+	pats := []*regexp.Regexp{
+		regexp.MustCompile(`"type"\s*:\s*"([a-z0-9]+)"`),         // Go, Rust, JS object literals
+		regexp.MustCompile(`'type'\s*=>\s*'([a-z0-9]+)'`),        // PHP
+		regexp.MustCompile(`"type"\s*=>\s*"([a-z0-9]+)"`),        // Elixir
+		regexp.MustCompile(`\.put\("type",\s*"([a-z0-9]+)"\)`), // Java
+		regexp.MustCompile(`"type":\s*"([a-z0-9]+)"`),             // Python dict literals
+		regexp.MustCompile(`type:\s*'([a-z0-9]+)'`),               // JS shorthand
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, re := range pats {
+		for _, m := range re.FindAllStringSubmatch(src, -1) {
+			if !seen[m[1]] {
+				seen[m[1]] = true
+				out = append(out, m[1])
+			}
+		}
+	}
+	return out
+}
+
+// loadSource concatenates an implementation's source. skipBase, when non-empty,
+// additionally drops any file whose base name contains one of its entries -- used by
+// the emitted-type check to leave the crypto modules out, and by nothing else.
+func loadSource(root string, im impl, skipBase ...string) (string, int, error) {
 	var b strings.Builder
 	files := 0
 	for _, r := range im.roots {
@@ -461,6 +554,11 @@ func loadSource(root string, im impl) (string, int, error) {
 				return nil
 			}
 			rel = "/" + filepath.ToSlash(rel)
+			for _, s := range skipBase {
+				if strings.Contains(strings.ToLower(filepath.Base(rel)), s) {
+					return nil
+				}
+			}
 			for _, s := range im.skip {
 				if strings.Contains(rel, s) {
 					return nil
