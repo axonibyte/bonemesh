@@ -85,6 +85,56 @@ public class RoutingTest {
   // A direct neighbor must never get a learned route: a shadow route would be
   // poison-reversed back to its source, clobbering the legitimate neighbor
   // advertisement and breaking multi-relay convergence (seen in a mixed diamond).
+  @Test void neighborLabelsAreCaseInsensitiveEverywhere() {
+    // security.md §2: labels compare case-insensitively. This port keyed its neighbors
+    // map by the label exactly as given while keying routes folded, which made its
+    // disco.routes differ on the wire from the other six, silently dropped an
+    // advertisement whose via arrived in another case, and counted "Beta" and "beta"
+    // as two neighbors.
+    RoutingTable rt = new RoutingTable("self");
+    rt.observeNeighbor("Beta", 10);
+    rt.observeNeighbor("beta", 20);
+
+    // One neighbor, not two, and reachable under any casing.
+    assertTrue(rt.isNeighbor("BETA"));
+    assertTrue(rt.isNeighbor("beta"));
+    assertEquals("beta", rt.nextHop("BeTa"));
+
+    // An advertisement whose via arrives in another case is still learned...
+    rt.learnRoute("gamma", "BETA", 5);
+    assertEquals("beta", rt.nextHop("gamma"));
+
+    // ...and every key this node puts on the wire is folded.
+    for(String k : rt.advertiseTo("zeta").keySet())
+      assertEquals(k.toLowerCase(java.util.Locale.ROOT), k, "unfolded key on the wire: " + k);
+  }
+
+  @Test void aSummedCostPastTheThresholdIsClampedToThePoisonValue() {
+    // Found by mutation: reverting saturatingSum to detecting only arithmetic overflow
+    // left every suite green, because nothing summed a cost past the threshold without
+    // overflowing. That matters now the emitted value is a pinned wire constant -- an
+    // unclamped sum goes out as some arbitrary number instead of the poison.
+    RoutingTable rt = new RoutingTable("self");
+    rt.observeNeighbor("b", 10);
+    rt.observeNeighbor("d", 10);
+    rt.learnRoute("c", "b", 999_999_999L); // + 10ms link = past the threshold
+    assertEquals(Long.valueOf(1_000_000_000L), rt.advertiseTo("d").get("c"),
+        "a summed cost past the threshold must be advertised as exactly 1000000000");
+  }
+
+  @Test void theAdvertisedPoisonValueIsThePinnedLiteral() {
+    // 1_000_000_000 is written out here rather than referenced as UNREACHABLE, and
+    // that is the whole point: every other poison assertion in these suites compares
+    // against the constant, which agrees with itself whatever its value. That is how
+    // this port advertised Long.MAX_VALUE with a green suite. protocol.md §0 pins the
+    // number, so the test pins the number.
+    RoutingTable rt = new RoutingTable("self");
+    rt.observeNeighbor("b", 10);
+    rt.learnRoute("c", "b", 5);
+    assertEquals(Long.valueOf(1_000_000_000L), rt.advertiseTo("b").get("c"),
+        "the poison-reversed cost on the wire must be exactly 1000000000");
+  }
+
   @Test void noRouteIsEverInstalledToOurselves() {
     // The load-bearing half of defect D5: the v2 broadcast could list the node's own
     // label among its routes and send to itself. learnRoute's first guard is what

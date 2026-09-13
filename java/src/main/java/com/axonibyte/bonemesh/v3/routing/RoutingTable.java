@@ -37,16 +37,35 @@ import java.util.Set;
  */
 public final class RoutingTable {
 
+  // Every label in both maps is folded through key() before use, so lookups,
+  // advertisements and withdrawals all agree. That was not true before 3.3.0: the
+  // neighbors map alone was keyed by the label exactly as given, while routes were
+  // folded, which had three consequences and none of them was local.
+  //
+  //   - advertiseTo emitted neighbor keys in their original case and route keys
+  //     folded, so this port's disco.routes differed on the wire from the other six.
+  //   - learnRoute's "only learn via known neighbors" guard was case-sensitive, so an
+  //     advertisement naming a via in different case was silently dropped -- the other
+  //     six folded first and learned it.
+  //   - observeNeighbor("Beta", ...) and observeNeighbor("beta", ...) produced two
+  //     neighbor entries here and one everywhere else.
+  //
+  // security.md §2 says labels compare case-insensitively, so folding is what the spec
+  // asked for; nextHop's linear equalsIgnoreCase scan was a workaround on one path.
+
   /** Sentinel path cost meaning "unreachable" that this node advertises. */
-  public static final long UNREACHABLE = Long.MAX_VALUE;
+  public static final long UNREACHABLE = 1_000_000_000L;
 
   /**
    * Any advertised cost at or above this is treated as unreachable on receipt.
-   * Implementations differ in the exact sentinel they emit — Java advertises
-   * {@link #UNREACHABLE} (Long.MAX_VALUE), Elixir and the JS port advertise
-   * 1_000_000_000 — so a tolerant threshold, rather than an exact match, keeps a
-   * mixed mesh converging. Real path costs (summed millisecond latencies) never
-   * approach this.
+   * Equal to {@link #UNREACHABLE} by specification (protocol.md &sect;0), so a
+   * saturated sum is indistinguishable from an explicit poison.
+   *
+   * <p>This port used to advertise {@code Long.MAX_VALUE} and interoperated only by
+   * luck of the tolerant threshold. That is not safe luck: 2^63-1 exceeds the
+   * largest integer a double represents exactly, so a JSON parser backed by doubles
+   * reads it back as a different number. Real path costs (summed millisecond
+   * latencies) never approach 1e9.</p>
    */
   public static final long POISON_THRESHOLD = 1_000_000_000L;
 
@@ -68,7 +87,7 @@ public final class RoutingTable {
    * @param rttSampleMillis a measured round-trip-time sample
    */
   public synchronized void observeNeighbor(String label, long rttSampleMillis) {
-    neighbors.computeIfAbsent(label, k -> new LatencyTracker()).update(rttSampleMillis);
+    neighbors.computeIfAbsent(key(label), k -> new LatencyTracker()).update(rttSampleMillis);
   }
 
   /**
@@ -78,19 +97,19 @@ public final class RoutingTable {
    * @param label the neighbor's label
    */
   public synchronized void removeNeighbor(String label) {
-    neighbors.remove(label);
-    routes.entrySet().removeIf(e -> e.getValue().via.equalsIgnoreCase(label));
+    neighbors.remove(key(label));
+    routes.entrySet().removeIf(e -> e.getValue().via.equals(key(label)));
   }
 
   /** @return the measured latency to a direct neighbor, or MAX_VALUE if unknown */
   public synchronized long neighborLatency(String label) {
-    LatencyTracker t = neighbors.get(label);
+    LatencyTracker t = neighbors.get(key(label));
     return t == null ? UNREACHABLE : t.latencyMillis();
   }
 
   /** @return whether the label is a direct neighbor */
   public synchronized boolean isNeighbor(String label) {
-    return neighbors.containsKey(label);
+    return neighbors.containsKey(key(label));
   }
 
   /**
@@ -103,19 +122,25 @@ public final class RoutingTable {
    * @param advertisedCost the neighbor's advertised path cost to dest
    */
   public synchronized void learnRoute(String dest, String viaNeighbor, long advertisedCost) {
-    if(dest.equalsIgnoreCase(selfLabel)) return;         // never route to ourselves
-    if(dest.equalsIgnoreCase(viaNeighbor)) return;       // that is just the neighbor itself
-    if(!neighbors.containsKey(viaNeighbor)) return;      // only learn via known neighbors
-    if(isNeighbor(dest)) return;                         // a direct neighbor needs no routed path
-    if(advertisedCost >= POISON_THRESHOLD) {             // poisoned: withdraw if we used this via
-      Route existing = routes.get(key(dest));
-      if(existing != null && existing.via.equalsIgnoreCase(viaNeighbor)) routes.remove(key(dest));
+    // Fold both labels once, up front, and work in folded terms from there -- the way
+    // the other six do. Storing an unfolded `via` made nextHop hand back whatever
+    // casing the advertisement happened to use, which then travelled on to the links
+    // map and into disco.routes.
+    String d = key(dest);
+    String v = key(viaNeighbor);
+    if(d.equals(key(selfLabel))) return;     // never route to ourselves
+    if(d.equals(v)) return;                  // that is just the neighbor itself
+    if(!neighbors.containsKey(v)) return;    // only learn via known neighbors
+    if(neighbors.containsKey(d)) return;     // a direct neighbor needs no routed path
+    if(advertisedCost >= POISON_THRESHOLD) { // poisoned: withdraw if we used this via
+      Route existing = routes.get(d);
+      if(existing != null && existing.via.equals(v)) routes.remove(d);
       return;
     }
-    long cost = saturatingSum(advertisedCost, neighborLatency(viaNeighbor));
-    Route existing = routes.get(key(dest));
-    if(existing == null || existing.via.equalsIgnoreCase(viaNeighbor) || cost < existing.cost)
-      routes.put(key(dest), new Route(viaNeighbor, cost));
+    long cost = saturatingSum(advertisedCost, neighborLatency(v));
+    Route existing = routes.get(d);
+    if(existing == null || existing.via.equals(v) || cost < existing.cost)
+      routes.put(d, new Route(v, cost));
   }
 
   /**
@@ -126,9 +151,10 @@ public final class RoutingTable {
    * @return the next-hop neighbor label, or {@code null} if unreachable
    */
   public synchronized String nextHop(String dest) {
-    if(neighbors.containsKey(dest)) return dest;
-    for(var e : neighbors.entrySet())
-      if(e.getKey().equalsIgnoreCase(dest)) return e.getKey();
+    // Both maps are keyed by the folded label, so one lookup answers it. This used to
+    // need a linear equalsIgnoreCase scan over the neighbors, because that map alone
+    // was keyed by the label exactly as given -- see the class comment.
+    if(neighbors.containsKey(key(dest))) return key(dest);
     Route r = routes.get(key(dest));
     return r == null ? null : r.via;
   }
@@ -147,21 +173,38 @@ public final class RoutingTable {
   public synchronized Map<String, Long> advertiseTo(String toNeighbor) {
     Map<String, Long> advert = new HashMap<>();
     for(var e : neighbors.entrySet()) {
-      if(e.getKey().equalsIgnoreCase(toNeighbor)) continue; // no need to tell them about themselves
+      if(e.getKey().equals(key(toNeighbor))) continue; // no need to tell them about themselves
       advert.put(e.getKey(), e.getValue().latencyMillis());
     }
     for(var e : routes.entrySet()) {
       Route r = e.getValue();
-      long cost = r.via.equalsIgnoreCase(toNeighbor) ? UNREACHABLE : r.cost; // poisoned reverse
+      long cost = r.via.equals(key(toNeighbor)) ? UNREACHABLE : r.cost; // poisoned reverse
       advert.put(e.getKey(), cost);
     }
     advert.remove(key(selfLabel));
     return advert;
   }
 
+  /**
+   * Adds two path costs, clamping anything at or past the poison threshold to
+   * {@link #UNREACHABLE}.
+   *
+   * <p>This used to detect only arithmetic overflow and return
+   * {@code Long.MAX_VALUE}, which the other six never did: they clamp at the
+   * threshold. That mattered once the emitted sentinel became a pinned wire value,
+   * because a stored cost is what {@link #advertiseTo} puts on the wire — so a
+   * summed cost past the threshold would have been advertised as some arbitrary
+   * number, or as 2^63-1, rather than as the pinned poison.</p>
+   *
+   * @param a the first cost
+   * @param b the second cost
+   * @return the sum, or {@link #UNREACHABLE} if either input or the sum is poisoned
+   */
   private static long saturatingSum(long a, long b) {
+    if(a >= POISON_THRESHOLD || b >= POISON_THRESHOLD) return UNREACHABLE;
     long sum = a + b;
-    return ((a ^ sum) & (b ^ sum)) < 0 ? Long.MAX_VALUE : sum;
+    if(sum < a || sum >= POISON_THRESHOLD) return UNREACHABLE; // overflow, or poisoned
+    return sum;
   }
 
   private static String key(String label) {

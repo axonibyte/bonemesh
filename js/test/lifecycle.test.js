@@ -100,6 +100,21 @@ test('tunables read env with pinned defaults', () => {
   assert.equal(loadTunables().probeTimeoutMs, 1234, 'env override ignored');
   process.env.BONEMESH_PROBE_TIMEOUT_MS = 'garbage';
   assert.equal(loadTunables().probeTimeoutMs, 15000, 'unparseable env did not fall back');
+
+  // protocol.md §0: an optional sign then decimal digits and nothing else.
+  // Number.parseInt stops at the first non-digit, so this port used to read '12abc'
+  // as 12 and '1_000' as 1 -- partially parsing an operator's typo instead of
+  // ignoring it. 'garbage' above never caught that, because parseInt rejects it
+  // outright; only a value with a valid PREFIX distinguishes the two behaviours.
+  for (const bad of ['12abc', '1_000', '1.5', ' 12 ', '+12', '0x10', '12 ']) {
+    process.env.BONEMESH_PROBE_TIMEOUT_MS = bad;
+    assert.equal(
+      loadTunables().probeTimeoutMs, 15000,
+      `${JSON.stringify(bad)} was partially parsed instead of ignored`,
+    );
+  }
+  process.env.BONEMESH_PROBE_TIMEOUT_MS = '-1';
+  assert.equal(loadTunables().probeTimeoutMs, -1, 'a negative value is well-formed');
   delete process.env.BONEMESH_PROBE_TIMEOUT_MS;
   const t = loadTunables();
   assert.deepEqual(

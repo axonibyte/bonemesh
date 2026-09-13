@@ -76,6 +76,47 @@ test('remove neighbor withdraws its routes', function () {
     assertNull($t->nextHop('b'));
 });
 
+test('neighbor labels are case-insensitive everywhere', function () {
+    // security.md section 2: labels compare case-insensitively. The Java port keyed its
+    // neighbors map by the label exactly as given while keying routes folded, which
+    // made its disco.routes differ on the wire from the other six.
+    $t = new RoutingTable('self');
+    $t->observeNeighbor('Beta', 10);
+    $t->observeNeighbor('beta', 20);
+    // isNeighbor is Java-only surface, so the shared property is asserted through
+    // nextHop: one neighbor, reachable under any casing, named in folded form.
+    assertEq('beta', $t->nextHop('BeTa'));
+    assertEq('beta', $t->nextHop('beta'));
+    $t->learnRoute('gamma', 'BETA', 5);
+    assertEq('beta', $t->nextHop('gamma'));
+    foreach (array_keys($t->advertiseTo('zeta')) as $k) {
+        assertEq(strtolower((string) $k), (string) $k, "unfolded key on the wire: $k");
+    }
+});
+
+test('a summed cost past the threshold is clamped to the poison value', function () {
+    // Found by mutation in the Java port, whose saturating sum detected only arithmetic
+    // overflow: nothing in any suite summed a cost past the threshold without
+    // overflowing. That matters now the emitted value is a pinned wire constant.
+    $t = new RoutingTable('self');
+    $t->observeNeighbor('b', 10);
+    $t->observeNeighbor('d', 10);
+    $t->learnRoute('c', 'b', 999999999); // + 10ms link = past the threshold
+    assertEq(1000000000, $t->advertiseTo('d')['c']);
+});
+
+test('the advertised poison value is the pinned literal', function () {
+    // 1000000000 is written out here rather than referenced as UNREACHABLE, and that
+    // is the whole point: every other poison assertion in this suite compares against
+    // the constant, which agrees with itself whatever its value. That is how this port
+    // advertised PHP_INT_MAX with a green suite. protocol.md section 0 pins the
+    // number, so the test pins the number.
+    $t = new RoutingTable('self');
+    $t->observeNeighbor('b', 10);
+    $t->learnRoute('c', 'b', 5);
+    assertEq(1000000000, $t->advertiseTo('b')['c']);
+});
+
 test('no route is ever installed to ourselves', function () {
     // The load-bearing half of defect D5: the v2 broadcast could list the node's own
     // label among its routes and send to itself. learnRoute's first guard is what

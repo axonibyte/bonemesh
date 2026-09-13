@@ -99,3 +99,26 @@ fn nak_names_the_failing_relay_not_the_destination() {
     beta.kill();
     gamma.kill();
 }
+
+// send_mid returns the message id even when the destination is not routable yet
+// (protocol.md §7).
+//
+// This port used to return None in that case, which broke the correlation the method
+// exists for: the queued message's lifetime expires and produces a synthesized
+// nak{reason:"expired"} naming its mid, and a caller that never received the mid
+// cannot match it to anything. None is now reserved for the one permanent failure --
+// a payload over a §0 bound, which is never emitted at all.
+#[test]
+fn send_mid_returns_the_id_even_when_the_destination_is_not_routable() {
+    let (root_pub, root_priv) = crypto::mldsa87_generate();
+    let alpha = Node::start(config(&root_priv, &root_pub, "alpha"), 0).unwrap();
+
+    let mid = alpha.send_mid("nowhere", json!({"m": "queued"}));
+    assert!(
+        mid.is_some(),
+        "an unroutable send lost its mid, so its expiry nak cannot be correlated"
+    );
+    assert_eq!(mid.as_deref().map(str::len), Some(32), "a mid is 32 hex characters");
+
+    alpha.kill();
+}

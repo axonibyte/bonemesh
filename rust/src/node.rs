@@ -218,18 +218,25 @@ impl Node {
         self.send_mid(to, payload).is_some()
     }
 
-    /// Send that also returns the message id, so a caller can correlate the
-    /// ack/nak delivered to `add_ack_listener` (protocol.md §7). Returns None if
-    /// the destination is not routable now; the message is queued for bounded
-    /// retry (F2) when retry is enabled, so it may still be delivered later.
+    /// Send that also returns the message id, so a caller can correlate the ack/nak
+    /// delivered to `add_ack_listener` (protocol.md §7).
+    ///
+    /// The id is returned even when the destination is not routable yet and the
+    /// message was queued for bounded retry (F2). It used to return None in that
+    /// case, which broke the very correlation the method exists for: a queued
+    /// message whose lifetime expires produces a synthesized `nak{reason:"expired"}`
+    /// naming its mid, and a caller that never received the mid cannot match it.
+    /// Returning None also made "not routable yet" indistinguishable from "over a §0
+    /// bound", which is a permanent failure.
     pub fn send_mid(&self, to: &str, payload: Value) -> Option<String> {
         let mid = message::new_mid();
         // Over a §0 bound means no conforming destination would reassemble it, so
         // the caller is told locally rather than the mesh carrying a message that
         // cannot arrive (§6.1, Bounds).
+        // Over a §0 bound is the one permanent failure, and the only case that
+        // yields None: nothing was emitted and nothing will be.
         let segments = chunk::split(&mid, &self.inner.config.label, to, message::DEFAULT_TTL, payload).ok()?;
         let nh = self.inner.table.lock().unwrap().next_hop(to);
-        let mut all = true;
         for msg in &segments {
             let delivered = match &nh {
                 Some(nh) => send_to_link(&self.inner, nh, msg),
@@ -237,11 +244,7 @@ impl Node {
             };
             if !delivered {
                 enqueue_retry(&self.inner, msg);
-                all = false;
             }
-        }
-        if !all {
-            return None;
         }
         Some(mid)
     }

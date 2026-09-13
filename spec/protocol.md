@@ -37,7 +37,7 @@ not depend on a two-party handshake, so they are testable and pinned now.
 | Reassembly buffer max | 16777216 bytes, summed across every in-flight message |
 | Concurrent reassemblies max | 256 in-flight messages |
 | Reassembly timeout | 30000 ms |
-| Unreachable path cost | any advertised cost **≥ 1000000000** is unreachable (§6) |
+| Unreachable path cost | advertised as exactly **1000000000**; any advertised cost **≥ 1000000000** is treated as unreachable on receipt (§6) |
 | AEAD nonce | 96-bit: 4 zero bytes then the per-direction 64-bit **little-endian** sequence counter; starts at 0, +1 per frame, never reused (matches `security.md` §5 and corpus `transport-frame.json`) |
 
 Operational tunables (local behavior, not the wire contract, so two nodes with
@@ -50,6 +50,13 @@ assume anything about them: `BONEMESH_PROBE_TIMEOUT_MS` (15000), `BONEMESH_IDLE_
 (0 = disabled), `BONEMESH_RETRY_BASE_MS`/`_CAP_MS`/`_MAX_MS` (500 / 30000 /
 60000; 0 disables retry), `BONEMESH_REKEY_MS`/`_FRAMES`/`_TIMEOUT_MS`
 (3600000 / 65536 / 10000), and `BONEMESH_KEYLOG` (unset = off).
+
+A tunable's value is read strictly: an optional sign followed by decimal digits and
+nothing else. Anything else — trailing text, digit separators, surrounding
+whitespace — is ignored and the default used, rather than partially parsed. Two
+implementations were lenient in different directions (one read `12abc` as 12, the
+other read `1_000` as 1000), which is the kind of difference that makes an
+operator's typo behave differently on different nodes.
 
 **Delivered in 3.1.0.** The following were specified in 3.0.0 but deferred; they
 are now implemented across all seven reference implementations and are backward-
@@ -277,7 +284,11 @@ measures **real round-trip time**:
   probe once per **1 s** heartbeat (§0).
 - A neighbor's link latency is an **exponentially-weighted moving average** of
   RTT samples (**α = 0.2**, §0), not a single reading, so a transient spike does
-  not dominate. It is a real duration in milliseconds.
+  not dominate. It is a real duration in milliseconds, rounded to an integer
+  **half away from zero** — so 2.5 ms becomes 3, never 2. That is pinned because
+  the rounded value is what `disco.routes` puts on the wire (§4.2): six
+  implementations rounded half away from zero and one used banker's rounding, so
+  two nodes could advertise costs differing by 1 ms for the same measured link.
 - `disco` messages advertise, per known destination, the **path cost** = sum of
   per-hop EWMA latencies along the best known path. Because identity and public
   keys now come from the authenticated handshake (`security.md`), discovery no
@@ -295,6 +306,16 @@ measures **real round-trip time**:
   neighbor it learned it from, and advertises it as unreachable instead) and the
   `ttl` hop limit (§4.1), together bounding the count-to-infinity behavior v2
   left open.
+
+  The poison value is **exactly 1000000000** and is now pinned (§0), because it
+  goes on the wire in `disco.routes` and four of the seven implementations used to
+  advertise 2^63-1 instead. That interoperated only by luck of the receive-side
+  threshold, and it is not safe luck: 2^63-1 exceeds the largest integer a
+  double-precision number represents exactly, so a JSON parser backed by doubles
+  reads it as 9223372036854775808 — a different number than the one sent. The
+  threshold is set equal to the emitted value on purpose, so a saturated sum is
+  indistinguishable from an explicit poison, and mixed-version meshes keep working
+  because every receiver has always accepted anything at or above it.
 - **Send.** Look up the destination: a live session to it (direct) wins;
   otherwise forward to the best-cost next-hop neighbor over that session. No route
   and no direct session ⇒ the call reports failure to the caller — a real return,

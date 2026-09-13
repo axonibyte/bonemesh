@@ -96,4 +96,17 @@ defmodule Bonemesh.NodeTest do
     assert Node.send(alpha, "beta", %{"blob" => blob})
     assert :ok == await_data(&(&1["blob"] == blob), 10_000)
   end
+  # send_mid returns the message id even when the destination is not routable yet
+  # (protocol.md §7).
+  #
+  # This port used to reply :error in that case, which broke the correlation send_mid
+  # exists for: the queued message's lifetime expires and produces a synthesized
+  # nak{reason: "expired"} naming its mid, and a caller that never received the mid
+  # cannot match it to anything.
+  test "send_mid returns the id even when the destination is not routable", ctx do
+    alpha = start_node(ctx, "alpha")
+    assert {:ok, mid} = Node.send_mid(alpha, "nowhere", %{"m" => "queued"})
+    assert is_binary(mid) and byte_size(mid) == 32, "a mid is 32 hex characters"
+  end
+
 end

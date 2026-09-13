@@ -4,7 +4,10 @@
 //! Wire-compatible with the Java and Elixir reference routers.
 //!
 //! Poison sentinel: routes are advertised unreachable with `UNREACHABLE`
-//! (i64::MAX, Java's Long.MAX_VALUE), and any advertised cost at or above
+//! (1_000_000_000, pinned by protocol.md §0 — this port used to emit i64::MAX and
+//! interoperated only by luck of the tolerant threshold, which is not safe luck
+//! because 2^63-1 exceeds the largest integer a double represents exactly), and any
+//! advertised cost at or above
 //! `POISON_THRESHOLD` (1e9, Elixir's sentinel) is treated as unreachable on
 //! receipt — so a mixed mesh converges.
 
@@ -13,7 +16,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use serde_json::{json, Map, Value};
 
 /// The poison cost this implementation advertises.
-pub const UNREACHABLE: i64 = i64::MAX;
+pub const UNREACHABLE: i64 = 1_000_000_000;
 /// Any advertised cost at or above this is treated as unreachable.
 pub const POISON_THRESHOLD: i64 = 1_000_000_000;
 const ALPHA: f64 = 0.2;

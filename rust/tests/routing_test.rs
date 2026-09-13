@@ -79,6 +79,35 @@ fn remove_neighbor_withdraws_its_routes() {
     assert_eq!(t.next_hop("b"), None);
 }
 
+// A summed cost past the threshold is clamped to the poison value.
+//
+// Found by mutation in the Java port, whose saturating_sum equivalent detected only
+// arithmetic overflow: nothing in any suite summed a cost past the threshold without
+// overflowing. That matters now the emitted value is a pinned wire constant.
+#[test]
+fn a_summed_cost_past_the_threshold_is_clamped() {
+    let mut t = Table::new("self");
+    t.observe_neighbor("b", 10);
+    t.observe_neighbor("d", 10);
+    t.learn_route("c", "b", 999_999_999); // + 10ms link = past the threshold
+    assert_eq!(t.advertise_to("d")["c"], serde_json::json!(1_000_000_000i64));
+}
+
+// The advertised poison value is the pinned literal.
+//
+// 1_000_000_000 is written out here rather than referenced as UNREACHABLE, and that
+// is the whole point: every other poison assertion in this suite compares against the
+// constant, which agrees with itself whatever its value. That is how this port
+// advertised i64::MAX with a green suite. protocol.md §0 pins the number, so the test
+// pins the number.
+#[test]
+fn the_advertised_poison_value_is_the_pinned_literal() {
+    let mut t = Table::new("self");
+    t.observe_neighbor("b", 10);
+    t.learn_route("c", "b", 5);
+    assert_eq!(t.advertise_to("b")["c"], serde_json::json!(1_000_000_000i64));
+}
+
 // No route is ever installed to ourselves.
 //
 // The load-bearing half of defect D5: the v2 broadcast could list the node's own

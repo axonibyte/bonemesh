@@ -134,7 +134,6 @@ class Node:
         # already-accepted sockets, so without this a node killed mid-handshake
         # leaves the socket open until the peer's probe timeout notices.
         self._handshaking: set = set()
-        self._keylog_warned = False
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -737,8 +736,12 @@ class Node:
                     fh.write(f"BMX3_{direction}_TRAFFIC_{epoch} {th} {key.hex()}\n")
         except OSError:
             return
-        if epoch == 0 and not self._keylog_warned:
-            self._keylog_warned = True
+        # security.md section 8 says a node with the hook on warns "on every
+        # session". This port warned once per node lifetime, so a long-lived node
+        # that opened fifty sessions with the key log on said so once -- and the
+        # warning exists precisely because every session it covers has had its
+        # forward secrecy defeated. The other six warn per session.
+        if epoch == 0:
             print(
                 f"WARNING: BONEMESH_KEYLOG is on; transport keys written to {path}"
                 " — forward secrecy is defeated for anyone holding that file",

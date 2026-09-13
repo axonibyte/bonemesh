@@ -90,15 +90,20 @@ defmodule Bonemesh.Node do
     # this process and so closed on exit, but the link processes are plain spawns: they
     # are not linked, so nothing reaped them and a stopped node left one running per
     # peer. The other six close their links on kill.
+    # Two messages per link, in order: the link process seals and writes the bye, then
+    # closes its socket and exits. It owns the socket, so it is the only process that
+    # can order those two correctly.
+    #
+    # The first version of this slept 50 ms between the bye and a Process.exit, to
+    # "give the writes a moment". That was both unnecessary and harmful: a node started
+    # with start_link is linked to whatever started it, so a 50 ms terminate widened
+    # the window in which that starter's own :shutdown reaches the node mid-teardown --
+    # the node then dies with :shutdown instead of exiting :normal, and GenServer.stop
+    # reports shutdown. It reproduced roughly one run in eight. Handing both messages
+    # to the process that owns the socket needs no sleep and no kill.
     for {_peer, e} <- s.links do
       Kernel.send(e.pid, {:send, Message.bye("shutdown")})
-    end
-
-    # Give the writes a moment to leave before the sockets go with their owners.
-    Process.sleep(50)
-
-    for {_peer, e} <- s.links do
-      Process.exit(e.pid, :shutdown)
+      Kernel.send(e.pid, :close)
     end
 
     :ok
@@ -201,8 +206,13 @@ defmodule Bonemesh.Node do
   end
 
   def handle_call({:send_mid, to, payload}, _from, s) do
-    {ok, mid, s} = do_send(s, to, payload)
-    {:reply, (if ok, do: {:ok, mid}, else: :error), s}
+    # The id comes back even when the destination is not routable yet and the message
+    # was queued for bounded retry (F2). This used to reply :error in that case, which
+    # broke the very correlation send_mid exists for: a queued message whose lifetime
+    # expires produces a synthesized nak{reason: "expired"} naming its mid, and a
+    # caller that never received the mid cannot match it.
+    {_ok, mid, s} = do_send(s, to, payload)
+    {:reply, {:ok, mid}, s}
   end
 
   def handle_call({:send_with_ttl, to, payload, ttl}, _from, s) do

@@ -7,18 +7,24 @@ tests can set short values to make a slow behaviour fire quickly.
 
 from __future__ import annotations
 
+import re
+
 import os
 from dataclasses import dataclass
 
 
+# An optional sign then decimal digits, and nothing else (protocol.md section 0).
+_INT = re.compile(r"^-?[0-9]+$")
+
+
 def _env_int(name: str, fallback: int) -> int:
     raw = os.environ.get(name)
-    if raw is None or raw == "":
+    if raw is None or not _INT.match(raw):
         return fallback
-    try:
-        return int(raw, 10)
-    except ValueError:
-        return fallback
+    # int() accepts digit separators and surrounding whitespace -- int("1_000") is
+    # 1000 and int(" 12 ") is 12 -- so the pattern above decides, not int(). The
+    # other ports were lenient in the other direction, reading "12abc" as 12.
+    return int(raw, 10)
 
 
 @dataclass(frozen=True)

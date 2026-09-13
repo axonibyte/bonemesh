@@ -33,6 +33,37 @@ defmodule Bonemesh.RoutingTest do
     refute Map.has_key?(Routing.advertise_to(t, "b"), "b")
   end
 
+  # A summed cost past the threshold is clamped to the poison value.
+  #
+  # Found by mutation in the Java port, whose saturating sum detected only arithmetic
+  # overflow: nothing in any suite summed a cost past the threshold without overflowing.
+  # That matters now the emitted value is a pinned wire constant.
+  test "a summed cost past the threshold is clamped to the poison value" do
+    t =
+      Routing.new("self")
+      |> Routing.observe_neighbor("b", 10)
+      |> Routing.observe_neighbor("d", 10)
+      |> Routing.learn_route("c", "b", 999_999_999)
+
+    assert Routing.advertise_to(t, "d")["c"] == 1_000_000_000
+  end
+
+  # The advertised poison value is the pinned literal.
+  #
+  # 1_000_000_000 is written out here rather than referenced as Routing.unreachable/0,
+  # and that is the whole point: every other poison assertion in this suite compares
+  # against the constant, which agrees with itself whatever its value. That is how four
+  # ports advertised 2^63-1 with green suites. protocol.md §0 pins the number, so the
+  # test pins the number.
+  test "the advertised poison value is the pinned literal" do
+    t =
+      Routing.new("self")
+      |> Routing.observe_neighbor("b", 10)
+      |> Routing.learn_route("c", "b", 5)
+
+    assert Routing.advertise_to(t, "b")["c"] == 1_000_000_000
+  end
+
   # No route is ever installed to ourselves.
   #
   # The load-bearing half of defect D5: the v2 broadcast could list the node's own

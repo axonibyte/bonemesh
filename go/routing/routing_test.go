@@ -3,7 +3,10 @@
 // routers; agreement is what lets a Go node relay in a mixed mesh.
 package routing
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNeighborAndDirectNextHop(t *testing.T) {
 	tbl := NewTable("self")
@@ -106,6 +109,64 @@ func TestRemoveNeighborWithdrawsItsRoutes(t *testing.T) {
 	}
 	if _, ok := tbl.NextHop("b"); ok {
 		t.Fatal("b should no longer be a neighbor")
+	}
+}
+
+// Neighbor labels are case-insensitive everywhere.
+//
+// security.md §2: labels compare case-insensitively. The Java port keyed its neighbors
+// map by the label exactly as given while keying routes folded, which made its
+// disco.routes differ on the wire from the other six. This asserts the behaviour all
+// seven now share.
+func TestNeighborLabelsAreCaseInsensitiveEverywhere(t *testing.T) {
+	tbl := NewTable("self")
+	tbl.ObserveNeighbor("Beta", 10)
+	tbl.ObserveNeighbor("beta", 20)
+	// IsNeighbor is Java-only surface, so the shared property is asserted through
+	// NextHop: one neighbor, reachable under any casing, named in folded form.
+	if nh, _ := tbl.NextHop("BeTa"); nh != "beta" {
+		t.Fatalf("nextHop(BeTa) = %q, want beta", nh)
+	}
+	tbl.LearnRoute("gamma", "BETA", 5)
+	if nh, _ := tbl.NextHop("gamma"); nh != "beta" {
+		t.Fatalf("an advertisement via BETA was dropped; nextHop(gamma) = %q", nh)
+	}
+	for k := range tbl.AdvertiseTo("zeta") {
+		if k != strings.ToLower(k) {
+			t.Errorf("unfolded key on the wire: %q", k)
+		}
+	}
+}
+
+// A summed cost past the threshold is clamped to the poison value.
+//
+// Found by mutation in the Java port, whose saturatingSum detected only arithmetic
+// overflow: nothing in any suite summed a cost past the threshold without overflowing.
+// That matters now the emitted value is a pinned wire constant -- an unclamped sum goes
+// out as some arbitrary number instead of the poison.
+func TestASummedCostPastTheThresholdIsClamped(t *testing.T) {
+	tbl := NewTable("self")
+	tbl.ObserveNeighbor("b", 10)
+	tbl.ObserveNeighbor("d", 10)
+	tbl.LearnRoute("c", "b", 999999999) // + 10ms link = past the threshold
+	if got := tbl.AdvertiseTo("d")["c"]; got != 1000000000 {
+		t.Fatalf("summed cost advertised as %d, want exactly 1000000000", got)
+	}
+}
+
+// The advertised poison value is the pinned literal.
+//
+// 1000000000 is written out here rather than referenced as Unreachable, and that is
+// the whole point: every other poison assertion in this suite compares against the
+// constant, which agrees with itself whatever its value. That is how this port
+// advertised 2^63-1 with a green suite. protocol.md §0 pins the number, so the test
+// pins the number.
+func TestTheAdvertisedPoisonValueIsThePinnedLiteral(t *testing.T) {
+	tbl := NewTable("self")
+	tbl.ObserveNeighbor("b", 10)
+	tbl.LearnRoute("c", "b", 5)
+	if got := tbl.AdvertiseTo("b")["c"]; got != 1000000000 {
+		t.Fatalf("poison-reversed cost on the wire = %d, want exactly 1000000000", got)
 	}
 }
 
