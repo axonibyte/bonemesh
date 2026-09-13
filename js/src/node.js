@@ -17,6 +17,7 @@ import { Transport } from './transport.js';
 import { classify, encode, HANDSHAKE_CAP, TRANSPORT_CAP } from './frame.js';
 import * as message from './message.js';
 import { Table, Dedup } from './routing.js';
+import { split, Reassembler } from './chunk.js';
 import { loadTunables } from './tunables.js';
 
 // A per-socket frame reader: buffers bytes, splits on newlines under a cap, and
@@ -89,6 +90,7 @@ export class Node {
     this.server = null;
     this.table = new Table(config.label);
     this.dedup = new Dedup(4096);
+    this.reassembler = new Reassembler();
     this.hb = null;
   }
 
@@ -103,9 +105,9 @@ export class Node {
     node.hb = setInterval(() => {
       const now = nowMs();
       for (const [label, link] of [...node.links]) {
-        if (node.sweepLink(now, label, link)) node.maybeRekey(link, now);
+        if (node._sweepLink(now, label, link)) node._maybeRekey(link, now);
       }
-      node.drainRetries(now);
+      node._drainRetries(now);
     }, 1000);
     return node;
   }
@@ -113,7 +115,13 @@ export class Node {
   // Once-per-heartbeat maintenance for one link: tear it down if it is
   // probe-timeout dead (F3) or data-idle past the idle timeout (F4, disabled at
   // idleMs==0), otherwise send it a probe and a route advertisement.
-  sweepLink(now, peer, link) {
+  // Internal, by the leading underscore: these are test seams for driving one
+  // heartbeat step deterministically, not API a caller should reach for. They were
+  // plain public methods, which under decision #23 is surface the protocol does not
+  // denote -- the Java port has had the same methods package-private all along. A
+  // JS #private field cannot be reached from a test file, so the convention carries
+  // what the language cannot enforce.
+  _sweepLink(now, peer, link) {
     if (now - link.lastInbound > this.tun.probeTimeoutMs) {
       this.#deregister(peer, link);
       link.socket.destroy();
@@ -135,7 +143,7 @@ export class Node {
   // degrade against a peer that ignores rekey), else, on the session initiator
   // only, start a fresh BMX when the frame count or session age crosses the
   // threshold. JS is single-threaded, so sealing phase 1 here cannot race.
-  maybeRekey(link, nowMillis) {
+  _maybeRekey(link, nowMillis) {
     if (link.rekeyHs) {
       if (nowMillis - link.rekeyStartedAt > this.tun.rekeyTimeoutMs) link.rekeyHs = null;
       return;
@@ -158,7 +166,7 @@ export class Node {
   // dropped, a still-stuck one backs off (delay doubles to the cap), and one
   // past its lifetime is dropped and reported to the origin's ack listeners as
   // a synthesized nak{reason:"expired"} (never on the wire).
-  drainRetries(now) {
+  _drainRetries(now) {
     for (const [dest, q] of [...this.pending]) {
       const keep = [];
       for (const p of q) {
@@ -209,6 +217,39 @@ export class Node {
   // A snapshot of learned destinations to their next hop.
   routeTable() { return this.table.routeTable(); }
 
+  /**
+   * Sends an application payload to every reachable label except this node's own
+   * (protocol.md §6).
+   *
+   * Targets are every peer with a live session plus every destination with a next
+   * hop, compared case-insensitively so one peer is never targeted twice. This is
+   * not a message type: each destination gets its own ordinary data send with its
+   * own message id, which dedup and ack correlation both require -- a shared id
+   * would have the first relay suppress every other copy, and an ack names only an
+   * id.
+   *
+   * Excluding this node's own label is the D5 fix, and so is including direct
+   * session peers: the v2 implementation iterated indirect routes only and could
+   * list itself among them.
+   *
+   * @returns how many destinations the message was handed to a next hop for
+   */
+  broadcast(payload) {
+    const targets = new Set();
+    for (const label of this.links.keys()) targets.add(label.toLowerCase());
+    for (const dest of Object.keys(this.table.routeTable())) targets.add(dest.toLowerCase());
+    // Defence in depth, and honestly labelled: learnRoute's first guard already makes
+    // a route to ourselves impossible, and a session peer's label comes from its
+    // certificate, so this line's condition cannot be reached from either source. Kept
+    // because D5 was exactly this bug and the guard it duplicates lives in another
+    // module -- but no broadcast test can distinguish it. What pins D5 is routing's
+    // "no route is ever installed to ourselves", which IS mutation-caught.
+    targets.delete(this.cfg.label.toLowerCase());
+    let handed = 0;
+    for (const to of targets) if (this.send(to, payload)) handed++;
+    return handed;
+  }
+
   // Register a callback invoked with each delivered application payload.
   onMessage(cb) { this.listeners.push(cb); }
 
@@ -244,19 +285,30 @@ export class Node {
 
   // sendMid with an explicit initial TTL, used by tests to force a relay to
   // exhaust the hop limit and emit a NAK.
-  sendWithTtl(to, payload, ttl) {
+  _sendWithTtl(to, payload, ttl) {
     return this.#sendWithTtl(to, payload, ttl);
   }
 
   #sendWithTtl(to, payload, ttl) {
     const mid = message.newMid();
-    const msg = message.data(mid, this.cfg.label, to, ttl, payload);
-    const nh = this.table.nextHop(to);
-    if (!nh || !this.#sendToLink(nh, msg)) {
-      this.#enqueueRetry(msg); // F2: retry when a route/link appears
+    let segments;
+    try {
+      segments = split(mid, this.cfg.label, to, ttl, payload);
+    } catch {
+      // Over a §0 bound, so no conforming destination would reassemble it. §6.1
+      // requires the caller be told locally instead of the mesh carrying a message
+      // that cannot arrive.
       return { mid, ok: false };
     }
-    return { mid, ok: true };
+    const nh = this.table.nextHop(to);
+    let ok = true;
+    for (const msg of segments) {
+      if (!nh || !this.#sendToLink(nh, msg)) {
+        this.#enqueueRetry(msg); // F2: retry when a route/link appears
+        ok = false;
+      }
+    }
+    return { mid, ok };
   }
 
   #sendToLink(label, inner) {
@@ -468,14 +520,20 @@ export class Node {
   }
 
   #handleData(msg) {
-    const chunkIdx = msg.chunk && typeof msg.chunk.i === 'number' ? msg.chunk.i : -1;
+    const chunkIdx =
+      msg.chunk !== null && typeof msg.chunk === 'object' && typeof msg.chunk.i === 'number'
+        ? msg.chunk.i
+        : -1;
     if (this.dedup.sawBefore(`d:${msg.mid}:${chunkIdx}`)) return;
     const from = String(msg.from || '');
     if (String(msg.to || '').toLowerCase() === this.cfg.label.toLowerCase()) {
+      const payload = this.reassembler.offer(msg, nowMs());
+      if (payload === undefined) return; // still incomplete, or refused by a §0 bound
       for (const cb of this.listeners) {
-        try { cb(msg.payload); } catch { /* listener errors are its own */ }
+        try { cb(payload); } catch { /* listener errors are its own */ }
       }
-      // F6: acknowledge receipt back toward the origin.
+      // F6: acknowledge receipt back toward the origin -- once, when the whole
+      // message is reassembled, never per segment (§6.1, Ack).
       if (from && from.toLowerCase() !== this.cfg.label.toLowerCase()) {
         this.#routeControl(message.ackTo(msg.mid, this.cfg.label, from, message.DEFAULT_TTL));
       }
@@ -539,6 +597,12 @@ export class Node {
   }
 
   kill() {
+    // Say goodbye before closing (protocol.md §8, reason 'shutdown'), so a peer learns
+    // the close was deliberate instead of waiting out its probe timeout. Best-effort:
+    // a link already broken simply cannot be told.
+    for (const peer of this.links.keys()) {
+      try { this.#sendToLink(peer, message.bye('shutdown')); } catch { /* going away */ }
+    }
     if (this.hb) clearInterval(this.hb);
     if (this.server) this.server.close();
     for (const link of this.links.values()) link.socket.destroy();

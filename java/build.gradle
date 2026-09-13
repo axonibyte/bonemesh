@@ -26,7 +26,6 @@ java {
 dependencies {
   implementation "org.bouncycastle:bcprov-jdk18on:${bcVersion}"
   api "org.json:json:20250517" // org.json types appear in the public API
-  implementation 'commons-cli:commons-cli:1.11.0'
   testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
   testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
@@ -42,11 +41,12 @@ eclipse {
   }
 }
 
-jar {
-  manifest {
-    attributes 'Main-Class': prjGroup + '.' + prjName
-  }
-}
+// No Main-Class. The attribute used to name com.axonibyte.bonemesh.BoneMesh, the v2
+// entry point, and it went with the v2 tree. Nothing ever used it: every caller --
+// the interop driver, the corpus check scripts, bonemesh-ca's Java predecessor --
+// invokes a class by name on the classpath, and this artifact is a library that
+// doDeploy publishes rather than something run with `java -jar`. A manifest pointing
+// at a development tool would be worse than none.
 
 shadowJar {
   archiveBaseName = prjArtifact

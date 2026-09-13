@@ -72,11 +72,11 @@ test('F3 probe-timeout tears down a silent link; a fresh one is kept', () => {
   node.links.set('peer', link);
   node.table.observeNeighbor('peer', 1);
 
-  node.sweepLink(Date.now(), 'peer', link); // fresh: kept
+  node._sweepLink(Date.now(), 'peer', link); // fresh: kept
   assert.ok(node.links.has('peer'), 'a fresh link was wrongly torn down');
 
   link.lastInbound = Date.now() - 5000; // silent past the timeout
-  node.sweepLink(Date.now(), 'peer', link);
+  node._sweepLink(Date.now(), 'peer', link);
   assert.ok(!node.links.has('peer'), 'a probe-timed-out link was not torn down');
   assert.ok(!node.table.nextHop('peer'), 'neighbor not withdrawn on probe-timeout death');
 });
@@ -88,7 +88,7 @@ test('F4 idle teardown fires only when enabled', () => {
   const l1 = { socket: new net.Socket(), initiator: true, lastInbound: Date.now(), lastData: Date.now() - 5000 };
   enabled.links.set('peer', l1);
   enabled.table.observeNeighbor('peer', 1);
-  enabled.sweepLink(Date.now(), 'peer', l1);
+  enabled._sweepLink(Date.now(), 'peer', l1);
   assert.ok(!enabled.links.has('peer'), 'idle link not torn down when enabled');
 
   const disabled = new Node({ label: 'self', mesh: MESH });
@@ -97,7 +97,7 @@ test('F4 idle teardown fires only when enabled', () => {
   const l2 = { socket: new net.Socket(), initiator: true, lastInbound: Date.now(), lastData: Date.now() - 5000 };
   disabled.links.set('peer', l2);
   disabled.table.observeNeighbor('peer', 1);
-  disabled.sweepLink(Date.now(), 'peer', l2);
+  disabled._sweepLink(Date.now(), 'peer', l2);
   assert.ok(disabled.links.has('peer'), 'idle teardown fired though disabled (idleMs=0)');
 });
 
@@ -131,7 +131,7 @@ test('F6/D4 NAK names the failing relay, not the destination', async (t) => {
 
   const acks = [];
   alpha.onAck((a) => acks.push(a));
-  const { mid } = alpha.sendWithTtl('gamma', { m: 'doomed' }, 1); // beta exhausts ttl
+  const { mid } = alpha._sendWithTtl('gamma', { m: 'doomed' }, 1); // beta exhausts ttl
   await waitFor(() => acks.length > 0);
   assert.equal(acks[0].type, 'nak');
   assert.equal(acks[0].hop, 'beta', 'NAK must name the relay beta, not the destination gamma (the D4 bug)');

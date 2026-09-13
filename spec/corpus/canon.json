@@ -1,25 +1,63 @@
 {
-  "description": "Certificate canonicalization vectors for the root signature (security.md 11.1). 'cert' is the certificate object as authored; 'canonical' is the exact UTF-8 byte string that must be produced after removing 'sig' and applying the restricted-JCS profile (security.md 11.1). A conforming canonicalizer must emit 'canonical' byte-for-byte. Control-character escaping is additionally covered by an in-code vector in canon_test.go, since raw control characters cannot appear in JSON source.",
-  "vectors": [
-    {
-      "name": "basic-sorted-keys",
-      "cert": {"v": 3, "mesh": "acme-prod", "label": "alpha", "idk": "YWJj", "nbf": 1788500000, "exp": 1790000000},
-      "canonical": "{\"exp\":1790000000,\"idk\":\"YWJj\",\"label\":\"alpha\",\"mesh\":\"acme-prod\",\"nbf\":1788500000,\"v\":3}"
-    },
-    {
-      "name": "sig-field-is-stripped",
-      "cert": {"v": 3, "mesh": "m", "label": "alpha", "idk": "AA==", "nbf": 0, "exp": 1, "sig": "SHOULD-BE-IGNORED"},
-      "canonical": "{\"exp\":1,\"idk\":\"AA==\",\"label\":\"alpha\",\"mesh\":\"m\",\"nbf\":0,\"v\":3}"
-    },
-    {
-      "name": "non-ascii-emitted-raw-utf8",
-      "cert": {"v": 3, "mesh": "m", "label": "café", "idk": "AA==", "nbf": 0, "exp": 1},
-      "canonical": "{\"exp\":1,\"idk\":\"AA==\",\"label\":\"café\",\"mesh\":\"m\",\"nbf\":0,\"v\":3}"
-    },
-    {
-      "name": "string-escaping-quote-backslash",
-      "cert": {"v": 3, "mesh": "m", "label": "a\"b\\c", "idk": "AA==", "nbf": 0, "exp": 1},
-      "canonical": "{\"exp\":1,\"idk\":\"AA==\",\"label\":\"a\\\"b\\\\c\",\"mesh\":\"m\",\"nbf\":0,\"v\":3}"
-    }
-  ]
+ "description": "Certificate canonicalization vectors for the root signature (security.md 11.1). 'cert' is the certificate object as authored; 'canonical' is the exact UTF-8 byte string that must be produced after removing 'sig' and applying the restricted-JCS profile (security.md 11.1). A conforming canonicalizer must emit 'canonical' byte-for-byte. One vector deliberately uses member names the certificate profile forbids, because it is the only way to distinguish UTF-16 code-unit order from code-point order; it tests the canonicalizer, not a certificate. Control-character escaping is additionally covered by an in-code vector in canon_test.go, since raw control characters cannot appear in JSON source.",
+ "vectors": [
+  {
+   "name": "basic-sorted-keys",
+   "cert": {
+    "v": 3,
+    "mesh": "acme-prod",
+    "label": "alpha",
+    "idk": "YWJj",
+    "nbf": 1788500000,
+    "exp": 1790000000
+   },
+   "canonical": "{\"exp\":1790000000,\"idk\":\"YWJj\",\"label\":\"alpha\",\"mesh\":\"acme-prod\",\"nbf\":1788500000,\"v\":3}"
+  },
+  {
+   "name": "sig-field-is-stripped",
+   "cert": {
+    "v": 3,
+    "mesh": "m",
+    "label": "alpha",
+    "idk": "AA==",
+    "nbf": 0,
+    "exp": 1,
+    "sig": "SHOULD-BE-IGNORED"
+   },
+   "canonical": "{\"exp\":1,\"idk\":\"AA==\",\"label\":\"alpha\",\"mesh\":\"m\",\"nbf\":0,\"v\":3}"
+  },
+  {
+   "name": "non-ascii-emitted-raw-utf8",
+   "cert": {
+    "v": 3,
+    "mesh": "m",
+    "label": "café",
+    "idk": "AA==",
+    "nbf": 0,
+    "exp": 1
+   },
+   "canonical": "{\"exp\":1,\"idk\":\"AA==\",\"label\":\"café\",\"mesh\":\"m\",\"nbf\":0,\"v\":3}"
+  },
+  {
+   "name": "string-escaping-quote-backslash",
+   "cert": {
+    "v": 3,
+    "mesh": "m",
+    "label": "a\"b\\c",
+    "idk": "AA==",
+    "nbf": 0,
+    "exp": 1
+   },
+   "canonical": "{\"exp\":1,\"idk\":\"AA==\",\"label\":\"a\\\"b\\\\c\",\"mesh\":\"m\",\"nbf\":0,\"v\":3}"
+  },
+  {
+   "name": "utf16-code-unit-order-not-code-point-order",
+   "note": "The one input where the two orderings disagree. U+1F600 encodes as the surrogate pair D83D DE00, so by UTF-16 code unit it sorts BEFORE U+E000, and by code point it sorts after. security.md 11.1 specifies code-unit order. Six implementations always did this; Python sorted by code point and agreed only because the certificate profile permits no such member name -- which is an argument that expires the moment the profile grows a field.",
+   "cert": {
+    "😀": 1,
+    "": 2
+   },
+   "canonical": "{\"😀\":1,\"\":2}"
+  }
+ ]
 }

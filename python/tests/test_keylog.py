@@ -154,3 +154,37 @@ def test_a_rekey_appends_a_higher_epoch(run_async, issue, monkeypatch, tmp_path)
             alpha.kill()
             beta.kill()
     run_async(body())
+
+
+def test_the_keylog_warning_fires_on_every_session_not_once_per_node(run_async, spawn, issue,
+                                                                    monkeypatch, capsys, tmp_path):
+    """security.md section 8: a node with the hook on warns "on every session".
+
+    This port kept a per-node flag and warned once, so a long-lived node that opened
+    fifty sessions said so once -- and the warning exists precisely because every
+    session it covers has had its forward secrecy defeated. The other six warn per
+    session.
+
+    The discriminating case is ONE node with TWO sessions, which is why each node gets
+    its own key-log path: the warning names the path, so alpha's warnings can be
+    counted apart from its peers'. Counting warnings across three nodes cannot tell
+    per-node from per-session, since either way the total exceeds one -- mutation
+    caught exactly that mistake in the first version of this test.
+    """
+    alpha_log = tmp_path / "alpha.log"
+    peer_log = tmp_path / "peer.log"
+
+    async def body():
+        monkeypatch.setenv("BONEMESH_KEYLOG", str(alpha_log))
+        alpha = await spawn(issue("alpha"))
+        monkeypatch.setenv("BONEMESH_KEYLOG", str(peer_log))
+        beta = await spawn(issue("beta"))
+        gamma = await spawn(issue("gamma"))
+        await alpha.connect("127.0.0.1", beta.port())
+        await alpha.connect("127.0.0.1", gamma.port())
+        assert await until(lambda: len(alpha.links) == 2)
+
+    run_async(body())
+    err = capsys.readouterr().err
+    mine = [ln for ln in err.splitlines() if "BONEMESH_KEYLOG is on" in ln and str(alpha_log) in ln]
+    assert len(mine) == 2, f"alpha opened 2 sessions and warned {len(mine)} time(s): {mine}"

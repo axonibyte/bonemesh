@@ -29,20 +29,34 @@ not depend on a two-party handshake, so they are testable and pinned now.
 | Frame encoding | one UTF-8 JSON object per line, `\n`-terminated, no interior `\n` |
 | Binary-in-JSON encoding | RFC 4648 **standard** Base64, **with** padding, **no** line breaks |
 | Handshake frame max | 32768 bytes (including the terminating `\n`); post-quantum certs and signatures are large |
-| Transport frame max (default) | 65536 bytes; configurable up to an implementation ceiling ≥ 65536 |
+| Transport frame max | 65536 bytes (including the terminating `\n`) |
 | `mid` (message id) | 128-bit value, lowercase hex, 32 chars |
 | `ttl` default | 16; range 1–255; decremented per relay hop |
+| Chunk segment max | 24000 bytes of the payload's UTF-8 serialization, cut on a character boundary (§6.1) |
+| Chunk count max (`n`) | 1024 |
+| Reassembly buffer max | 16777216 bytes, summed across every in-flight message |
+| Concurrent reassemblies max | 256 in-flight messages |
+| Reassembly timeout | 30000 ms |
+| Unreachable path cost | advertised as exactly **1000000000**; any advertised cost **≥ 1000000000** is treated as unreachable on receipt (§6) |
 | AEAD nonce | 96-bit: 4 zero bytes then the per-direction 64-bit **little-endian** sequence counter; starts at 0, +1 per frame, never reused (matches `security.md` §5 and corpus `transport-frame.json`) |
 
 Operational tunables (local behavior, not the wire contract, so two nodes with
 different values still interoperate): heartbeat/probe interval **1 s** (the value
 all seven reference nodes use), latency EWMA **α = 0.2**, dedup window **4096**
-recent `mid`s per peer. The 3.1.0 features add more, all read once from the
+recent keys per peer, and a retry queue bounded at **64** messages per destination
+(§7) so one unreachable peer cannot grow memory without limit. The 3.1.0 features add more, all read once from the
 environment at node start and all with defaults chosen so a peer never has to
 assume anything about them: `BONEMESH_PROBE_TIMEOUT_MS` (15000), `BONEMESH_IDLE_MS`
 (0 = disabled), `BONEMESH_RETRY_BASE_MS`/`_CAP_MS`/`_MAX_MS` (500 / 30000 /
 60000; 0 disables retry), `BONEMESH_REKEY_MS`/`_FRAMES`/`_TIMEOUT_MS`
 (3600000 / 65536 / 10000), and `BONEMESH_KEYLOG` (unset = off).
+
+A tunable's value is read strictly: an optional sign followed by decimal digits and
+nothing else. Anything else — trailing text, digit separators, surrounding
+whitespace — is ignored and the default used, rather than partially parsed. Two
+implementations were lenient in different directions (one read `12abc` as 12, the
+other read `1_000` as 1000), which is the kind of difference that makes an
+operator's typo behave differently on different nodes.
 
 **Delivered in 3.1.0.** The following were specified in 3.0.0 but deferred; they
 are now implemented across all seven reference implementations and are backward-
@@ -75,10 +89,10 @@ the handshake are in `security.md`; everything else is here.
   seen a newline within the limit closes the connection rather than growing an
   unbounded buffer. Limits (frozen, §0; corpus `framing.json`):
   - handshake frames: **32 KiB** (a bmx2 with ML-DSA cert + signatures runs near 20 KB);
-  - transport frames: default **64 KiB**, configurable up to a ceiling.
-- Application payloads larger than a transport frame are **chunked** by the
-  origin (§6) and reassembled by the destination, so the frame cap never limits
-  application data — it only bounds any single read.
+  - transport frames: **64 KiB**.
+- Application payloads larger than a transport frame are **split** by the
+  origin into segments and reassembled by the destination (§6.1), so the frame
+  cap never limits application data — it only bounds any single read.
 - A frame that is not valid JSON, exceeds its limit, or violates the expected
   type for the connection state closes the connection. There is no partial
   recovery within a connection; the session re-handshakes.
@@ -109,8 +123,17 @@ via the key-log inspector, `security.md` §8):
 { "seq": 42, "ct": "<base64 ChaCha20-Poly1305 ciphertext of the inner JSON>" }
 ```
 
-`seq` is the per-direction nonce counter (also the AEAD nonce input). The inner
-plaintext object always has a `type` and a `mid`:
+`seq` is the per-direction nonce counter (also the AEAD nonce input).
+
+**Frames are accepted strictly in order.** A receiver keeps the next expected
+`seq` per direction and rejects anything else — including a `seq` ahead of it —
+rather than buffering or reordering; the session is then torn down, because a gap
+means the stream is no longer the one the nonce sequence describes. The window is
+exactly one, not a range. This relies on the ordering TCP already provides, and it
+is why §9's "ordered delivery is not guaranteed" is a statement about the *mesh*,
+where a message may take different paths between relays, and not about a link.
+
+The inner plaintext object always has a `type` and a `mid`:
 
 | Inner `type` | Meaning |
 |---|---|
@@ -122,15 +145,28 @@ plaintext object always has a `type` and a `mid`:
 
 `mid` is a **message id**: a 128-bit random value (lowercase hex, 32 chars; §0),
 unique per application message (all chunks of one message share it). Message ids
-give v3 what v2 never had — **dedup** (a re-delivered `mid` already seen is
-dropped) and **ack correlation** (an `ack` names the `mid` it answers). A replay
-window of recently-seen `mid`s per peer (4096; §0) bounds the dedup memory.
+give v3 what v2 never had — **dedup** (a re-delivered (`mid`, chunk index) pair
+already seen is dropped; §6.1 says why the index is part of the key) and **ack
+correlation** (an `ack` names the `mid` it answers). A replay window of 4096
+recently-seen keys per peer (§0) bounds the dedup memory. How a node keys that
+window internally — all seven prefix by message kind, so a relayed `ack` cannot be
+mistaken for a duplicate of the `data` it answers — is an implementation matter and
+not part of the wire contract.
 
 ### 4.1 Application data
+
+A whole message carries its payload directly:
 
 ```json
 { "type": "data", "mid": "<128-bit hex>", "to": "gamma", "from": "alpha",
   "ttl": 16, "chunk": { "i": 0, "n": 1 }, "payload": { ... } }
+```
+
+One segment of a split message carries `seg` in its place (§6.1):
+
+```json
+{ "type": "data", "mid": "<128-bit hex>", "to": "gamma", "from": "alpha",
+  "ttl": 16, "chunk": { "i": 0, "n": 3 }, "seg": "{\"reading\":[1,2,3" }
 ```
 
 - `to`/`from` are final destination and origin labels (as v2), authenticated —
@@ -138,8 +174,104 @@ window of recently-seen `mid`s per peer (4096; §0) bounds the dedup memory.
 - `ttl` is a hop limit, decremented at each relay; a message reaching `ttl == 0`
   is dropped and NAKed (§7). This bounds routing loops, which v2 had no guard
   against.
-- `chunk` gives this chunk's index and the total count; `n == 1` for
-  unchunked messages.
+- `chunk` gives this segment's index and the total count. A whole message
+  omits `chunk` or sends `n == 1`, and carries `payload`; one segment of a
+  split message carries `chunk` with `n > 1` and carries `seg` in place of
+  `payload`. **`payload` and `seg` never appear together, and exactly one of
+  them is present** — so a node that does not reassemble cannot mistake a
+  segment for a complete payload (§6.1).
+- `seg` is this segment's slice of the payload's UTF-8 serialization, carried
+  as a JSON string. It is not Base64: §0's Base64 rule covers binary fields,
+  and a segment is text (decision #25).
+
+### 4.2 Control messages
+
+Every inner type other than `data` is a control message. Before 3.3.0 only `ack`,
+`nak` and `bye` had a wire definition anywhere, and `disco`, `probe`, `echo` and
+`rekey` had none at all — four of the nine kinds in Appendix A interoperated on a
+shape that existed solely as seven agreeing implementations. These are those
+shapes; none of them is new.
+
+**`ack` — receipt, routed back toward the origin (§7).**
+
+```json
+{ "type": "ack", "mid": "<the id being acknowledged>",
+  "to": "alpha", "from": "gamma", "ttl": 16 }
+```
+
+`to` is the origin the ack travels back to and `from` is the node sending it, so an
+ack is routed exactly like a `data` message. §7 has always said acks are routed
+back toward `from`; the routing fields that make that possible were not written
+down. A destination sends one ack per application message, on completed reassembly
+(§6.1).
+
+**`nak` — non-delivery, naming the hop that failed (§7, defect D4).**
+
+```json
+{ "type": "nak", "mid": "<the id that failed>", "hop": "beta",
+  "reason": "ttl", "to": "alpha", "from": "beta", "ttl": 16 }
+```
+
+`hop` is the node that actually failed — itself for a local drop, the dead
+next-hop label for a broken onward link — never the final destination. `reason` is
+a short token; `ttl`, `no-route` and `link-dead` are the ones the reference
+implementations emit, and a receiver tolerates any other (§8).
+
+**`disco` — reachability and cost, to neighbors (§5, §6).**
+
+```json
+{ "type": "disco", "routes": { "gamma": 42, "delta": 1000000000 } }
+```
+
+`routes` maps a destination label to this node's advertised path cost in
+milliseconds. A cost at or above the unreachable sentinel (§0) withdraws the
+route; that is how split-horizon with poisoned reverse is expressed on the wire
+(§6). An empty advertisement is `{}`, never `[]`.
+
+**`probe` / `echo` — round-trip measurement (§5).**
+
+```json
+{ "type": "probe", "token": 1788600000123 }
+{ "type": "echo",  "token": 1788600000123 }
+```
+
+`token` is opaque to the responder, which copies it back unchanged in an `echo`.
+The prober measures RTT by comparing the returned token against its own clock, so
+the value is a local matter — the reference implementations use a millisecond
+timestamp. A node echoes any probe; it never interprets the token.
+
+**`rekey` — a tunneled BMX exchange, in four phases (`security.md` §6).**
+
+```json
+{ "type": "rekey", "mid": "<exchange id>", "phase": 1,
+  "body": "<base64 of the BMX message for this phase>" }
+```
+
+The BMX messages of a fresh handshake ride inside transport frames on the live
+session, so they arrive through the normal reader with no raw-stream race. `mid`
+correlates the four phases of one exchange. `body` carries the BMX bytes and is
+**absent on phase 4**, which carries no BMX message:
+
+| Phase | Sender | `body` | Effect |
+|---|---|---|---|
+| 1 | initiator | `bmx1` | opens the exchange |
+| 2 | responder | `bmx2` | replies; responder now holds the new session |
+| 3 | initiator | `bmx3` | last frame under the old send key, then the initiator swaps its send key |
+| 4 | responder | — | responder has swapped its receive key, sends this, then swaps its send key; on receipt the initiator swaps its receive key and the rekey is complete |
+
+Each side swaps a key immediately after sealing its last old-key frame in that
+direction, and swaps its receive key immediately after opening the peer's, so the
+two directions cut over independently and no frame is ever sealed under a key the
+peer has already discarded. A failed or abandoned exchange leaves the link on its
+current keys; liveness (§7) tears it down if it has truly broken.
+
+**`bye` — graceful close (§8).**
+
+```json
+{ "type": "bye", "reason": "idle" }
+```
+
+`reason` is optional and drawn from the enum in §8.
 
 ## 5. Discovery and latency (defect D3)
 
@@ -152,7 +284,11 @@ measures **real round-trip time**:
   probe once per **1 s** heartbeat (§0).
 - A neighbor's link latency is an **exponentially-weighted moving average** of
   RTT samples (**α = 0.2**, §0), not a single reading, so a transient spike does
-  not dominate. It is a real duration in milliseconds.
+  not dominate. It is a real duration in milliseconds, rounded to an integer
+  **half away from zero** — so 2.5 ms becomes 3, never 2. That is pinned because
+  the rounded value is what `disco.routes` puts on the wire (§4.2): six
+  implementations rounded half away from zero and one used banker's rounding, so
+  two nodes could advertise costs differing by 1 ms for the same measured link.
 - `disco` messages advertise, per known destination, the **path cost** = sum of
   per-hop EWMA latencies along the best known path. Because identity and public
   keys now come from the authenticated handshake (`security.md`), discovery no
@@ -170,16 +306,119 @@ measures **real round-trip time**:
   neighbor it learned it from, and advertises it as unreachable instead) and the
   `ttl` hop limit (§4.1), together bounding the count-to-infinity behavior v2
   left open.
+
+  The poison value is **exactly 1000000000** and is now pinned (§0), because it
+  goes on the wire in `disco.routes` and four of the seven implementations used to
+  advertise 2^63-1 instead. That interoperated only by luck of the receive-side
+  threshold, and it is not safe luck: 2^63-1 exceeds the largest integer a
+  double-precision number represents exactly, so a JSON parser backed by doubles
+  reads it as 9223372036854775808 — a different number than the one sent. The
+  threshold is set equal to the emitted value on purpose, so a saturated sum is
+  indistinguishable from an explicit poison, and mixed-version meshes keep working
+  because every receiver has always accepted anything at or above it.
 - **Send.** Look up the destination: a live session to it (direct) wins;
-  otherwise forward to the best-cost next-hop neighbor over that session. No
-  route and no direct session ⇒ the send fails locally and the caller is told
-  (a real return, not a silent drop).
+  otherwise forward to the best-cost next-hop neighbor over that session. No route
+  and no direct session ⇒ the call reports failure to the caller — a real return,
+  not a silent drop — **and** the message is queued for bounded retry (§7). Those
+  are not alternatives: the boolean answers "was this handed to a next hop now?",
+  which is false, while the queue may still deliver it when a route appears. A
+  caller that needs to know the outcome rather than the attempt uses the ack
+  (§7).
 - **Relay** is hop-by-hop: a relaying node decrypts the transport frame from the
   previous hop, and re-encrypts the same inner message (decrementing `ttl`) to
   the next hop's session. This is the trust model of `security.md` §7 — members
   trust each other; a relay sees plaintext.
-- **Broadcast** targets every known reachable label except the node's own (the
-  v2 M1 fix, D5, now the specified behavior).
+- **Broadcast** targets every known reachable label except the node's own: every
+  peer with a live session, plus every destination with a next hop, compared
+  case-insensitively (`security.md` §2) so one peer is never targeted twice.
+
+  It is **not a message type**. A broadcast is N ordinary `data` sends, and each
+  destination gets its **own `mid`**. That is forced rather than stylistic: dedup
+  keys on (`mid`, chunk index) (§6.1), so a shared `mid` would have the first
+  relay that saw one copy suppress every other, and an `ack` names only a `mid`,
+  so an origin could not tell which destination had answered. The call reports how
+  many destinations the message was handed to a next hop for; each send then
+  follows the Send rules above, retry included.
+
+  Both halves of the exclusion are the D5 fix: the node's own label is never a
+  target, and direct session peers always are. The v2 implementation iterated
+  indirect routes only and could list itself among them.
+
+### 6.1 Splitting and reassembly
+
+An application payload too large for one transport frame is split by the origin
+and reassembled by the destination, so the frame cap (§0) bounds a single read
+and never bounds application data (§2).
+
+**Splitting.** The origin serializes `payload` to JSON, takes its UTF-8 bytes,
+and cuts them into `n` segments of at most **24000 bytes** (§0), every cut made
+on a UTF-8 character boundary so each segment is itself valid UTF-8 and can be
+carried in a JSON string. Cutting on a byte budget rather than a character
+count keeps the split identical in every language: UTF-8 has no surrogates, so a
+code point is either wholly inside a segment or wholly outside it, and the
+divergence between counting UTF-16 code units and counting code points — which
+`security.md` §11.1 has to legislate for canonicalization — cannot arise here.
+
+**Wire shape.** Every segment is a `data` message (§4.1) sharing one `mid`,
+carrying `chunk` as `{"i": <index>, "n": <count>}` with `0 <= i < n`, and
+carrying its slice in a top-level **`seg`** string. A segment has **no
+`payload`**; a whole message has `payload` and no `seg`. The two are mutually
+exclusive, which is what makes the failure mode structurally impossible rather
+than merely forbidden: a node that does not reassemble sees a `data` with no
+`payload` and rejects it, instead of handing a fragment to the application as
+though it were a complete message.
+
+**Reassembly.** The destination buffers segments under their `mid`, concatenates
+their `seg` values as UTF-8 bytes in ascending `i`, and parses the result as the
+payload. Segments may arrive in any order — §9 does not guarantee ordering, so
+out-of-order arrival is the expected case and not an error.
+
+**Dedup.** The duplicate-suppression key is the pair (`mid`, chunk index), not
+`mid` alone. Every segment of one message shares that message's `mid`, so a
+destination keying on `mid` would discard segments 1..n-1 as already-seen
+duplicates and reassembly would never complete — §4's dedup rule read literally
+defeats splitting outright. A whole message uses index 0.
+
+**Bounds.** These are wire constants (§0), not local policy, so an origin knows
+what every conforming destination will accept. Together they bound destination
+memory absolutely, which is the point: splitting exists to lift the frame cap off
+application data, and a feature that lifts one bound must not remove every other
+one — that is how defect D7 (unbounded reads) would come back wearing a new hat.
+
+A destination rejects a segment whose `chunk` is not an object, whose `i` or `n`
+is not an integer, whose `n` is outside 1..1024, or whose `i` is outside 0..n-1,
+and it rejects it **before reserving space for `n` segments**, so one frame
+cannot make a destination allocate on a number its peer chose. Beyond that:
+
+- **16777216 bytes** of segment data may be buffered at once, summed across
+  every in-flight message — not per message. A segment that would carry the
+  total past it is refused and its message abandoned. Since `n` cannot exceed
+  1024, this is also the largest payload any conforming destination will
+  reassemble, so an origin needs no second number.
+- **256** messages may be in flight at once. Buffered bytes alone would not
+  bound the bookkeeping, because a flood of distinct `mid`s each carrying an
+  empty segment costs nothing against a byte budget and still costs memory.
+- a partially-filled message is discarded once it is **30000 ms** old, so an
+  abandoned message cannot pin memory for the life of the session.
+
+An origin whose payload would need more than 1024 segments, or would exceed the
+reassembly buffer, fails the send locally and tells the caller (§6, Send) rather
+than emitting a message no conforming destination can accept.
+
+**Relay.** A relay forwards segments individually, decrementing `ttl` at each
+hop, and does not reassemble: reassembly is a destination behavior, so a relay
+needs no per-message buffer and inherits none of the bounds above.
+
+**Ack.** The destination acks the `mid` once, when reassembly completes — not
+once per segment. An `ack` or `nak` (§7) therefore always refers to the whole
+application message, never to part of one.
+
+**What this does not provide.** There is no per-segment retransmission. A lost
+segment means the message never completes: the destination discards the partial
+at the timeout and sends no `ack`, and the origin learns of the failure exactly
+as it learns of any unacknowledged message (§7). Reliability stronger than that
+is the application's to build, and splitting deliberately does not pretend
+otherwise.
 
 ## 7. Acknowledgement and liveness (defect D4)
 
@@ -219,11 +458,21 @@ safely. The origin observes them through an ack listener; the boolean return of
 
 - The handshake carries `v: 3` (`security.md` §4). A node that receives a
   handshake with a `v` it does not implement rejects it, closing the connection,
-  rather than failing opaquely. The machine-readable close reasons are the
-  pinned enum on the `bye` control (`corpus/messages.json`): `shutdown`, `idle`,
-  `rekey-failed`, `protocol-error`, plus `unsupported-version` for this
-  version-mismatch case (reported in logs; a pre-session rejection carries no
-  session in which to send a `bye`).
+  rather than failing opaquely.
+- The **defined** close reasons on the `bye` control (§4.2) are `shutdown` (the
+  node is stopping), `idle` (the idle timeout fired, §7), `rekey-failed` (a rekey
+  exchange did not complete, `security.md` §6) and `protocol-error` (a malformed
+  inner message), plus `unsupported-version` for the version-mismatch case above
+  — which is reported in logs rather than sent, because a pre-session rejection
+  has no session in which to send a `bye`.
+
+  "Defined" is not "exhaustive", and this previously read "the pinned enum …
+  (`corpus/messages.json`)", which that file does not pin and deliberately does
+  not: a validator that rejected an unknown reason would contradict the
+  forward-compatibility rule in the next bullet, and case `bye-ok-unknown-reason`
+  expects **valid** for exactly that reason. So a conforming sender uses one of
+  the reasons above when one applies, and a conforming receiver accepts any
+  string and acts on none of them — the reason is diagnostic, never control.
 - Minor, backward-compatible additions (new optional inner `type`s, new optional
   fields) do **not** bump `v`; an implementation ignores inner types it does not
   recognize, except that an unrecognized `type` where a `data` message is

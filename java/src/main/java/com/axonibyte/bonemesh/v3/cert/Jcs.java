@@ -18,6 +18,7 @@ package com.axonibyte.bonemesh.v3.cert;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -43,12 +44,21 @@ public final class Jcs {
    * Canonicalizes a certificate value map (values must be {@link String} or
    * {@link Long}; nested {@link Map}s are permitted for generality).
    *
-   * @param object the value map, already stripped of any {@code sig} member
+   * <p>Any {@code sig} member is removed here, as the other six canonicalizers do.
+   * This port used to require the caller to have stripped it and said so only in
+   * this javadoc, which made the most security-critical byte string in the system
+   * depend on every caller remembering: a caller who forgot produced a different
+   * signing pre-image and a signature over the wrong bytes, with nothing to catch
+   * it. Both existing callers already strip, so removing it again is idempotent.</p>
+   *
+   * @param object the value map; any {@code sig} member is ignored
    * @return the canonical UTF-8 bytes
    */
   public static byte[] canonicalize(Map<String, Object> object) {
+    Map<String, Object> filtered = new LinkedHashMap<>(object);
+    filtered.remove("sig");
     StringBuilder sb = new StringBuilder();
-    encodeObject(sb, object);
+    encodeObject(sb, filtered);
     return sb.toString().getBytes(StandardCharsets.UTF_8);
   }
 

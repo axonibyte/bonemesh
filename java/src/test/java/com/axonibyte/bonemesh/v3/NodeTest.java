@@ -80,6 +80,62 @@ public class NodeTest {
     rootPub = root.publicKey();
   }
 
+  @Test void broadcastReachesEveryPeerButNeverTheSender() throws Exception {
+    // protocol.md §6. Both halves of the D5 fix are asserted: direct session peers
+    // ARE targeted (the v2 implementation iterated indirect routes only) and the
+    // node's own label is NOT (it could appear among its own routes).
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+    Node gamma = node("gamma");
+
+    CountDownLatch betaGot = new CountDownLatch(1);
+    CountDownLatch gammaGot = new CountDownLatch(1);
+    java.util.List<JSONObject> alphaGot = java.util.Collections.synchronizedList(new ArrayList<>());
+    beta.addDataListener(p -> { if("all".equals(p.optString("m"))) betaGot.countDown(); });
+    gamma.addDataListener(p -> { if("all".equals(p.optString("m"))) gammaGot.countDown(); });
+    alpha.addDataListener(alphaGot::add);
+
+    alpha.connect("127.0.0.1", beta.port());
+    alpha.connect("127.0.0.1", gamma.port());
+
+    int handed = alpha.broadcast(new JSONObject().put("m", "all"));
+    assertEquals(2, handed, "both peers should have been handed the message");
+    assertTrue(await(betaGot, 5000), "beta never received the broadcast");
+    assertTrue(await(gammaGot, 5000), "gamma never received the broadcast");
+
+    // Assert the absence with time allowed to pass, and after the positives, so a
+    // failure reads as "the sender got its own broadcast" rather than as a timeout.
+    Thread.sleep(500);
+    assertTrue(alphaGot.isEmpty(), "the sender received its own broadcast: " + alphaGot);
+  }
+
+  @Test void broadcastGivesEachDestinationItsOwnMessageId() throws Exception {
+    // Forced, not stylistic: dedup keys on (mid, chunk index), so a shared mid would
+    // have the first relay suppress every other copy, and an ack names only a mid.
+    setUpRoot();
+    Node alpha = node("alpha");
+    Node beta = node("beta");
+    Node gamma = node("gamma");
+
+    java.util.List<String> mids = java.util.Collections.synchronizedList(new ArrayList<>());
+    alpha.addAckListener(a -> mids.add(a.optString("mid")));
+    CountDownLatch both = new CountDownLatch(2);
+    beta.addDataListener(p -> both.countDown());
+    gamma.addDataListener(p -> both.countDown());
+
+    alpha.connect("127.0.0.1", beta.port());
+    alpha.connect("127.0.0.1", gamma.port());
+    assertEquals(2, alpha.broadcast(new JSONObject().put("m", "all")));
+    assertTrue(await(both, 5000), "the broadcast did not reach both peers");
+
+    // Both destinations ack, and the ids they name must differ.
+    long deadline = System.currentTimeMillis() + 5000;
+    while(mids.size() < 2 && System.currentTimeMillis() < deadline) Thread.sleep(50);
+    assertEquals(2, mids.size(), "expected one ack per destination, got " + mids);
+    assertNotEquals(mids.get(0), mids.get(1), "both destinations acked the same mid");
+  }
+
   @Test void twoNodesExchangeMessagesBothDirections() throws Exception {
     setUpRoot();
     Node alpha = node("alpha");

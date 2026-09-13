@@ -26,7 +26,24 @@ defmodule Bonemesh.NodeTest do
         port: 0
       )
 
-    on_exit(fn -> if Process.alive?(node), do: Node.stop(node) end)
+    # Stop the node, and treat "it already stopped" as success rather than as a test
+    # failure. A node started with start_link is linked to the test process, so when
+    # that process exits its signal reaches the node and the node dies with :shutdown
+    # -- which is correct OTP behaviour, not a defect. GenServer.stop then reports
+    # that reason and ExUnit records a failure for a teardown that got exactly what it
+    # asked for. Process.alive?/1 narrows the window but cannot close it.
+    #
+    # This catches only the reasons that mean "already gone" (:shutdown, :noproc,
+    # :normal); anything else still fails, so a node that dies for a real reason is
+    # not hidden.
+    on_exit(fn ->
+      try do
+        if Process.alive?(node), do: Node.stop(node)
+      catch
+        :exit, {reason, _} when reason in [:shutdown, :noproc, :normal] -> :ok
+        :exit, reason when reason in [:shutdown, :noproc, :normal] -> :ok
+      end
+    end)
     node
   end
 
@@ -96,4 +113,17 @@ defmodule Bonemesh.NodeTest do
     assert Node.send(alpha, "beta", %{"blob" => blob})
     assert :ok == await_data(&(&1["blob"] == blob), 10_000)
   end
+  # send_mid returns the message id even when the destination is not routable yet
+  # (protocol.md §7).
+  #
+  # This port used to reply :error in that case, which broke the correlation send_mid
+  # exists for: the queued message's lifetime expires and produces a synthesized
+  # nak{reason: "expired"} naming its mid, and a caller that never received the mid
+  # cannot match it to anything.
+  test "send_mid returns the id even when the destination is not routable", ctx do
+    alpha = start_node(ctx, "alpha")
+    assert {:ok, mid} = Node.send_mid(alpha, "nowhere", %{"m" => "queued"})
+    assert is_binary(mid) and byte_size(mid) == 32, "a mid is 32 hex characters"
+  end
+
 end

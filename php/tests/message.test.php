@@ -53,7 +53,11 @@ test('schema verdicts', function () {
 
 test('builders produce valid messages', function () {
     assertNull(Message::validate('data', Message::data(Message::newMid(), 'a', 'b', Message::DEFAULT_TTL, ['k' => 'v'])));
-    assertNull(Message::validate('ack', Message::ack(Message::newMid())));
+    // Built inline rather than with a builder: a bare {type, mid} ack is a shape the
+    // validator must accept (section 8 tolerance, corpus case ack-ok) but that no node
+    // can route, since section 7 sends acks back toward 'from'. The builder that
+    // produced it was called only from tests.
+    assertNull(Message::validate('ack', ['type' => 'ack', 'mid' => Message::newMid()]));
     assertNull(Message::validate('nak', Message::nak(Message::newMid(), 'a', 'b', 'beta', 'ttl', Message::DEFAULT_TTL)));
     assertNull(Message::validate('bye', Message::bye('idle')));
     assertNull(Message::validate('bye', Message::bye()));

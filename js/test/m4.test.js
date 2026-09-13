@@ -48,7 +48,7 @@ test('F2: an unroutable send is queued and reported expired to the ack listener'
   const p = n.pending.get('peer')[0];
   p.enqueuedAt = Date.now() - (n.tun.retryMaxMs + 100000);
   p.nextAt = 0;
-  n.drainRetries(Date.now());
+  n._drainRetries(Date.now());
   assert.equal(n.pending.has('peer'), false, 'expired entry dropped from the queue');
   assert.equal(got.length, 1);
   assert.equal(got[0].type, 'nak');

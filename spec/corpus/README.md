@@ -8,7 +8,7 @@ Each file is JSON so any language can load it. Vectors state what they prove and
 what a conforming implementation must do.
 
 Every file here is checked against every implementation by
-`interop/run-corpus-checks.sh` — eight families times seven implementations, with a
+`interop/run-corpus-checks.sh` — nine families times seven implementations, with a
 missing check treated as a failure rather than a skip. The checks live in
 `interop/` rather than in each `<lang>/` tenant because a tenant syncs one subtree
 and cannot see this directory; the in-tenant suites therefore *mirror* these

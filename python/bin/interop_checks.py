@@ -10,6 +10,7 @@
 
     interop_checks framing  <framing.json>
     interop_checks messages <messages.json>
+    interop_checks chunk    <chunk.json>
 
 Prints PASS/FAIL per case and exits non-zero on any mismatch. Invoked by
 interop/check-framing-python.sh and interop/check-messages-python.sh.
@@ -19,6 +20,7 @@ import base64
 import json
 import sys
 
+from bonemesh import chunk as chunkmod
 from bonemesh.frame import HANDSHAKE_CAP, TRANSPORT_CAP, classify
 from bonemesh.message import validate
 
@@ -97,11 +99,76 @@ def run_messages(path: str) -> int:
     return 0
 
 
+def run_chunk(path: str) -> int:
+    """Checks splitting against the shared corpus (spec/corpus/chunk.json).
+
+    Two things, and the second is the one nothing else can see. First the pinned
+    section 0 constants must match this implementation's -- including the three
+    (chunk count, in-flight count, timeout) that specsrc deliberately does not
+    check, because a substring search for 1024, 256 or 30000 is satisfied by any
+    buffer size already in the tree. Second, the segments this implementation
+    produces must land on exactly the byte boundaries the corpus pins, which is how
+    all seven are shown to cut in the SAME places rather than merely to cut.
+    """
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    failures = 0
+
+    mine = {
+        "max_segment_bytes": chunkmod.MAX_SEGMENT_BYTES,
+        "max_chunks": chunkmod.MAX_CHUNKS,
+        "max_reassembly_buffer": chunkmod.MAX_REASSEMBLY_BUFFER,
+        "max_concurrent_reassemblies": chunkmod.MAX_CONCURRENT_REASSEMBLIES,
+        "reassembly_timeout_millis": chunkmod.REASSEMBLY_TIMEOUT_MILLIS,
+    }
+    pinned = doc.get("constants") or {}
+    if not pinned:
+        print("corpus declares no chunk constants", file=sys.stderr)
+        return 1
+    for name, want in pinned.items():
+        got = mine.get(name)
+        ok = got == want
+        print(f"{'PASS' if ok else 'FAIL'} constant {name}"
+              + ("" if ok else f"  (have {got}, corpus pins {want})"))
+        failures += 0 if ok else 1
+
+    cases = doc.get("split_cases") or []
+    if not cases:
+        print("corpus has no split cases", file=sys.stderr)
+        return 1
+    mid = doc["mid"]
+    for case in cases:
+        payload = {case["key"]: case["unit"] * case["times"]}
+        msgs = chunkmod.split(mid, "a", "b", 16, payload)
+        whole = len(msgs) == 1 and "payload" in msgs[0]
+        lengths = [] if whole else [len(m["seg"].encode("utf-8")) for m in msgs]
+        ok = whole == case["expect_whole"] and lengths == case["segment_byte_lengths"]
+        detail = ""
+        if not ok:
+            detail = (f"  (whole={whole} want {case['expect_whole']}; "
+                      f"lengths={lengths[:8]} want {case['segment_byte_lengths'][:8]})")
+        # A round-trip as the second oracle: matching lengths would not catch
+        # segments that are the right size and the wrong bytes.
+        if ok and not whole:
+            rebuilt = json.loads("".join(m["seg"] for m in msgs))
+            if rebuilt != payload:
+                ok, detail = False, "  (segments did not rebuild the payload)"
+        print(f"{'PASS' if ok else 'FAIL'} {case['name']}{detail}")
+        failures += 0 if ok else 1
+
+    if failures:
+        print(f"{failures} chunk case(s) disagreed", file=sys.stderr)
+        return 1
+    print("splitting agrees with every pinned constant and cut position")
+    return 0
+
+
 def main() -> int:
-    if len(sys.argv) != 3 or sys.argv[1] not in ("framing", "messages"):
-        print("usage: interop_checks <framing|messages> <corpus.json>", file=sys.stderr)
+    runners = {"framing": run_framing, "messages": run_messages, "chunk": run_chunk}
+    if len(sys.argv) != 3 or sys.argv[1] not in runners:
+        print("usage: interop_checks <framing|messages|chunk> <corpus.json>", file=sys.stderr)
         return 2
-    return run_framing(sys.argv[2]) if sys.argv[1] == "framing" else run_messages(sys.argv[2])
+    return runners[sys.argv[1]](sys.argv[2])
 
 
 if __name__ == "__main__":

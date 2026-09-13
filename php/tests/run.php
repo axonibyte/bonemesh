@@ -4,6 +4,7 @@
 require __DIR__ . '/../src/autoload.php';
 require __DIR__ . '/harness.php';
 require __DIR__ . '/ca.php';
+require __DIR__ . '/node_harness.php';
 
 foreach (glob(__DIR__ . '/*.test.php') as $file) {
     require $file;

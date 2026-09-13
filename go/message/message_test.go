@@ -80,9 +80,13 @@ func TestBuildersProduceValidMessages(t *testing.T) {
 	if r := Validate("data", data); r != "" {
 		t.Fatalf("Data() invalid: %q", r)
 	}
-	ack := roundtrip(t, Ack(NewMID()))
+	// Built inline rather than with a builder: a bare {type, mid} ack is a shape the
+	// validator must accept (§8 tolerance, corpus case ack-ok) but that no node can
+	// route, since §7 sends acks back toward `from`. The builder that produced it was
+	// called only from tests, so it was production surface for nobody.
+	ack := roundtrip(t, map[string]any{"type": "ack", "mid": NewMID()})
 	if r := Validate("ack", ack); r != "" {
-		t.Fatalf("Ack() invalid: %q", r)
+		t.Fatalf("a minimal ack should validate: %q", r)
 	}
 	nak := roundtrip(t, Nak(NewMID(), "a", "b", "beta", "ttl", DefaultTTL))
 	if r := Validate("nak", nak); r != "" {

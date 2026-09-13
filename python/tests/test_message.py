@@ -98,7 +98,11 @@ def test_new_mid_is_32_lowercase_hex_and_fresh():
 
 def test_builders_produce_frames_their_own_validator_accepts():
     assert message.validate("data", message.data(GOOD_MID, "a", "b", 16, {"x": 1})) is None
-    assert message.validate("ack", message.ack(GOOD_MID)) is None
+    # Built inline rather than with a builder: a bare {type, mid} ack is a shape the
+    # validator must accept (section 8 tolerance, corpus case ack-ok) but that no node
+    # can route, since section 7 sends acks back toward "from". The builder that
+    # produced it was called only from tests.
+    assert message.validate("ack", {"type": "ack", "mid": GOOD_MID}) is None
     assert message.validate("ack", message.ack_to(GOOD_MID, "r", "a", 16)) is None
     assert message.validate("nak", message.nak(GOOD_MID, "r", "a", "r", "ttl", 16)) is None
     assert message.validate("bye", message.bye()) is None

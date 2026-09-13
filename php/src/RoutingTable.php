@@ -6,13 +6,17 @@ namespace Bonemesh;
 // next hop, path cost in ms). Wire-compatible with the Java, Elixir, Go, Rust,
 // and JS reference routers.
 //
-// Poison sentinel: routes are advertised unreachable with PHP_INT_MAX (Java's
-// Long.MAX_VALUE, which PHP's 64-bit ints hold and encode exactly), and any
+// Poison sentinel: routes are advertised unreachable with UNREACHABLE
+// (1000000000, pinned by protocol.md section 0 -- this port used to emit
+// PHP_INT_MAX and interoperated only by luck of the tolerant threshold, which is
+// not safe luck because 2^63-1 exceeds the largest integer a double represents
+// exactly, so a JSON parser backed by doubles reads it back as a different
+// number), and any
 // advertised cost at or above POISON_THRESHOLD (1e9, Elixir/JS) is treated as
 // unreachable on receipt — so a mixed mesh converges.
 final class RoutingTable
 {
-    public const UNREACHABLE = PHP_INT_MAX;
+    public const UNREACHABLE = 1000000000;
     public const POISON_THRESHOLD = 1000000000;
     private const ALPHA = 0.2;
 

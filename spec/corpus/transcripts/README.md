@@ -18,15 +18,16 @@ equivalents).
 - **X25519 agreement** — Java (BouncyCastle) and Go (`crypto/ecdh`) derive the
   same `ss_dh` from the same scalars.
 
-## Post-quantum interop — RESOLVED (Java, Elixir, Rust, Go, JS, PHP)
+## Post-quantum interop — RESOLVED (Java, Elixir, Rust, Go, JS, PHP, Python)
 
 `pqc-interop.json` (produced by the Java reference, BouncyCastle) is verified
 from the Elixir side (OTP 28's native `:crypto`, `check-pqc-elixir.sh`), the
 Rust side (RustCrypto `ml-dsa`/`ml-kem`, `check-pqc-rust.sh`), the Go side
-(`check-pqc-go.sh`), the JS side (Node/OpenSSL 3.5, `check-pqc-js.sh`), and the
-PHP side (openssl 3.5 CLI, `check-pqc-php.sh`):
+(`check-pqc-go.sh`), the JS side (Node/OpenSSL 3.5, `check-pqc-js.sh`), the PHP
+side (openssl 3.5 CLI, `check-pqc-php.sh`) and the Python side (pyca/cryptography
+over OpenSSL 3.5, `check-pqc-python.sh`):
 
-- **ML-DSA-65 signatures** — Elixir, Rust, Go, JS, and PHP each verify a
+- **ML-DSA-65 signatures** — Elixir, Rust, Go, JS, PHP and Python each verify a
   signature Java made. Go uses Cloudflare CIRCL (`sign/mldsa/mldsa65`); JS uses
   Node's built-in `crypto`; PHP shells out to the openssl 3.5 CLI — in each case
   the same code the node uses on the handshake path.

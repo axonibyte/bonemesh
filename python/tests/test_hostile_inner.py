@@ -118,17 +118,29 @@ def test_a_destination_addressed_message_is_delivered_regardless_of_ttl(run_asyn
     run_async(body())
 
 
-def test_a_malformed_chunk_field_does_not_block_delivery(run_async, spawn, issue):
-    """A garbage `chunk` is tolerated, not fatal -- and the JS reference agrees.
+def test_a_malformed_chunk_field_is_refused_without_killing_the_session(run_async, spawn, issue):
+    """A garbage `chunk` is refused, and refusing it is not fatal to the link.
 
-    `chunk` only feeds the dedup key (`d:<mid>:<i>`), so a non-object or
-    non-numeric index resolves to -1 and the payload is still delivered. This is
-    the case that made the hostile battery above fail on first run: it had been
-    written as must-not-deliver, which would have been a divergence from every
-    other port rather than a defect in this one.
+    This test previously asserted the opposite delivery verdict, and the change is
+    deliberate rather than a weakening. When it was written, `chunk` fed nothing but
+    the dedup key, nothing in the spec said what a malformed one meant, and every
+    port tolerated it -- so "delivered" was the only defensible expectation and
+    asserting otherwise would have been a divergence from the other six.
+
+    protocol.md §6.1 now specifies it: `chunk` is a field with a declared type, and a
+    destination rejects a segment whose chunk is not an object or whose index is not
+    an integer. §8's forward-compatibility rule covers *unknown* fields and
+    unrecognised inner types, not a known field carrying the wrong type. Corpus case
+    `data-chunk-not-an-object` says invalid, and all seven now agree.
+
+    What the test exists to prove is unchanged and is still asserted both ways: the
+    hostile frames deliver nothing, AND the same session is still usable afterwards,
+    which a must-not-deliver assertion alone cannot show -- a link killed by a
+    crashing handler also delivers nothing.
     """
     async def body():
         from bonemesh.frame import encode
+        from bonemesh.message import new_mid
         beta = await spawn(issue("beta"))
         alpha = await spawn(issue("alpha"))
         got = []
@@ -136,12 +148,27 @@ def test_a_malformed_chunk_field_does_not_block_delivery(run_async, spawn, issue
         await alpha.connect("127.0.0.1", beta.port())
         assert await until(lambda: "beta" in alpha.links and "alpha" in beta.links)
         link = alpha.links["beta"]
-        for chunk in ("not-an-object", {"i": "zero"}, {"n": 3}, [], None):
+        for chunk in ("not-an-object", {"i": "zero"}, {"n": 3}, [], None, {"i": 0, "n": 0},
+                      {"i": 3, "n": 3}, {"i": 0, "n": 99999}):
             link.writer.write(encode(link.transport.seal({
-                "type": "data", "mid": __import__("bonemesh.message", fromlist=["new_mid"]).new_mid(),
+                "type": "data", "mid": new_mid(),
                 "to": "beta", "from": "alpha", "ttl": 16,
                 "payload": {"chunk_was": repr(chunk)}, "chunk": chunk})))
-        assert await until(lambda: len(got) == 5), f"delivered {len(got)} of 5: {got}"
+
+        # Assert the absence first, with time allowed to pass, so a failure reads as
+        # "it delivered a malformed message" rather than as a missing signal later.
+        # 2 s is ample for a loopback frame; the point is that time passes before the
+        # absence is believed, not that it passes for long.
+        assert not await until(lambda: len(got) > 0, timeout=2.0), \
+            f"delivered a malformed chunk: {got}"
+
+        # ...then prove the same session still works. Without this the test would
+        # pass just as happily against a node that had died on the first frame.
+        link.writer.write(encode(link.transport.seal({
+            "type": "data", "mid": new_mid(), "to": "beta", "from": "alpha", "ttl": 16,
+            "payload": {"after": "malformed chunks"}})))
+        assert await until(lambda: got == [{"after": "malformed chunks"}]), \
+            f"the session did not survive the malformed chunks: {got}"
     run_async(body())
 
 

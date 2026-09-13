@@ -19,6 +19,18 @@ func Validate(schema string, f map[string]any) string {
 	switch schema {
 	case "bmx1":
 		return validateBMX1(f)
+	case "bmx2":
+		return validateBMX2(f)
+	case "bmx3":
+		return validateBMX3(f)
+	case "disco":
+		return validateDisco(f)
+	case "probe":
+		return validateTokenCarrier(f, "probe")
+	case "echo":
+		return validateTokenCarrier(f, "echo")
+	case "rekey":
+		return validateRekey(f)
 	case "envelope":
 		return validateEnvelope(f)
 	case "data":
@@ -50,6 +62,101 @@ func validateBMX1(f map[string]any) string {
 			return "missing-field"
 		}
 		if r := base64Reason(v); r != "" {
+			return r
+		}
+	}
+	return ""
+}
+
+// Handshake messages 2 and 3 (security.md §4). Both carry one sealed "auth"
+// member rather than separate cert and sig.
+func validateBMX2(f map[string]any) string {
+	if s, _ := f["t"].(string); s != "bmx2" {
+		return "type"
+	}
+	return requireBase64(f, "e", "ct", "auth")
+}
+
+func validateBMX3(f map[string]any) string {
+	if s, _ := f["t"].(string); s != "bmx3" {
+		return "type"
+	}
+	return requireBase64(f, "auth")
+}
+
+// Route advertisement (protocol.md §4.2, §6). An empty advertisement is {}, never [].
+func validateDisco(f map[string]any) string {
+	if s, _ := f["type"].(string); s != "disco" {
+		return "type"
+	}
+	raw, has := f["routes"]
+	if !has {
+		return "missing-field"
+	}
+	routes, ok := raw.(map[string]any)
+	if !ok {
+		return "routes-format"
+	}
+	for _, v := range routes {
+		cost, ok := asInt(v)
+		if !ok || cost < 0 {
+			return "routes-format"
+		}
+	}
+	return ""
+}
+
+// Latency measurement pair (§4.2, §5). The token is opaque to the responder, which
+// echoes it back unchanged, so only its type is constrained.
+func validateTokenCarrier(f map[string]any, want string) string {
+	if s, _ := f["type"].(string); s != want {
+		return "type"
+	}
+	if _, has := f["token"]; !has {
+		return "missing-field"
+	}
+	if _, ok := asInt(f["token"]); !ok {
+		return "token-format"
+	}
+	return ""
+}
+
+// Tunneled BMX rekey (§4.2, security.md §6). Phases 1-3 carry the BMX bytes in
+// "body"; phase 4 carries no BMX message and must omit it.
+func validateRekey(f map[string]any) string {
+	if s, _ := f["type"].(string); s != "rekey" {
+		return "type"
+	}
+	if r := midReason(f["mid"]); r != "" {
+		return r
+	}
+	if _, has := f["phase"]; !has {
+		return "missing-field"
+	}
+	phase, ok := asInt(f["phase"])
+	if !ok || phase < 1 || phase > 4 {
+		return "phase-range"
+	}
+	_, hasBody := f["body"]
+	if phase == 4 {
+		if hasBody {
+			return "body-or-phase"
+		}
+		return ""
+	}
+	if !hasBody {
+		return "body-or-phase"
+	}
+	return base64Reason(f["body"])
+}
+
+// Every named member must be present and Base64.
+func requireBase64(f map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if _, has := f[k]; !has {
+			return "missing-field"
+		}
+		if r := base64Reason(f[k]); r != "" {
 			return r
 		}
 	}
@@ -90,8 +197,63 @@ func validateData(f map[string]any) string {
 	if ttl < 1 || ttl > 255 {
 		return "ttl-range"
 	}
-	if _, ok := f["payload"]; !ok {
+	return checkChunking(f)
+}
+
+// checkChunking validates the splitting half of the data schema (protocol.md
+// §6.1): the shape of "chunk", its bounds, and the rule that exactly one of
+// "payload" and "seg" is present.
+//
+// The exclusion is the load-bearing part. It is what stops a node that does not
+// reassemble from handing a fragment to the application as though it were a whole
+// message -- the silent corruption D11 described. A segment has no payload to
+// deliver, so the mistake is unavailable rather than merely forbidden.
+//
+// Carrying neither stays "missing-field" rather than becoming a splitting error:
+// it is an absent field, the corpus has pinned that reason since 3.0.0, and
+// renaming it here would have rewritten a vector rather than added one.
+func checkChunking(f map[string]any) string {
+	n := int64(1)
+	if raw, has := f["chunk"]; has {
+		chunk, ok := raw.(map[string]any)
+		if !ok {
+			// Defensive, not load-bearing, and measured as such: with this branch
+			// inert a non-object chunk still reaches "chunk-format" through the
+			// nil-map path below, so the corpus cannot distinguish it. Kept for
+			// legibility; not claimed as covered.
+			return "chunk-format"
+		}
+		i, iOK := asInt(chunk["i"])
+		n, ok = asInt(chunk["n"])
+		if !ok || !iOK {
+			return "chunk-format"
+		}
+		if n < 1 || n > MaxChunks {
+			return "chunk-range"
+		}
+		if i < 0 || i >= n {
+			return "chunk-range"
+		}
+	}
+	segRaw, hasSeg := f["seg"]
+	_, hasPayload := f["payload"]
+	if !hasPayload && !hasSeg {
 		return "missing-field"
+	}
+	// Three clauses, none redundant. An explicit "both present" test was removed:
+	// mutation showed it could not reject anything these two do not already
+	// reject, since n is always 1 or more, so it read as coverage while asserting
+	// nothing.
+	if n == 1 && hasSeg {
+		return "payload-or-seg" // a whole message carries its payload
+	}
+	if n > 1 && hasPayload {
+		return "payload-or-seg" // a segment does not
+	}
+	if hasSeg {
+		if _, ok := segRaw.(string); !ok {
+			return "seg-format"
+		}
 	}
 	return ""
 }
@@ -188,11 +350,6 @@ func NewMID() string {
 // Data builds an application data message.
 func Data(mid, from, to string, ttl int, payload any) map[string]any {
 	return map[string]any{"type": "data", "mid": mid, "from": from, "to": to, "ttl": ttl, "payload": payload}
-}
-
-// Ack builds an acknowledgement.
-func Ack(mid string) map[string]any {
-	return map[string]any{"type": "ack", "mid": mid}
 }
 
 // AckTo builds an acknowledgement routed back toward the origin (protocol.md

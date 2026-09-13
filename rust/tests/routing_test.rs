@@ -79,6 +79,52 @@ fn remove_neighbor_withdraws_its_routes() {
     assert_eq!(t.next_hop("b"), None);
 }
 
+// A summed cost past the threshold is clamped to the poison value.
+//
+// Found by mutation in the Java port, whose saturating_sum equivalent detected only
+// arithmetic overflow: nothing in any suite summed a cost past the threshold without
+// overflowing. That matters now the emitted value is a pinned wire constant.
+#[test]
+fn a_summed_cost_past_the_threshold_is_clamped() {
+    let mut t = Table::new("self");
+    t.observe_neighbor("b", 10);
+    t.observe_neighbor("d", 10);
+    t.learn_route("c", "b", 999_999_999); // + 10ms link = past the threshold
+    assert_eq!(t.advertise_to("d")["c"], serde_json::json!(1_000_000_000i64));
+}
+
+// The advertised poison value is the pinned literal.
+//
+// 1_000_000_000 is written out here rather than referenced as UNREACHABLE, and that
+// is the whole point: every other poison assertion in this suite compares against the
+// constant, which agrees with itself whatever its value. That is how this port
+// advertised i64::MAX with a green suite. protocol.md §0 pins the number, so the test
+// pins the number.
+#[test]
+fn the_advertised_poison_value_is_the_pinned_literal() {
+    let mut t = Table::new("self");
+    t.observe_neighbor("b", 10);
+    t.learn_route("c", "b", 5);
+    assert_eq!(t.advertise_to("b")["c"], serde_json::json!(1_000_000_000i64));
+}
+
+// No route is ever installed to ourselves.
+//
+// The load-bearing half of defect D5: the v2 broadcast could list the node's own
+// label among its routes and send to itself. learn_route's first guard is what makes
+// that impossible, and until 3.3.0 no suite in any of the seven ports asserted it --
+// which is why broadcast's own self-exclusion cannot be mutation-caught: the
+// condition it guards against cannot be reached from there.
+#[test]
+fn no_route_is_ever_installed_to_ourselves() {
+    let mut t = Table::new("self");
+    t.observe_neighbor("b", 10);
+    t.learn_route("self", "b", 1);
+    t.learn_route("SELF", "b", 1); // labels compare case-insensitively
+    assert!(t.route_table().is_empty(), "a route to ourselves was installed");
+    assert_eq!(t.next_hop("self"), None);
+}
+
 // A direct neighbor must never get a learned route (a shadow route would be
 // poison-reversed back, breaking multi-relay convergence).
 #[test]

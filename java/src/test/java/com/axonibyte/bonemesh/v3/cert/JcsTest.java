@@ -16,6 +16,7 @@
 
 package com.axonibyte.bonemesh.v3.cert;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -41,6 +42,22 @@ public class JcsTest {
     Map<String, Object> m = new LinkedHashMap<>();
     for(int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
     return m;
+  }
+
+  @Test void canonicalizeStripsSigItself() {
+    // The strip has to happen HERE, not in every caller. This port used to require
+    // the caller to have removed sig and said so only in the javadoc, which made the
+    // most security-critical byte string in the system depend on each caller
+    // remembering -- forget once and you sign over the wrong bytes with nothing to
+    // catch it. The other six always stripped internally.
+    Map<String, Object> without = new LinkedHashMap<>();
+    without.put("v", 3L);
+    without.put("label", "alpha");
+    Map<String, Object> with = new LinkedHashMap<>(without);
+    with.put("sig", "c2ln");
+
+    assertArrayEquals(Jcs.canonicalize(without), Jcs.canonicalize(with),
+        "a sig member changed the canonical bytes, so the caller is still load-bearing");
   }
 
   @Test void basicSortedKeys() {

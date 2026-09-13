@@ -2,11 +2,16 @@
 // contract, read once from the environment at node start. Two nodes with
 // different values still interoperate.
 
+// An optional sign then decimal digits, and nothing else (protocol.md §0).
+const INT = /^-?[0-9]+$/;
+
 function envInt(name, fallback) {
   const v = process.env[name];
-  if (v === undefined || v === '') return fallback;
-  const n = Number.parseInt(v, 10);
-  return Number.isNaN(n) ? fallback : n;
+  if (v === undefined || !INT.test(v)) return fallback;
+  // Number.parseInt stops at the first non-digit, so it read 'BONEMESH_IDLE_MS=12abc'
+  // as 12 and '1_000' as 1 -- partially parsing an operator's typo rather than
+  // ignoring it. The pattern decides; parseInt only converts what it accepted.
+  return Number.parseInt(v, 10);
 }
 
 export function loadTunables() {

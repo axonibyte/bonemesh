@@ -14,6 +14,12 @@ final class Message
     {
         return match ($schema) {
             'bmx1' => self::validateBmx1($f),
+            'bmx2' => self::validateBmx2($f),
+            'bmx3' => self::validateBmx3($f),
+            'disco' => self::validateDisco($f),
+            'probe' => self::validateTokenCarrier($f, 'probe'),
+            'echo' => self::validateTokenCarrier($f, 'echo'),
+            'rekey' => self::validateRekey($f),
             'envelope' => self::validateEnvelope($f),
             'data' => self::validateData($f),
             'ack' => self::validateAck($f),
@@ -39,6 +45,107 @@ final class Message
                 return 'missing-field';
             }
             if ($r = self::base64Reason($f[$key])) {
+                return $r;
+            }
+        }
+        return null;
+    }
+
+    // Handshake messages 2 and 3 (security.md section 4). Both carry one sealed
+    // 'auth' member rather than separate cert and sig.
+    private static function validateBmx2(array $f): ?string
+    {
+        if (($f['t'] ?? null) !== 'bmx2') {
+            return 'type';
+        }
+        return self::requireBase64($f, ['e', 'ct', 'auth']);
+    }
+
+    private static function validateBmx3(array $f): ?string
+    {
+        if (($f['t'] ?? null) !== 'bmx3') {
+            return 'type';
+        }
+        return self::requireBase64($f, ['auth']);
+    }
+
+    // Route advertisement (protocol.md section 4.2, section 6). An empty
+    // advertisement is {}, never []. json_decode turns both into a PHP array, so a
+    // JSON [] arrives as an empty list -- indistinguishable from {} here, and
+    // accepted, exactly as an empty object would be. A non-empty list is caught by
+    // its costs, which are not integers keyed by label.
+    private static function validateDisco(array $f): ?string
+    {
+        if (($f['type'] ?? null) !== 'disco') {
+            return 'type';
+        }
+        if (!array_key_exists('routes', $f)) {
+            return 'missing-field';
+        }
+        if (!is_array($f['routes'])) {
+            return 'routes-format';
+        }
+        if ($f['routes'] !== [] && array_is_list($f['routes'])) {
+            return 'routes-format';
+        }
+        foreach ($f['routes'] as $cost) {
+            if (!is_int($cost) || $cost < 0) {
+                return 'routes-format';
+            }
+        }
+        return null;
+    }
+
+    // Latency measurement pair (section 4.2, section 5). The token is opaque to the
+    // responder, which echoes it back unchanged, so only its type is constrained.
+    private static function validateTokenCarrier(array $f, string $want): ?string
+    {
+        if (($f['type'] ?? null) !== $want) {
+            return 'type';
+        }
+        if (!array_key_exists('token', $f)) {
+            return 'missing-field';
+        }
+        if (!is_int($f['token'])) {
+            return 'token-format';
+        }
+        return null;
+    }
+
+    // Tunneled BMX rekey (section 4.2, security.md section 6). Phases 1-3 carry the
+    // BMX bytes in 'body'; phase 4 carries no BMX message and must omit it.
+    private static function validateRekey(array $f): ?string
+    {
+        if (($f['type'] ?? null) !== 'rekey') {
+            return 'type';
+        }
+        if ($r = self::midReason($f['mid'] ?? null)) {
+            return $r;
+        }
+        if (!array_key_exists('phase', $f)) {
+            return 'missing-field';
+        }
+        if (!is_int($f['phase']) || $f['phase'] < 1 || $f['phase'] > 4) {
+            return 'phase-range';
+        }
+        $hasBody = array_key_exists('body', $f);
+        if ($f['phase'] === 4) {
+            return $hasBody ? 'body-or-phase' : null;
+        }
+        if (!$hasBody) {
+            return 'body-or-phase';
+        }
+        return self::base64Reason($f['body']);
+    }
+
+    // Every named member must be present and Base64.
+    private static function requireBase64(array $f, array $keys): ?string
+    {
+        foreach ($keys as $k) {
+            if (!array_key_exists($k, $f)) {
+                return 'missing-field';
+            }
+            if ($r = self::base64Reason($f[$k])) {
                 return $r;
             }
         }
@@ -79,8 +186,62 @@ final class Message
         if ($f['ttl'] < 1 || $f['ttl'] > 255) {
             return 'ttl-range';
         }
-        if (!array_key_exists('payload', $f)) {
+        return self::checkChunking($f);
+    }
+
+    /**
+     * Validates the splitting half of the data schema (protocol.md §6.1): the shape
+     * of `chunk`, its bounds, and the rule that exactly one of `payload` and `seg`
+     * is present.
+     *
+     * The exclusion is the load-bearing part. It is what stops a node that does not
+     * reassemble from handing a fragment to the application as though it were a
+     * whole message -- the silent corruption D11 described. A segment has no payload
+     * to deliver, so the mistake is unavailable rather than merely forbidden.
+     *
+     * Carrying neither stays 'missing-field' rather than becoming a splitting error:
+     * it is an absent field, the corpus has pinned that reason since 3.0.0, and
+     * renaming it here would have rewritten a vector rather than added one.
+     */
+    private static function checkChunking(array $f): ?string
+    {
+        $n = 1;
+        if (array_key_exists('chunk', $f)) {
+            // json_decode(..., true) turns both a JSON object and a JSON array into a
+            // PHP array, so a list like [0, 3] arrives as is_array() true. It is
+            // caught below, because its 'i' and 'n' keys are absent.
+            if (!is_array($f['chunk'])) {
+                return 'chunk-format';
+            }
+            $c = $f['chunk'];
+            if (!is_int($c['i'] ?? null) || !is_int($c['n'] ?? null)) {
+                return 'chunk-format';
+            }
+            $n = $c['n'];
+            if ($n < 1 || $n > Chunk::MAX_CHUNKS) {
+                return 'chunk-range';
+            }
+            if ($c['i'] < 0 || $c['i'] >= $n) {
+                return 'chunk-range';
+            }
+        }
+        $hasPayload = array_key_exists('payload', $f);
+        $hasSeg = array_key_exists('seg', $f);
+        if (!$hasPayload && !$hasSeg) {
             return 'missing-field';
+        }
+        // Three clauses, none redundant. An explicit "both present" test was removed:
+        // mutation showed it could not reject anything these two do not already
+        // reject, since n is always 1 or more, so it read as coverage while asserting
+        // nothing.
+        if ($n === 1 && $hasSeg) {
+            return 'payload-or-seg'; // a whole message carries its payload
+        }
+        if ($n > 1 && $hasPayload) {
+            return 'payload-or-seg'; // a segment does not
+        }
+        if ($hasSeg && !is_string($f['seg'])) {
+            return 'seg-format';
         }
         return null;
     }
@@ -167,9 +328,27 @@ final class Message
         return ['type' => 'data', 'mid' => $mid, 'from' => $from, 'to' => $to, 'ttl' => $ttl, 'payload' => $payload];
     }
 
-    public static function ack(string $mid): array
-    {
-        return ['type' => 'ack', 'mid' => $mid];
+    /**
+     * Builds one segment of a split application message (protocol.md §6.1). A
+     * segment carries `seg` and deliberately carries no `payload`: the two are
+     * mutually exclusive, so a node that does not reassemble sees a data message
+     * with no payload and rejects it rather than handing a fragment to the
+     * application as though it were whole.
+     */
+    public static function dataSegment(
+        string $mid,
+        string $from,
+        string $to,
+        int $ttl,
+        int $i,
+        int $n,
+        string $seg
+    ): array {
+        return [
+            'type' => 'data', 'mid' => $mid, 'from' => $from, 'to' => $to, 'ttl' => $ttl,
+            'chunk' => ['i' => $i, 'n' => $n],
+            'seg' => $seg,
+        ];
     }
 
     // An acknowledgement routed back toward the origin (protocol.md §7): to is

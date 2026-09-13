@@ -1,12 +1,12 @@
 defmodule Bonemesh.Message do
   @moduledoc """
   Factory for the BoneMesh v3 inner message types (protocol.md §4) and helpers
-  for message ids and payload chunking. Every builder produces a map that passes
+  and message ids. Splitting lives in `Bonemesh.Chunk` and reassembly in
+  `Bonemesh.Reassembler`. Every builder produces a map that passes
   `Bonemesh.MessageSchema`.
   """
 
   @default_ttl 16
-  @max_segment 32000
 
   @doc "The default hop limit for application data."
   def default_ttl, do: @default_ttl
@@ -18,8 +18,24 @@ defmodule Bonemesh.Message do
   def data(mid, from, to, ttl, payload),
     do: %{"type" => "data", "mid" => mid, "from" => from, "to" => to, "ttl" => ttl, "payload" => payload}
 
-  @doc "An acknowledgement for a message id."
-  def ack(mid), do: %{"type" => "ack", "mid" => mid}
+  @doc """
+  One segment of a split application message (protocol.md §6.1).
+
+  A segment carries `"seg"` and deliberately carries no `"payload"`: the two are
+  mutually exclusive, so a node that does not reassemble sees a data message with no
+  payload and rejects it rather than handing a fragment to the application as though
+  it were whole.
+  """
+  def data_segment(mid, from, to, ttl, i, n, seg),
+    do: %{
+      "type" => "data",
+      "mid" => mid,
+      "from" => from,
+      "to" => to,
+      "ttl" => ttl,
+      "chunk" => %{"i" => i, "n" => n},
+      "seg" => seg
+    }
 
   @doc """
   An acknowledgement routed back toward the origin (protocol.md §7): `to` is the
@@ -50,57 +66,4 @@ defmodule Bonemesh.Message do
   @doc "A graceful session-close message stating why (e.g. \"idle\", \"rekey-failed\")."
   def bye(reason) when is_binary(reason) and reason != "", do: Map.put(bye(), "reason", reason)
 
-  @doc """
-  Splits a payload across one or more data messages sharing a message id
-  (protocol.md §6). A small payload is sent unchunked; a large one is Base64-
-  encoded, sliced, and each slice sent as `%{"seg" => ...}` with `chunk`.
-  """
-  def split(mid, from, to, ttl, payload) do
-    b64 = payload |> JSON.encode!() |> Base.encode64()
-
-    if byte_size(b64) <= @max_segment do
-      [data(mid, from, to, ttl, payload)]
-    else
-      segments = chunk_string(b64, @max_segment)
-      n = length(segments)
-
-      segments
-      |> Enum.with_index()
-      |> Enum.map(fn {seg, i} ->
-        mid |> data(from, to, ttl, %{"seg" => seg}) |> Map.put("chunk", %{"i" => i, "n" => n})
-      end)
-    end
-  end
-
-  @doc """
-  Feeds a data message to the reassembly accumulator. Returns
-  `{:complete, payload, acc}` when a message's final segment arrives, or
-  `{:incomplete, acc}`.
-  """
-  def reassemble(acc, %{"chunk" => %{"i" => i, "n" => n}, "mid" => mid, "payload" => %{"seg" => seg}}) do
-    partial = acc |> Map.get(mid, %{}) |> Map.put(i, seg)
-
-    if map_size(partial) == n do
-      payload =
-        0..(n - 1)
-        |> Enum.map_join(&Map.fetch!(partial, &1))
-        |> Base.decode64!()
-        |> JSON.decode!()
-
-      {:complete, payload, Map.delete(acc, mid)}
-    else
-      {:incomplete, Map.put(acc, mid, partial)}
-    end
-  end
-
-  # Unchunked message: deliver its payload immediately.
-  def reassemble(acc, %{"payload" => payload}), do: {:complete, payload, acc}
-
-  defp chunk_string(<<>>, _size), do: []
-  defp chunk_string(s, size) when byte_size(s) <= size, do: [s]
-
-  defp chunk_string(s, size) do
-    <<head::binary-size(size), rest::binary>> = s
-    [head | chunk_string(rest, size)]
-  end
 end

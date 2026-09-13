@@ -22,6 +22,7 @@ import sys
 import time
 
 from bonemesh import message
+from bonemesh.chunk import Reassembler, split
 from bonemesh.frame import HANDSHAKE_CAP, TRANSPORT_CAP, classify, encode
 from bonemesh.handshake import Handshake
 from bonemesh.routing import Dedup, Table
@@ -125,6 +126,7 @@ class Node:
         self.server: asyncio.Server | None = None
         self.table = Table(config.label)
         self.dedup = Dedup(DEDUP_WINDOW)
+        self.reassembler = Reassembler()
         self._hb_task: asyncio.Task | None = None
         self._tasks: set[asyncio.Task] = set()
         # Connections still inside the handshake, i.e. accepted but not yet a
@@ -132,7 +134,6 @@ class Node:
         # already-accepted sockets, so without this a node killed mid-handshake
         # leaves the socket open until the peer's probe timeout notices.
         self._handshaking: set = set()
-        self._keylog_warned = False
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -149,6 +150,14 @@ class Node:
         return self.server.sockets[0].getsockname()[1]
 
     def kill(self) -> None:
+        # Say goodbye before closing (protocol.md section 8, reason "shutdown"), so a
+        # peer learns the close was deliberate instead of waiting out its probe
+        # timeout. Best-effort: a link already broken simply cannot be told.
+        for peer in list(self.links):
+            try:
+                self._send_to_link(peer, message.bye("shutdown"))
+            except Exception:
+                pass  # the link is going away regardless
         if self._hb_task:
             self._hb_task.cancel()
         for t in list(self._tasks):
@@ -186,11 +195,15 @@ class Node:
             await asyncio.sleep(HEARTBEAT_S)
             now = _now_ms()
             for label, link in list(self.links.items()):
-                if self.sweep_link(now, label, link):
-                    self.maybe_rekey(link, now)
-            self.drain_retries(now)
+                if self._sweep_link(now, label, link):
+                    self._maybe_rekey(link, now)
+            self._drain_retries(now)
 
-    def sweep_link(self, now: int, peer: str, link: _Link) -> bool:
+    # Internal, by the leading underscore: these are test seams for driving one
+    # heartbeat step deterministically, not API a caller should reach for. They were
+    # public, which under decision #23 is surface the protocol does not denote --
+    # the Java port has had the same methods package-private all along.
+    def _sweep_link(self, now: int, peer: str, link: _Link) -> bool:
         """Once-per-heartbeat maintenance for one link.
 
         Tears it down if it is probe-timeout dead (F3) or data-idle past the idle
@@ -210,7 +223,7 @@ class Node:
         self._send_to_link(peer, message.disco(self.table.advertise_to(peer)))
         return True
 
-    def maybe_rekey(self, link: _Link, now_millis: int) -> None:
+    def _maybe_rekey(self, link: _Link, now_millis: int) -> None:
         """F5: drive the initiator side of a periodic rekey.
 
         Abandons a stalled pre-swap handshake at the rekey timeout, keeping the
@@ -240,7 +253,7 @@ class Node:
         link.rekey_mid = mid
         link.rekey_started_at = now_millis
 
-    def drain_retries(self, now: int) -> None:
+    def _drain_retries(self, now: int) -> None:
         """F2: re-attempt due pending sends once per heartbeat.
 
         A landed message is dropped, a still-stuck one backs off (the delay
@@ -294,6 +307,35 @@ class Node:
         """A snapshot of learned destinations to their next hop."""
         return self.table.route_table()
 
+    def broadcast(self, payload) -> int:
+        """Send an application payload to every reachable label except this node's own
+        (protocol.md section 6).
+
+        Targets are every peer with a live session plus every destination with a next
+        hop, compared case-insensitively so one peer is never targeted twice. This is
+        not a message type: each destination gets its own ordinary data send with its
+        own message id, which dedup and ack correlation both require -- a shared id
+        would have the first relay suppress every other copy, and an ack names only an
+        id.
+
+        Excluding this node's own label is the D5 fix, and so is including direct
+        session peers: the v2 implementation iterated indirect routes only and could
+        list itself among them.
+
+        Returns how many destinations the message was handed to a next hop for.
+        """
+        targets = {label.lower() for label in self.links}
+        targets |= {dest.lower() for dest in self.table.route_table()}
+        # Defence in depth, and honestly labelled: learn_route's first guard already
+        # makes a route to ourselves impossible, and a session peer's label comes from
+        # its certificate, so this line's condition cannot be reached from either
+        # source. Kept because D5 was exactly this bug and the guard it duplicates
+        # lives in another module -- but no broadcast test can distinguish it. What
+        # pins D5 is test_no_route_is_ever_installed_to_ourselves, which IS
+        # mutation-caught.
+        targets.discard(self.cfg.label.lower())
+        return sum(1 for to in sorted(targets) if self.send(to, payload))
+
     def on_message(self, cb) -> None:
         """Register a callback invoked with each delivered application payload."""
         self.listeners.append(cb)
@@ -345,18 +387,26 @@ class Node:
     def send_mid(self, to: str, payload) -> tuple[str, bool]:
         """Send, also returning the message id so a caller can correlate the
         ack/nak delivered to ``on_ack`` (protocol.md §7)."""
-        return self.send_with_ttl(to, payload, message.DEFAULT_TTL)
+        return self._send_with_ttl(to, payload, message.DEFAULT_TTL)
 
-    def send_with_ttl(self, to: str, payload, ttl: int) -> tuple[str, bool]:
+    def _send_with_ttl(self, to: str, payload, ttl: int) -> tuple[str, bool]:
         """send_mid with an explicit initial TTL, so a test can force a relay to
         exhaust the hop limit and emit a NAK."""
         mid = message.new_mid()
-        msg = message.data(mid, self.cfg.label, to, ttl, payload)
-        nh = self.table.next_hop(to)
-        if not nh or not self._send_to_link(nh, msg):
-            self._enqueue_retry(msg)  # F2: retry when a route or link appears
+        try:
+            segments = split(mid, self.cfg.label, to, ttl, payload)
+        except ValueError:
+            # Over a §0 bound, so no conforming destination would reassemble it.
+            # §6.1 requires the caller be told locally instead of the mesh carrying
+            # a message that cannot arrive.
             return mid, False
-        return mid, True
+        nh = self.table.next_hop(to)
+        ok = True
+        for msg in segments:
+            if not nh or not self._send_to_link(nh, msg):
+                self._enqueue_retry(msg)  # F2: retry when a route or link appears
+                ok = False
+        return mid, ok
 
     # --- wire --------------------------------------------------------------
 
@@ -576,12 +626,16 @@ class Node:
         frm = str(msg.get("from") or "")
         me = self.cfg.label.lower()
         if str(msg.get("to") or "").lower() == me:
+            whole = self.reassembler.offer(msg, _now_ms())
+            if whole is Reassembler.INCOMPLETE:
+                return  # still incomplete, or refused by a §0 bound
             for cb in self.listeners:
                 try:
-                    cb(msg.get("payload"))
+                    cb(whole)
                 except Exception:
                     pass  # a listener's errors are its own
-            # F6: acknowledge receipt back toward the origin.
+            # F6: acknowledge receipt back toward the origin -- once, when the whole
+            # message is reassembled, never per segment (§6.1, Ack).
             if frm and frm.lower() != me:
                 self._route_control(
                     message.ack_to(msg.get("mid"), self.cfg.label, frm, message.DEFAULT_TTL))
@@ -686,8 +740,12 @@ class Node:
                     fh.write(f"BMX3_{direction}_TRAFFIC_{epoch} {th} {key.hex()}\n")
         except OSError:
             return
-        if epoch == 0 and not self._keylog_warned:
-            self._keylog_warned = True
+        # security.md section 8 says a node with the hook on warns "on every
+        # session". This port warned once per node lifetime, so a long-lived node
+        # that opened fifty sessions with the key log on said so once -- and the
+        # warning exists precisely because every session it covers has had its
+        # forward secrecy defeated. The other six warn per session.
+        if epoch == 0:
             print(
                 f"WARNING: BONEMESH_KEYLOG is on; transport keys written to {path}"
                 " — forward secrecy is defeated for anyone holding that file",

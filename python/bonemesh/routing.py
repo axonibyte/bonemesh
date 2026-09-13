@@ -4,14 +4,16 @@ A table of direct neighbours (EWMA-smoothed link latency) and learned routes
 (destination -> next hop, path cost in ms), plus a bounded dedup set for relayed
 messages. Wire-compatible with every other reference router.
 
-Poison sentinel: implementations emit different maxima (Java ``Long.MAX_VALUE``,
-JS/Elixir 1e9), but every receiver treats any advertised cost ``>= 1e9`` as
-unreachable. Python integers are unbounded, so it could emit anything; it emits
-the 1e9 sentinel, which every tolerant receiver honours and which no JSON parser
-can mangle.
+Poison sentinel: every implementation now advertises exactly ``1000000000`` and
+treats any advertised cost ``>= 1000000000`` as unreachable, both pinned by
+protocol.md section 0. Four ports used to emit 2^63-1 and interoperated only by
+luck of the tolerant threshold; this port always emitted the smaller value, which
+no JSON parser can mangle.
 """
 
 from __future__ import annotations
+
+import math
 
 UNREACHABLE = 1_000_000_000
 POISON_THRESHOLD = 1_000_000_000
@@ -31,11 +33,13 @@ class Ewma:
             self.value = ALPHA * sample + (1 - ALPHA) * self.value
 
     def millis(self) -> int:
-        # round() is banker's rounding in Python and half-up in JS/Java. The
-        # difference only shows on an exact .5, and link cost is a local ranking
-        # input rather than a wire constant -- two nodes disagreeing by 1ms pick
-        # the same routes. Kept as round() to match the reference text.
-        return round(self.value) if self.has else UNREACHABLE
+        # Half away from zero (protocol.md section 5), not Python's round(), which
+        # is banker's rounding: round(2.5) is 2 here and 3 in the other six. This
+        # was dismissed as a local ranking input, but the rounded value is exactly
+        # what disco.routes puts on the wire, so two nodes advertised costs
+        # differing by 1 ms for the same measured link. Latency is non-negative,
+        # so floor(x + 0.5) is half-away-from-zero.
+        return math.floor(self.value + 0.5) if self.has else UNREACHABLE
 
 
 def sat_sum(a: int, b: int) -> int:

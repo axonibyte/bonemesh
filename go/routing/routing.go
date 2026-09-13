@@ -4,11 +4,17 @@
 // dedup set for relayed messages. Wire-compatible with the Java and Elixir
 // reference routers.
 //
-// Poison sentinel: routes are poisoned (advertised as unreachable) with
-// Unreachable = 2^63-1 (Java's Long.MAX_VALUE), and ANY advertised cost at or
-// above PoisonThreshold (1e9, Elixir's sentinel) is treated as unreachable on
-// receipt. Emitting the larger value and accepting either keeps a mixed mesh —
-// Java, Elixir, and the ports — converging correctly.
+// Poison sentinel: routes are advertised unreachable with Unreachable, and ANY
+// advertised cost at or above PoisonThreshold is treated as unreachable on receipt.
+// Both are 1000000000 and both are pinned (protocol.md §0).
+//
+// This port used to advertise 2^63-1, as Java, Rust and PHP did, and interoperated
+// only by luck of the tolerant threshold. That is not safe luck: 2^63-1 exceeds the
+// largest integer a double represents exactly, so a JSON parser backed by doubles
+// reads it back as a different number. Setting the emitted value equal to the
+// threshold also makes a saturated sum indistinguishable from an explicit poison,
+// and mixed-version meshes keep converging because every receiver has always
+// accepted anything at or above the threshold.
 package routing
 
 import (
@@ -18,7 +24,7 @@ import (
 
 const (
 	// Unreachable is the poison cost this implementation advertises.
-	Unreachable = int64(9223372036854775807)
+	Unreachable = int64(1000000000)
 	// PoisonThreshold: any advertised cost >= this is treated as unreachable.
 	PoisonThreshold = int64(1000000000)
 	alpha           = 0.2

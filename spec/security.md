@@ -116,9 +116,14 @@ ephemeral ML-KEM encapsulation (public) key; `ct` is an ML-KEM ciphertext;
 ChaCha20-Poly1305 with the current handshake key and `h` as associated data.
 
 Each handshake message is a **cleartext JSON line** (§ protocol.md framing).
-Ephemeral public values are Base64. Certificates and signatures in messages 2
-and 3 are carried **inside `ENC(...)`** — encrypted under keys derived from the
+Ephemeral public values are Base64. Certificates and signatures in messages 2 and
+3 are carried **inside `ENC(...)`** — encrypted under keys derived from the
 ephemeral exchange, so identities are not exposed to a passive observer.
+
+`ENC(p)` is one operation and it does two things: it seals `p` under the current
+handshake key with the current `h` as associated data, and it then absorbs the
+resulting ciphertext into `h` (§5, `EncryptAndHash`). The nonce counter advances
+once per seal.
 
 ### Message 1 — initiator → responder (cleartext)
 
@@ -146,14 +151,29 @@ sends its ephemerals in the clear and its identity **encrypted**:
 { "t": "bmx2",
   "e": "<base64 X25519 e_r>",
   "ct": "<base64 ML-KEM ciphertext>",
-  "cert": "<base64 ENC(responder membership certificate JSON)>",
-  "sig":  "<base64 ENC(ML-DSA-65 signature by responder over h)>" }
+  "auth": "<base64 ENC({\"cert\": <certificate JSON>, \"sig\": \"<base64 ML-DSA-65 signature>\"})>" }
 ```
 
+`auth` is a **single** sealed member carrying both the certificate and the
+signature. The certificate inside it is a JSON object, not a Base64 string.
+
 `sig` is the responder's signature over the transcript hash `h` *as of the point
-just before the signature is added* (a TLS-1.3-style CertificateVerify). It
-proves the responder holds the private key for the `idk` in its certificate,
-binding the certificate to this live session and defeating certificate replay.
+just before `ENC` is applied* (a TLS-1.3-style CertificateVerify). It proves the
+responder holds the private key for the `idk` in its certificate, binding the
+certificate to this live session and defeating certificate replay.
+
+**Why one member and not two.** Through 3.2.0 this section specified separate
+`cert` and `sig` members, each separately sealed, and that is under-specified in a
+way that cannot be patched by adding a sentence. `ENC` uses `h` as associated data
+and absorbs its own ciphertext, so two seals in one message leave three orderings
+undetermined: whether `ENC(cert)`'s ciphertext is absorbed before `ENC(sig)` is
+computed, whether the signature's pre-image includes that absorption, and which
+nonce counter value each seal uses. Every one of those changes the derived keys,
+so two implementations could both follow the older text exactly and fail to
+interoperate. Sealing one object has none of those degrees of freedom, binds the
+certificate and the signature atomically, and costs one AEAD operation instead of
+two. All seven reference implementations have always done this; the correction is
+to the specification (decision #26).
 
 ### Message 3 — initiator → responder
 
@@ -163,8 +183,7 @@ then sends its own identity, encrypted:
 
 ```json
 { "t": "bmx3",
-  "cert": "<base64 ENC(initiator membership certificate JSON)>",
-  "sig":  "<base64 ENC(ML-DSA-65 signature by initiator over h)>" }
+  "auth": "<base64 ENC({\"cert\": <certificate JSON>, \"sig\": \"<base64 ML-DSA-65 signature>\"})>" }
 ```
 
 The responder verifies. On success both sides derive **transport keys** (§5) and
@@ -180,26 +199,62 @@ peer's identity private key, or breaking both X25519 and ML-KEM.
 ## 5. Key schedule
 
 A Noise-style symmetric state carries `(ck, h)`. **Frozen** by
-`spec/corpus/transcripts/keyschedule.json` (reproduced by both the Java
-reference and the Go runner); the structure:
+`spec/corpus/transcripts/keyschedule.json` (reproduced by both the Java reference
+and the Go runner); the structure:
 
-- `MixHash(data)`: `h ← SHA-256(h ‖ data)`. Every handshake message's raw wire
-  bytes are absorbed in order, so both sides compute an identical transcript
-  from the bytes they actually sent/received (no JSON canonicalization needed
-  for the transcript — only certificates, which are signed separately, use JCS).
-- `MixKey(ikm)`: `(ck, k) ← HKDF-SHA-256(salt=ck, ikm, info="", 64)`, the first
-  32 bytes the new chaining key and the next 32 the fresh AEAD key; the AEAD
-  nonce counter resets to 0.
-- Order: `h`/`ck` seed from `SHA-256("BoneMesh_BMX_v3_X25519MLKEM768_ChaChaPoly_SHA256")`;
-  after message 2's ephemerals, `MixKey(ss_dh)` then `MixKey(ss_kem)` — **DH
-  first, then KEM**; handshake encryption uses the resulting key.
-- **Transport keys**: after message 3, `Split()` derives two directional keys
-  (initiator→responder, responder→initiator) via HKDF from the final `ck`, so
-  the two directions never share a key/nonce space.
+- `MixHash(data)`: `h ← SHA-256(h ‖ data)`.
+- `MixKey(ikm)`: `(ck, k) ← HKDF-SHA-256(salt=ck, ikm, info="", 64)`, the first 32
+  bytes the new chaining key and the next 32 the fresh AEAD key; the AEAD nonce
+  counter resets to 0.
+- `EncryptAndHash(p)` — written `ENC(p)` in §4: seal `p` under the current key with
+  the current `h` as associated data, then `MixHash(ciphertext)`.
+
+**What is absorbed, and in what order.** Each value is absorbed as it is written or
+read, not as part of a whole message. This is the Noise `XX` pattern §4 says the
+handshake *is*, so the correspondence is exact rather than approximate: `mesh` is
+Noise's prologue, the ephemerals are its `e` tokens, and `ENC` is its
+`EncryptAndHash`.
+
+1. `h` and `ck` seed from `SHA-256("BoneMesh_BMX_v3_X25519MLKEM768_ChaChaPoly_SHA256")`.
+2. `MixHash(mesh)` — the **prologue**, binding the mesh name into every later key so
+   two meshes with identical certificates still derive different secrets.
+3. Message 1: `MixHash(e_i)`, `MixHash(k_i)`, `MixHash(n)` — the decoded values, in
+   that order.
+4. Message 2: `MixHash(e_r)`, `MixKey(ss_dh)`, `MixHash(ct)`, `MixKey(ss_kem)` —
+   **DH first, then KEM**, with the KEM ciphertext absorbed between them. Then
+   `ENC(auth)`, whose `sig` was computed over `h` as it stood immediately before
+   that call.
+5. Message 3: `ENC(auth)` under the same rule.
+
+No JSON canonicalization is involved: what is absorbed is the decoded field value,
+so neither side depends on the other's key order, spacing or escaping. Only
+certificates, which are signed separately, use JCS (§11.1).
+
+**Why not the raw wire bytes.** Through 3.2.0 this section said "every handshake
+message's raw wire bytes are absorbed in order". No implementation has ever done
+that, and it could not be done as written. `ENC` needs `h` to seal `auth`, and
+`auth` is part of message 2's bytes, so absorbing those bytes is circular — the
+only way out is to absorb the message *after* sealing, which leaves `e_r` and `ct`
+outside the responder's signature pre-image and weakens the channel binding the
+signature exists to provide. Hashing whole messages is also not what Noise does,
+despite §4 naming Noise `XX` as the pattern. The specification was wrong and the
+code was right; this is the correction (decision #26). `keyschedule.json` has
+always pinned the construction above, so §5's own claim to be **Frozen** by that
+file is now true rather than self-contradictory.
+
+- **Transport keys**: after message 3, `Split()` derives two directional keys as
+  `HKDF-SHA-256(salt=ck, ikm="", info="", 64)` — the same shape as `MixKey` with an
+  empty `ikm`. The first 32 bytes are the **initiator→responder** key and the next
+  32 the **responder→initiator** key, so the two directions never share a
+  key/nonce space. That assignment is pinned by
+  `spec/corpus/transcripts/handshake-agreement.json`; before 3.3.0 the vector was
+  the only place it was recorded.
 - **Nonces**: the 96-bit AEAD nonce is 4 zero bytes followed by the 64-bit
-  little-endian counter; the counter starts at 0 per key, increments per
-  message, and is never reused. A counter approaching exhaustion forces a
-  rekey (§6).
+  little-endian counter; the counter starts at 0 per key, increments per message,
+  and is never reused. A counter approaching exhaustion forces a rekey (§6).
+- **Transport AAD**: transport frames are sealed with **empty** associated data —
+  the sequence number is in the nonce, which binds it. Stated here because it was
+  previously recorded only in prose in `spec/corpus/README.md`.
 
 ## 6. Session lifetime, rekeying, forward secrecy
 
@@ -237,7 +292,7 @@ reference and the Go runner); the structure:
 | Active MITM on a link | Mutual cert-based auth bound to the transcript; MITM lacks a root-signed cert and cannot forge the transcript signature. |
 | Non-member trying to join | No root-signed certificate ⇒ handshake rejected. |
 | Replay of a whole handshake | Fresh `n` and ephemeral keys per session; transcript signatures do not verify against a new session. |
-| Replay/reorder of transport messages | Per-direction nonce counters; a repeated or out-of-window nonce is rejected. |
+| Replay/reorder of transport messages | Per-direction nonce counters, accepted **strictly in order**: the window is exactly one, so a repeated, skipped or reordered `seq` is rejected and the session torn down (protocol.md §4). Earlier drafts said "out-of-window", which described a range this protocol does not have. |
 | Spoofed `from` label (v2's D8) | Label is bound in a root-signed cert to an identity key that must sign the live transcript. |
 | Unbounded input (v2's D7) | Hard maximum message size enforced at the frame layer (see protocol.md). |
 
@@ -305,9 +360,12 @@ from a node in any language, verified by interop tier 10.
 
 ## 11. Pinned deterministic constants
 
-Frozen and enforced by the corpus. (The handshake key-schedule labels are frozen
-too — see §5 and `keyschedule.json`; the earlier "provisional" caveat is
-superseded.)
+Frozen and enforced by the corpus. The key schedule is frozen too — see §5 and
+`keyschedule.json`; the earlier "provisional" caveat is superseded. Note there are
+no HKDF *labels* to freeze: `MixKey` and `Split` both pass an **empty** `info`, so
+what is pinned is the protocol-name seed string, the empty-`info` construction, and
+the order values are absorbed in. Earlier drafts promised frozen "HKDF labels",
+which described a design this protocol does not have.
 
 | Constant | Value |
 |---|---|
@@ -346,8 +404,10 @@ vectors is interoperable for certificate verification.
 
 ## Open items for review
 
-- **Formerly-[PIN] constants** — HKDF labels, MixKey order, the JCS field set
-  (§5, §11), and the **key-log format** (§8) are all **frozen** and corpus-pinned.
+- **Formerly-[PIN] constants** — the key-schedule seed string, the `MixKey`/`Split`
+  construction and absorption order, the JCS field set (§5, §11), and the
+  **key-log format** (§8) are all **frozen** and corpus-pinned. (Read "HKDF labels"
+  in earlier drafts as the construction: `info` is empty, so there are no labels.)
   Periodic **rekey** (§6) is delivered in 3.1.0; its trigger thresholds are local
   tunables, not wire constants.
 - **Parameter choices** — ML-DSA-65/-87 split and ML-KEM-768 are proposed;

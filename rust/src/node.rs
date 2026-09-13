@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use crate::handshake::Handshake;
 use crate::routing;
 use crate::transport::Transport;
-use crate::{frame, message};
+use crate::{chunk, frame, message};
 
 /// A node configuration and identity.
 #[derive(Clone)]
@@ -71,6 +71,7 @@ struct Inner {
     pending: Mutex<HashMap<String, Vec<PendingSend>>>,
     table: Mutex<routing::Table>,
     dedup: Mutex<routing::Dedup>,
+    reassembler: Mutex<chunk::Reassembler>,
     keylog_mu: Mutex<()>,
     stop: AtomicBool,
 }
@@ -141,6 +142,7 @@ impl Node {
             pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new(&label)),
             dedup: Mutex::new(routing::Dedup::new(4096)),
+            reassembler: Mutex::new(chunk::Reassembler::new()),
             keylog_mu: Mutex::new(()),
             stop: AtomicBool::new(false),
         });
@@ -151,6 +153,9 @@ impl Node {
         let accept_inner = inner.clone();
         thread::spawn(move || {
             for stream in listener.incoming() {
+                if accept_inner.stop.load(Ordering::SeqCst) {
+                    break; // kill() unblocks this loop so the port is released
+                }
                 if let Ok(stream) = stream {
                     let inner = accept_inner.clone();
                     thread::spawn(move || {
@@ -213,32 +218,58 @@ impl Node {
         self.send_mid(to, payload).is_some()
     }
 
-    /// Send that also returns the message id, so a caller can correlate the
-    /// ack/nak delivered to `add_ack_listener` (protocol.md §7). Returns None if
-    /// the destination is not routable now; the message is queued for bounded
-    /// retry (F2) when retry is enabled, so it may still be delivered later.
+    /// Send that also returns the message id, so a caller can correlate the ack/nak
+    /// delivered to `add_ack_listener` (protocol.md §7).
+    ///
+    /// The id is returned even when the destination is not routable yet and the
+    /// message was queued for bounded retry (F2). It used to return None in that
+    /// case, which broke the very correlation the method exists for: a queued
+    /// message whose lifetime expires produces a synthesized `nak{reason:"expired"}`
+    /// naming its mid, and a caller that never received the mid cannot match it.
+    /// Returning None also made "not routable yet" indistinguishable from "over a §0
+    /// bound", which is a permanent failure.
     pub fn send_mid(&self, to: &str, payload: Value) -> Option<String> {
         let mid = message::new_mid();
-        let msg = message::data(&mid, &self.inner.config.label, to, message::DEFAULT_TTL, payload);
+        // Over a §0 bound means no conforming destination would reassemble it, so
+        // the caller is told locally rather than the mesh carrying a message that
+        // cannot arrive (§6.1, Bounds).
+        // Over a §0 bound is the one permanent failure, and the only case that
+        // yields None: nothing was emitted and nothing will be.
+        let segments = chunk::split(&mid, &self.inner.config.label, to, message::DEFAULT_TTL, payload).ok()?;
         let nh = self.inner.table.lock().unwrap().next_hop(to);
-        let delivered = match nh {
-            Some(nh) => send_to_link(&self.inner, &nh, &msg),
-            None => false,
-        };
-        if !delivered {
-            enqueue_retry(&self.inner, &msg);
-            return None;
+        for msg in &segments {
+            let delivered = match &nh {
+                Some(nh) => send_to_link(&self.inner, nh, msg),
+                None => false,
+            };
+            if !delivered {
+                enqueue_retry(&self.inner, msg);
+            }
         }
         Some(mid)
     }
 
     /// Send with an explicit initial TTL — used by tests to force a relay to
     /// exhaust the hop limit and emit a NAK.
+    /// Send with an explicit initial TTL.
+    ///
+    /// Not API: a test seam for forcing a relay to exhaust the hop limit and emit a
+    /// NAK. Hidden from the docs rather than made `pub(crate)`, because an integration
+    /// test is a separate crate and could not reach it otherwise -- the Java port has
+    /// the same method package-private, which is the same intent expressed in a
+    /// language that can enforce it (decision #23).
+    #[doc(hidden)]
     pub fn send_with_ttl(&self, to: &str, payload: Value, ttl: i64) -> Option<String> {
         let mid = message::new_mid();
-        let msg = message::data(&mid, &self.inner.config.label, to, ttl, payload);
+        let segments = chunk::split(&mid, &self.inner.config.label, to, ttl, payload).ok()?;
         let nh = self.inner.table.lock().unwrap().next_hop(to)?;
-        if send_to_link(&self.inner, &nh, &msg) {
+        let mut all = true;
+        for msg in &segments {
+            if !send_to_link(&self.inner, &nh, msg) {
+                all = false;
+            }
+        }
+        if all {
             Some(mid)
         } else {
             None
@@ -258,6 +289,44 @@ impl Node {
         self.inner.table.lock().unwrap().route_table()
     }
 
+    /// Sends an application payload to every reachable label except this node's own
+    /// (protocol.md §6).
+    ///
+    /// Targets are every peer with a live session plus every destination with a next
+    /// hop, compared case-insensitively so one peer is never targeted twice. This is
+    /// not a message type: each destination gets its own ordinary data send with its
+    /// own message id, which dedup and ack correlation both require — a shared id
+    /// would have the first relay suppress every other copy, and an ack names only an
+    /// id.
+    ///
+    /// Excluding this node's own label is the D5 fix, and so is including direct
+    /// session peers: the v2 implementation iterated indirect routes only and could
+    /// list itself among them.
+    ///
+    /// Returns how many destinations the message was handed to a next hop for.
+    pub fn broadcast(&self, payload: Value) -> usize {
+        let mut targets: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for label in self.inner.links.lock().unwrap().keys() {
+            targets.insert(label.to_lowercase());
+        }
+        for dest in self.inner.table.lock().unwrap().route_table().keys() {
+            targets.insert(dest.to_lowercase());
+        }
+        // Defence in depth, and honestly labelled: learn_route's first guard already
+        // makes a route to ourselves impossible, and a session peer's label comes from
+        // its certificate, so this line's condition cannot be reached from either
+        // source. Kept because D5 was exactly this bug and the guard it duplicates
+        // lives in another module -- but no broadcast test can distinguish it. What
+        // pins D5 is routing_test::no_route_is_ever_installed_to_ourselves, which IS
+        // mutation-caught.
+        targets.remove(&self.inner.config.label.to_lowercase());
+
+        targets
+            .iter()
+            .filter(|to| self.send_mid(to, payload.clone()).is_some())
+            .count()
+    }
+
     /// Per-neighbor rekey epoch and transcript-hash label — the observability
     /// the interop harness dumps via --sessions.
     pub fn session_info(&self) -> Value {
@@ -275,6 +344,11 @@ impl Node {
 
     /// The number of completed rekeys on the link to `peer`, or -1 if there is
     /// no such link (F5 observability).
+    /// Not API: a test seam. The epoch is part of `session_info()`, which is how the
+    /// other six expose it and what the interop driver reads; this exists only so the
+    /// rekey test can wait on one peer's count directly. Hidden rather than made
+    /// `pub(crate)` because an integration test is a separate crate (decision #23).
+    #[doc(hidden)]
     pub fn rekey_epoch(&self, peer: &str) -> i64 {
         match self.inner.links.lock().unwrap().get(&peer.to_lowercase()) {
             Some(l) => l.lock().unwrap().rekey_epoch,
@@ -283,8 +357,34 @@ impl Node {
     }
 
     /// Stops the node's heartbeat.
+    /// Stops the node: every session is closed with a `bye` naming `shutdown`
+    /// (protocol.md §8), the links are shut down, and the listening socket is
+    /// released.
+    ///
+    /// This used to be the single `stop` store below and nothing else, which left a
+    /// "killed" node still bound to its port and still serving every open link until
+    /// the process exited -- where the other six closed both. The accept loop blocks
+    /// in `incoming()`, so setting the flag alone cannot wake it; a throwaway
+    /// connection to our own port does.
     pub fn kill(&self) {
         self.inner.stop.store(true, Ordering::SeqCst);
+
+        // Say goodbye before closing, so a peer learns this was deliberate rather
+        // than waiting out its probe timeout to find out.
+        let peers: Vec<String> = self.inner.links.lock().unwrap().keys().cloned().collect();
+        for peer in &peers {
+            send_to_link(&self.inner, peer, &message::bye(Some("shutdown")));
+        }
+
+        let links: Vec<_> = self.inner.links.lock().unwrap().drain().collect();
+        for (_peer, link) in links {
+            if let Ok(l) = link.lock() {
+                let _ = l.write.shutdown(std::net::Shutdown::Both);
+            }
+        }
+
+        // Unblock the accept loop so it observes `stop`, exits, and frees the port.
+        let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
     }
 }
 
@@ -457,7 +557,12 @@ fn handle_inner(inner: &Arc<Inner>, peer: &str, link: &Arc<Mutex<Link>>, msg: Va
 
 fn handle_data(inner: &Arc<Inner>, msg: Value) {
     let mid = msg["mid"].as_str().unwrap_or("");
-    let chunk_idx = msg["chunk"]["i"].as_i64().unwrap_or(-1);
+    let chunk_idx = msg
+        .get("chunk")
+        .and_then(|c| c.as_object())
+        .and_then(|c| c.get("i"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(-1);
     if inner.dedup.lock().unwrap().seen(&format!("d:{}:{}", mid, chunk_idx)) {
         return;
     }
@@ -465,11 +570,16 @@ fn handle_data(inner: &Arc<Inner>, msg: Value) {
     let from = msg["from"].as_str().unwrap_or("");
     let self_label = inner.config.label.to_lowercase();
     if to.to_lowercase() == self_label {
-        let payload = msg["payload"].clone();
+        let whole = inner.reassembler.lock().unwrap().offer(&msg, now_millis());
+        let payload = match whole {
+            Some(p) => p,
+            None => return, // still incomplete, or refused by a §0 bound
+        };
         for tx in inner.listeners.lock().unwrap().iter() {
             let _ = tx.send(payload.clone());
         }
-        // F6: acknowledge receipt back toward the origin.
+        // F6: acknowledge receipt back toward the origin -- once, when the whole
+        // message is reassembled, never per segment (§6.1, Ack).
         if !from.is_empty() && from.to_lowercase() != self_label {
             route_control(
                 inner,
@@ -931,6 +1041,7 @@ mod lifecycle_tests {
             pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new("self")),
             dedup: Mutex::new(routing::Dedup::new(16)),
+            reassembler: Mutex::new(chunk::Reassembler::new()),
             keylog_mu: Mutex::new(()),
             stop: AtomicBool::new(false),
         })
@@ -964,6 +1075,7 @@ mod lifecycle_tests {
             pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new("self")),
             dedup: Mutex::new(routing::Dedup::new(16)),
+            reassembler: Mutex::new(chunk::Reassembler::new()),
             keylog_mu: Mutex::new(()),
             stop: AtomicBool::new(false),
         })
@@ -1012,6 +1124,7 @@ mod lifecycle_tests {
             pending: Mutex::new(HashMap::new()),
             table: Mutex::new(routing::Table::new("self")),
             dedup: Mutex::new(routing::Dedup::new(16)),
+            reassembler: Mutex::new(chunk::Reassembler::new()),
             keylog_mu: Mutex::new(()),
             stop: AtomicBool::new(false),
         })

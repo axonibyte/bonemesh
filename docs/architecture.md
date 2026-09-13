@@ -288,9 +288,16 @@ this is the order that actually worked:
   present. Both skip loudly where their prerequisites are absent.
 - The long-horizon soak (tier 11) is gated behind `BONEMESH_LONG_SOAK` and run
   per release, not in the standard battery; see [`testing.md`](testing.md).
-- **Chunking is Java-only** (defect D11). The spec has the origin split a payload
-  larger than a transport frame into `chunk: {i, n}` parts; only Java does. The
-  other six read `chunk.i` for the dedup key and never split on send, so a payload
-  over the 65536-byte cap is written as one over-cap frame, the peer closes the
-  session, and `send()` has already returned true. Keep application payloads under
-  the frame cap until this is resolved across all seven.
+- **Splitting is specified and implemented in all seven** as of 3.3.0
+  (`protocol.md` §6.1, defect D11 closed). An origin splits a payload larger than a
+  transport frame into segments sharing one `mid`, each carrying `chunk: {i, n}` and
+  a top-level `seg`, and the destination reassembles. Every bound is pinned in §0 and
+  enforced before allocation. The 49-cell interop matrix sends a 96 KB payload in
+  every cell, so the cuts are proven to land in the same places in all seven
+  (`spec/corpus/chunk.json`) and the round trip is proven pair by pair.
+
+  This row previously read "chunking is Java-only", which was wrong twice over:
+  Elixir implemented it too, with the same undocumented encoding, and what the six
+  non-Java ports actually did with a Java or Elixir segment was deliver the fragment
+  to the application as a complete payload — silent corruption rather than the clean
+  failure described here. Both facts are recorded in D11.

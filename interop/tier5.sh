@@ -36,7 +36,7 @@ faultpeer="$repo/interop/tier5/faultpeer"
 echo "provisioning the mesh root"
 # Prefer the pinned go126 toolchain when present, as the drivers and the
 # helper builds above already do; the developer driver has no bare "go".
-[ -x "$cabin" ] || (cd "$repo/go" && g=go126; command -v "$g" >/dev/null 2>&1 || g=go; GOTOOLCHAIN=local GOFLAGS=-mod=vendor "$g" build -o bonemesh-ca ./cmd/bonemesh-ca)
+sh "$here/ensure-bin.sh" go bonemesh-ca
 ca init-root --out "$work/ca"
 
 # The fault peer's own identity (Go key format), certified into the mesh.

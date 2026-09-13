@@ -61,3 +61,26 @@ against a `BONEMESH_KEYLOG` file for debugging (security.md §8).
 - The listener model for receiving delivered payloads.
 
 Everything underneath — identity, encryption, framing, routing metrics — is new.
+
+## Notes for 3.3.0
+
+- **The v2 implementation is no longer in the tree.** Java carried its v2 code
+  alongside the v3 port through 3.2.0, including the `CryptoEngine` that is defect
+  D8; all 23 files were deleted in 3.3.0, and the jar no longer declares a
+  `Main-Class` (it named the v2 entry point, and nothing ever used it). A v2
+  deployment that still needs that code should pin a 3.2.0 artifact, which is
+  unaffected: nothing in v3 ever referenced it.
+
+- **A 3.2.0 node and a 3.3.0 node do not interoperate for split messages**, and only
+  for those. `v` stays 3 and every other pinned vector is unchanged, so handshakes,
+  transport frames, routing, acks and whole messages are compatible in both
+  directions. What changed is the segment encoding: 3.2.0's Java and Elixir ports
+  split an oversized payload into `payload = {"seg": "<base64>"}` at 32000 characters,
+  and 3.3.0 uses a 24000-byte UTF-8 text slice in a top-level `seg` (protocol.md
+  §6.1, decision #25). That was safe to change precisely because it was never
+  specified, never pinned by a vector, and implemented by only two of the seven --
+  but a mixed 3.2/3.3 mesh carrying payloads over 64 KiB will drop them, so finish
+  the upgrade before sending one.
+
+  Within a single version there is no such caveat: the 49-cell interop matrix sends
+  96 KB in every pair.

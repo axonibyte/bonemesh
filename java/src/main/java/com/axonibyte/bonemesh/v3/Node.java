@@ -142,11 +142,6 @@ public final class Node {
     return serverSocket.getLocalPort();
   }
 
-  /** @return this node's label */
-  public String label() {
-    return label;
-  }
-
   /**
    * A snapshot of the distance-vector routing table: each learned destination
    * mapped to the next-hop neighbor it is reached through. Used by the interop
@@ -217,6 +212,42 @@ public final class Node {
   }
 
   /**
+   * Sends an application payload to every reachable label except this node's own
+   * (protocol.md &sect;6).
+   *
+   * <p>Targets are every peer with a live session plus every destination with a
+   * next hop, compared case-insensitively so one peer is never targeted twice.
+   * This is not a message type: each destination gets its own ordinary
+   * {@code data} send with its own message id, which dedup and ack correlation
+   * both require — a shared id would have the first relay suppress every other
+   * copy, and an ack names only an id.</p>
+   *
+   * <p>Excluding this node's own label is the D5 fix, and so is including direct
+   * session peers: the v2 implementation iterated indirect routes only and could
+   * list itself among them.</p>
+   *
+   * @param payload the application payload
+   * @return how many destinations the message was handed to a next hop for
+   */
+  public int broadcast(JSONObject payload) {
+    java.util.Set<String> targets = new java.util.TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+    targets.addAll(links.keySet());
+    targets.addAll(routing.knownRouteDestinations());
+    // Defence in depth, and honestly labelled: the routing layer's first guard in
+    // learnRoute already makes a route to ourselves impossible, and a session peer's
+    // label comes from its certificate, so this line's condition cannot be reached
+    // from either source. It is kept because D5 was exactly this bug and the guard it
+    // duplicates lives in another module that broadcast does not own -- but no
+    // broadcast test can distinguish it. What pins D5 is
+    // RoutingTest.noRouteIsEverInstalledToOurselves, which IS mutation-caught.
+    targets.remove(label);
+    int handed = 0;
+    for(String to : targets)
+      if(send(to, payload)) handed++;
+    return handed;
+  }
+
+  /**
    * Sends an application payload and returns its message id, so a caller can
    * correlate the ack or nak later delivered to {@link #addAckListener} against
    * the message it answers (protocol.md &sect;7).
@@ -237,8 +268,17 @@ public final class Node {
 
   private SendResult sendInternal(String to, JSONObject payload, int ttl) {
     String mid = Messages.newMid(rng);
+    List<JSONObject> segments;
+    try {
+      segments = Chunker.split(mid, label, to, ttl, payload);
+    } catch(IllegalArgumentException e) {
+      // Over a bound §0 pins, so no conforming destination would reassemble it.
+      // §6.1 requires the caller be told locally instead of the mesh carrying a
+      // message that cannot arrive.
+      return new SendResult(mid, false);
+    }
     boolean all = true;
-    for(JSONObject msg : Chunker.split(mid, label, to, ttl, payload)) {
+    for(JSONObject msg : segments) {
       boolean ok = forward(msg);
       if(!ok) enqueueRetry(msg);
       all = ok && all;
@@ -338,6 +378,16 @@ public final class Node {
    */
   public void kill() {
     running = false;
+    // Say goodbye before closing (protocol.md §8, reason "shutdown"), so a peer
+    // learns the close was deliberate instead of waiting out its probe timeout.
+    // Best-effort: a link already broken simply cannot be told.
+    for(PeerLink link : links.values()) {
+      try {
+        link.send(Messages.bye("shutdown"));
+      } catch(Exception ignored) {
+        // the link is going away regardless
+      }
+    }
     acceptThread.interrupt();
     heartbeatThread.interrupt();
     closeQuietly(serverSocket);
@@ -456,7 +506,12 @@ public final class Node {
     String type = inner.optString("type", "");
     switch(type) {
       case "data": {
-        int chunkIndex = inner.has("chunk") ? inner.getJSONObject("chunk").getInt("i") : -1;
+        // optJSONObject yields null for a chunk that is not an object and
+        // optInt yields the default for a non-integer index, so a hostile
+        // chunk degrades to the unsplit dedup key instead of throwing out of
+        // the read loop and killing the session.
+        JSONObject chunkMeta = inner.optJSONObject("chunk");
+        int chunkIndex = chunkMeta == null ? -1 : chunkMeta.optInt("i", -1);
         String mid = inner.getString("mid");
         // Dedup per (mid, chunk) with a type prefix so a relayed ack, which
         // carries the same mid as the data it answers, cannot be mistaken for a

@@ -13,7 +13,7 @@ defmodule Bonemesh.Node do
 
   use GenServer
 
-  alias Bonemesh.{Frame, Handshake, Message, Routing, Transport}
+  alias Bonemesh.{Chunk, Frame, Handshake, Message, Reassembler, Routing, Transport}
 
   @heartbeat_ms 1000
   @dedup_cap 4096
@@ -45,6 +45,11 @@ defmodule Bonemesh.Node do
   def send_mid(node, to, payload), do: GenServer.call(node, {:send_mid, to, payload})
 
   @doc "Sends with an explicit initial TTL (used by tests to force a relay NAK)."
+  # Not API: a test seam for forcing a relay to exhaust the hop limit and emit a NAK.
+  # @doc false is Elixir's marker for a function that is reachable but not part of the
+  # public surface -- the Java port has the same method package-private, which is the
+  # same intent in a language that can enforce it (decision #23).
+  @doc false
   def send_with_ttl(node, to, payload, ttl),
     do: GenServer.call(node, {:send_with_ttl, to, payload, ttl})
 
@@ -54,6 +59,24 @@ defmodule Bonemesh.Node do
   @doc "A snapshot of the routing table: destination => next-hop label."
   def routes(node), do: GenServer.call(node, :routes)
 
+  @doc """
+  Sends an application payload to every reachable label except this node's own
+  (protocol.md §6).
+
+  Targets are every peer with a live session plus every destination with a next hop,
+  compared case-insensitively so one peer is never targeted twice. This is not a
+  message type: each destination gets its own ordinary data send with its own message
+  id, which dedup and ack correlation both require — a shared id would have the first
+  relay suppress every other copy, and an ack names only an id.
+
+  Excluding this node's own label is the D5 fix, and so is including direct session
+  peers: the v2 implementation iterated indirect routes only and could list itself
+  among them.
+
+  Returns how many destinations the message was handed to a next hop for.
+  """
+  def broadcast(node, payload), do: GenServer.call(node, {:broadcast, payload})
+
   @doc "Per-neighbor session info: peer => %{epoch, th} (interop --sessions)."
   def session_info(node), do: GenServer.call(node, :session_info)
 
@@ -61,6 +84,35 @@ defmodule Bonemesh.Node do
   def stop(node), do: GenServer.stop(node)
 
   # --- GenServer ---
+
+  @impl true
+  def terminate(_reason, s) do
+    # Say goodbye before closing (protocol.md §8, reason "shutdown"), so a peer learns
+    # the close was deliberate instead of waiting out its probe timeout, and then stop
+    # the link processes.
+    #
+    # There was no terminate/2 at all before 3.3.0. The listening socket is owned by
+    # this process and so closed on exit, but the link processes are plain spawns: they
+    # are not linked, so nothing reaped them and a stopped node left one running per
+    # peer. The other six close their links on kill.
+    # Two messages per link, in order: the link process seals and writes the bye, then
+    # closes its socket and exits. It owns the socket, so it is the only process that
+    # can order those two correctly.
+    #
+    # The first version of this slept 50 ms between the bye and a Process.exit, to
+    # "give the writes a moment". That was both unnecessary and harmful: a node started
+    # with start_link is linked to whatever started it, so a 50 ms terminate widened
+    # the window in which that starter's own :shutdown reaches the node mid-teardown --
+    # the node then dies with :shutdown instead of exiting :normal, and GenServer.stop
+    # reports shutdown. It reproduced roughly one run in eight. Handing both messages
+    # to the process that owns the socket needs no sleep and no kill.
+    for {_peer, e} <- s.links do
+      Kernel.send(e.pid, {:send, Message.bye("shutdown")})
+      Kernel.send(e.pid, :close)
+    end
+
+    :ok
+  end
 
   @impl true
   def init(opts) do
@@ -77,7 +129,14 @@ defmodule Bonemesh.Node do
       id_private: Keyword.fetch!(opts, :id_private),
       listen: listen,
       port: port,
-      # :keylog opt overrides BONEMESH_KEYLOG (lets two in-process nodes write
+      # The :keylog option overrides BONEMESH_KEYLOG, and it is kept under decision
+      # #23's carve-out rather than removed as 1-of-7 surface: the BEAM runs many
+      # nodes inside one OS process, so two nodes in one test cannot each have their
+      # own value of an environment variable. That is the language forcing a knob,
+      # which is exactly what the carve-out covers -- the same reason PHP keeps
+      # serve(). Python's suite gets the same effect with monkeypatch.setenv before
+      # each spawn, which works only because it starts nodes one at a time.
+      # (lets two in-process nodes write
       # to distinct files in tests).
       tun: %{load_tunables() | keylog_path: Keyword.get(opts, :keylog, load_tunables().keylog_path)},
       routing: Routing.new(label),
@@ -90,7 +149,7 @@ defmodule Bonemesh.Node do
       # yet (F2, protocol.md §7).
       pending: %{},
       dedup: {MapSet.new(), :queue.new()},
-      reassembler: %{},
+      reassembler: Reassembler.new(),
       listeners: [],
       ack_listeners: []
     }
@@ -130,9 +189,42 @@ defmodule Bonemesh.Node do
     {:reply, ok, s}
   end
 
+  def handle_call({:broadcast, payload}, _from, s) do
+    # Live session peers (keys are already downcased) union routed destinations,
+    # minus this node's own label (D5). Sorted so the order is deterministic.
+    targets =
+      s.links
+      |> Map.keys()
+      |> Enum.concat(Map.keys(s.routing.routes))
+      |> Enum.map(&String.downcase/1)
+      |> Enum.uniq()
+      # Defence in depth, and honestly labelled: learn_route's first guard already
+      # makes a route to ourselves impossible, and a session peer's label comes from
+      # its certificate, so this line's condition cannot be reached from either
+      # source. Kept because D5 was exactly this bug and the guard it duplicates
+      # lives in another module -- but no broadcast test can distinguish it. What
+      # pins D5 is routing's "no route is ever installed to ourselves", which IS
+      # mutation-caught.
+      |> List.delete(String.downcase(s.label))
+      |> Enum.sort()
+
+    {handed, s} =
+      Enum.reduce(targets, {0, s}, fn to, {n, st} ->
+        {ok, _mid, st} = do_send(st, to, payload)
+        {if(ok, do: n + 1, else: n), st}
+      end)
+
+    {:reply, handed, s}
+  end
+
   def handle_call({:send_mid, to, payload}, _from, s) do
-    {ok, mid, s} = do_send(s, to, payload)
-    {:reply, (if ok, do: {:ok, mid}, else: :error), s}
+    # The id comes back even when the destination is not routable yet and the message
+    # was queued for bounded retry (F2). This used to reply :error in that case, which
+    # broke the very correlation send_mid exists for: a queued message whose lifetime
+    # expires produces a synthesized nak{reason: "expired"} naming its mid, and a
+    # caller that never received the mid cannot match it.
+    {_ok, mid, s} = do_send(s, to, payload)
+    {:reply, {:ok, mid}, s}
   end
 
   def handle_call({:send_with_ttl, to, payload, ttl}, _from, s) do
@@ -296,11 +388,12 @@ defmodule Bonemesh.Node do
 
   defp route_data(s, m) do
     if String.downcase(m["to"]) == String.downcase(s.label) do
-      case Message.reassemble(s.reassembler, m) do
+      case Reassembler.offer(s.reassembler, m, System.system_time(:millisecond)) do
         {:complete, payload, acc} ->
           for pid <- s.listeners, do: Kernel.send(pid, {:bonemesh_data, payload})
           s = %{s | reassembler: acc}
-          # F6: acknowledge receipt back toward the origin.
+          # F6: acknowledge receipt back toward the origin -- once, when the whole
+          # message is reassembled, never per segment (§6.1, Ack).
           from = m["from"]
 
           if is_binary(from) and String.downcase(from) != String.downcase(s.label) do
@@ -337,8 +430,22 @@ defmodule Bonemesh.Node do
   # state. Returns {routed?, mid, state}.
   defp do_send(s, to, payload) do
     mid = Message.new_mid()
-    msgs = Message.split(mid, s.label, to, Message.default_ttl(), payload)
+    # Over a §0 bound means no conforming destination would reassemble it, so the
+    # caller is told locally rather than the mesh carrying a message that cannot
+    # arrive (§6.1, Bounds).
+    case safe_split(mid, s.label, to, Message.default_ttl(), payload) do
+      :error -> {false, mid, s}
+      {:ok, msgs} -> do_send_segments(s, mid, msgs)
+    end
+  end
 
+  defp safe_split(mid, label, to, ttl, payload) do
+    {:ok, Chunk.split(mid, label, to, ttl, payload)}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp do_send_segments(s, mid, msgs) do
     {ok, s} =
       Enum.reduce(msgs, {true, s}, fn m, {acc, st} ->
         {sent, st} = forward(st, m)

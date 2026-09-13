@@ -40,6 +40,62 @@ def test_a_learned_route_resolves_to_its_next_hop():
     assert t.routes["charlie"]["cost"] == 12  # advertised 7 + link 5
 
 
+def test_neighbour_labels_are_case_insensitive_everywhere():
+    # security.md section 2: labels compare case-insensitively. The Java port keyed its
+    # neighbours map by the label exactly as given while keying routes folded, which
+    # made its disco.routes differ on the wire from the other six. This asserts the
+    # behaviour all seven now share.
+    t = Table("self")
+    t.observe_neighbor("Beta", 10)
+    t.observe_neighbor("beta", 20)
+    # isNeighbor is Java-only surface, so the shared property is asserted through
+    # next_hop: one neighbour, reachable under any casing, named in folded form.
+    assert t.next_hop("BeTa") == "beta"
+    assert t.next_hop("beta") == "beta"
+    t.learn_route("gamma", "BETA", 5)
+    assert t.next_hop("gamma") == "beta"
+    for k in t.advertise_to("zeta"):
+        assert k == k.lower(), f"unfolded key on the wire: {k}"
+
+
+def test_a_summed_cost_past_the_threshold_is_clamped_to_the_poison_value():
+    # Found by mutation in the Java port, whose saturatingSum detected only arithmetic
+    # overflow: nothing in any suite summed a cost past the threshold without
+    # overflowing. That matters now the emitted value is a pinned wire constant -- an
+    # unclamped sum goes out as some arbitrary number instead of the poison.
+    t = Table("self")
+    t.observe_neighbor("b", 10)
+    t.observe_neighbor("d", 10)
+    t.learn_route("c", "b", 999_999_999)  # + 10ms link = past the threshold
+    assert t.advertise_to("d")["c"] == 1000000000
+
+
+def test_the_advertised_poison_value_is_the_pinned_literal():
+    # 1_000_000_000 is written out here rather than referenced as UNREACHABLE, and
+    # that is the whole point: every other poison assertion in these suites compares
+    # against the constant, which agrees with itself whatever its value. That is how
+    # four ports advertised 2**63-1 with green suites. protocol.md section 0 pins the
+    # number, so the test pins the number.
+    t = Table("self")
+    t.observe_neighbor("b", 10)
+    t.learn_route("c", "b", 5)
+    assert t.advertise_to("b")["c"] == 1000000000
+
+
+def test_no_route_is_ever_installed_to_ourselves():
+    # The load-bearing half of defect D5: the v2 broadcast could list the node's own
+    # label among its routes and send to itself. learn_route's first guard is what
+    # makes that impossible, and until 3.3.0 no suite in any of the seven ports
+    # asserted it -- which is why Node.broadcast's own self-exclusion cannot be
+    # mutation-caught: the condition it guards against cannot be reached from here.
+    t = Table("alpha")
+    t.observe_neighbor("bravo", 5)
+    t.learn_route("alpha", "bravo", 1)
+    t.learn_route("ALPHA", "bravo", 1)  # labels compare case-insensitively
+    assert t.route_table() == {}
+    assert t.next_hop("alpha") is None
+
+
 def test_no_route_is_installed_for_a_direct_neighbour():
     # Shadowing a direct neighbour with a learned route was a real convergence
     # defect (docs/architecture.md §4).
@@ -150,3 +206,20 @@ def test_dedup_reports_repeats_and_stays_bounded():
     d.saw_before("d")            # evicts "a"
     assert d.saw_before("a") is False
     assert len(d.seen) == 3 and len(d.order) == 3
+
+
+def test_the_ewma_rounds_half_away_from_zero_not_bankers():
+    # protocol.md section 5. Python's round() is banker's rounding: round(2.5) is 2
+    # and round(3.5) is 4, so it disagrees with the other six on every exact .5. The
+    # rounded value is what disco.routes puts on the wire, so this port used to
+    # advertise a cost 1 ms lower than every other node measuring the same link.
+    #
+    # 2.5 is reachable exactly: one sample of 2 then alpha=0.2 toward 5 gives
+    # 2 + 0.2*(5-2) = 2.6, so drive the tracker directly instead.
+    t = Ewma()
+    t.value, t.has = 2.5, True
+    assert t.millis() == 3, "2.5 ms must round to 3, not 2"
+    t.value = 3.5
+    assert t.millis() == 4
+    t.value = 0.5
+    assert t.millis() == 1

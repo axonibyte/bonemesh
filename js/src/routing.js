@@ -3,10 +3,11 @@
 // next hop, path cost in ms), plus a bounded dedup set for relayed messages.
 // Wire-compatible with the Java, Elixir, Go, and Rust reference routers.
 //
-// Poison sentinel: a JS number cannot hold Java's Long.MAX_VALUE exactly (it
-// exceeds 2^53), so this port advertises the 1e9 sentinel (Elixir's) and treats
-// any advertised cost >= 1e9 as unreachable. Every tolerant receiver — Elixir,
-// Go, Rust, PHP, and the corrected Java — honors it.
+// Poison sentinel: every implementation now advertises exactly 1000000000 and
+// treats any advertised cost >= 1000000000 as unreachable, both pinned by
+// protocol.md §0. This port could never have emitted the 2^63-1 that four others
+// used to: it exceeds 2^53, so a JS number cannot hold it exactly -- which is
+// precisely why the fleet converged on the smaller value rather than the larger.
 
 export const UNREACHABLE = 1_000_000_000;
 export const POISON_THRESHOLD = 1_000_000_000;
