@@ -94,6 +94,33 @@ class FrameChannel {
   }
 }
 
+// Closing a socket that still has queued bytes needs both halves of the problem
+// solved at once. destroy() discards the write buffer outright -- measured, 200 KB
+// written and then destroyed arrives as about 49 KB -- so a bye written just
+// before it survives only by being small enough to fit. end() alone flushes, but
+// leaves the socket open for as long as a peer declines to read, which turns a
+// hostile or wedged peer into a descriptor leak. So: end() starts the flush, and
+// the deadline bounds it (D23).
+//
+// Used where the close is deliberate and something queued is meant to arrive. A
+// peer already proven unresponsive (probe-timeout death), a rejected handshake and
+// a dial that lost the tiebreak all still destroy() outright: there is nothing to
+// deliver, and waiting out a deadline for a peer that is gone buys nothing.
+const FLUSH_DEADLINE_MS = 5000;
+
+function closeAfterFlush(socket) {
+  if (!socket || socket.destroyed) return;
+  const timer = setTimeout(() => socket.destroy(), FLUSH_DEADLINE_MS);
+  // unref so a pending flush can never hold the process open after kill().
+  if (typeof timer.unref === 'function') timer.unref();
+  socket.once('close', () => clearTimeout(timer));
+  try {
+    socket.end();
+  } catch {
+    socket.destroy();
+  }
+}
+
 export class Node {
   // config = { label, mesh, rootPublic, cert, idPrivate }
   constructor(config) {
@@ -147,7 +174,7 @@ export class Node {
     if (this.tun.idleMs > 0 && now - link.lastData > this.tun.idleMs) {
       this.#sendToLink(peer, message.bye('idle'));
       this.#deregister(peer, link);
-      link.socket.destroy();
+      closeAfterFlush(link.socket);
       return false;
     }
     this.#sendToLink(peer, message.probe(now));
@@ -331,6 +358,12 @@ export class Node {
   #sendToLink(label, inner) {
     const link = this.links.get(label.toLowerCase());
     if (!link) return false;
+    // A socket already closing must not be written to again. Node raises
+    // ERR_STREAM_WRITE_AFTER_END for that and destroys the stream -- which
+    // discards the queued bytes the flush exists to deliver, so a late reply
+    // (an echo answering a probe that arrived during teardown) would undo the
+    // whole point of closeAfterFlush (D23).
+    if (link.socket.writableEnded || !link.socket.writable) return false;
     if (inner.type === 'data') link.lastData = nowMs();
     try {
       link.socket.write(encode(link.transport.seal(inner)));
@@ -398,15 +431,11 @@ export class Node {
       // peer up: a reconnect may already have made a different link current, and
       // announcing this link's fault on that one would be a lie sealed with the
       // wrong keys. Best effort, and the close happens either way.
-      // end() rather than write()-then-destroy(): destroy() discards whatever is
-      // still buffered (measured — 200 KB written then destroyed delivers ~49 KB),
-      // and a bye only survives that pattern because it is small enough to fit the
-      // socket buffer. end() flushes, then closes; the socket's own 'close' handler
-      // deregisters, and the explicit call below makes it immediate.
       try {
-        link.socket.end(encode(transport.seal(message.bye('protocol-error'))));
+        link.socket.write(encode(transport.seal(message.bye('protocol-error'))));
       } catch { /* gone */ }
       this.#deregister(peer, link);
+      closeAfterFlush(link.socket);
     };
     ch.onFrame((carrier) => {
       let inner;
@@ -425,7 +454,7 @@ export class Node {
       if (inner.type === 'bye') {
         // Peer is closing this session gracefully; tear it down.
         this.#deregister(peer, link);
-        link.socket.destroy();
+        closeAfterFlush(link.socket);
         return;
       }
       this.#handleInner(peer, link, inner);
@@ -644,7 +673,7 @@ export class Node {
     }
     if (this.hb) clearInterval(this.hb);
     if (this.server) this.server.close();
-    for (const link of this.links.values()) link.socket.destroy();
+    for (const link of this.links.values()) closeAfterFlush(link.socket);
   }
 }
 
