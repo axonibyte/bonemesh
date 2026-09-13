@@ -1,0 +1,19 @@
+{
+  "description": "The fields a conforming SENDER may put on each inner type (protocol.md §4, §4.2). This is the code->spec direction of decision #24: message.validate() answers 'is what I received well-formed?', and nothing asked 'is what I emitted named by the spec?'. A field absent from this list is one an implementation invented, which decision #23 forbids. It is deliberately a field allowlist and not a second schema: presence and type are already pinned by messages.json, and duplicating them here would produce a check that agrees with itself. Pinned from protocol.md by hand and gated in both directions by specsrc, so a type added to the spec without an entry here fails, and an entry here for a type the spec does not define fails too.",
+  "types": {
+    "data":  ["type", "mid", "to", "from", "ttl", "chunk", "payload", "seg"],
+    "ack":   ["type", "mid", "to", "from", "ttl"],
+    "nak":   ["type", "mid", "hop", "reason", "to", "from", "ttl"],
+    "disco": ["type", "routes"],
+    "probe": ["type", "token"],
+    "echo":  ["type", "token"],
+    "rekey": ["type", "mid", "phase", "body"],
+    "bye":   ["type", "reason"]
+  },
+  "notes": {
+    "chunk": "An object {i, n}; its own members are pinned by messages.json and §6.1.",
+    "payload-xor-seg": "Exactly one of payload and seg is present on data (§4.1); this file lists both because both are legal fields, and which one is required is a schema question messages.json already answers.",
+    "rekey-body": "Absent on phase 4, which carries no BMX message (§4.2).",
+    "bye-reason": "Optional and open-ended: §8 defines the reasons a conforming sender uses and requires a receiver to accept any string."
+  }
+}

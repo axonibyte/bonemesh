@@ -50,6 +50,7 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/spec/corpus" "$work/js/src" "$work/interop"
 cp "$repo/spec/protocol.md" "$repo/spec/security.md" "$work/spec/"
 cp "$repo/spec/corpus/messages.json" "$work/spec/corpus/"
+cp "$repo/spec/corpus/emitted.json" "$work/spec/corpus/"
 
 # A fake implementation that satisfies every check, built by asking the checker
 # what it wants: run it against the synthetic tree and let it name each missing
@@ -156,6 +157,29 @@ PYDROP
 expect_fail "a spec'd type with no corpus schema" "corpus messages.json has no schema for"
 cp "$repo/spec/corpus/messages.json" "$work/spec/corpus/"
 
+# 3f. The emitted-field allowlist must agree with the spec in BOTH directions.
+#     tier 12 is only as complete as this file: an inner type added to the spec
+#     with no entry here would go out with nothing watching its fields.
+python3 - "$repo/spec/corpus/emitted.json" "$work/spec/corpus/emitted.json" <<'PYDROP'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+d = json.load(open(src, encoding="utf-8"))
+d["types"].pop("bye", None)
+json.dump(d, open(dst, "w", encoding="utf-8"), indent=1)
+PYDROP
+expect_fail "a spec'd inner type with no emitted-field entry" "emitted.json declares no fields for"
+cp "$repo/spec/corpus/emitted.json" "$work/spec/corpus/"
+
+python3 - "$repo/spec/corpus/emitted.json" "$work/spec/corpus/emitted.json" <<'PYADD'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+d = json.load(open(src, encoding="utf-8"))
+d["types"]["teleport"] = ["type"]
+json.dump(d, open(dst, "w", encoding="utf-8"), indent=1)
+PYADD
+expect_fail "an emitted-field entry the spec does not list" "emitted.json names \"teleport\""
+cp "$repo/spec/corpus/emitted.json" "$work/spec/corpus/"
+
 # 4. the corpus using a schema the spec does not list
 sed 's/"schema": "bye"/"schema": "nosuchtype"/' "$repo/spec/corpus/messages.json" \
   > "$work/spec/corpus/messages.json"
@@ -179,7 +203,7 @@ cp "$repo/spec/protocol.md" "$work/spec/protocol.md"
 nested="$work/agent/build"
 mkdir -p "$nested/spec/corpus" "$nested/js/src" "$nested/interop"
 cp "$work/spec/protocol.md" "$work/spec/security.md" "$nested/spec/"
-cp "$work/spec/corpus/messages.json" "$nested/spec/corpus/"
+cp "$work/spec/corpus/messages.json" "$work/spec/corpus/emitted.json" "$nested/spec/corpus/"
 cp "$work/fake.js.good" "$nested/js/src/fake.js"
 if ! "$bin" -root "$nested" >"$work/nested.log" 2>&1; then
   echo "SELF-TEST FAIL: a root under a directory named build/ found no source"

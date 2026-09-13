@@ -137,7 +137,12 @@ range. This relies on the ordering TCP already provides, and it is why §9's
 "ordered delivery is not guaranteed" is a statement about the *mesh*,
 where a message may take different paths between relays, and not about a link.
 
-The inner plaintext object always has a `type` and a `mid`:
+Every inner plaintext object has a `type`. The routed kinds — `data`, `ack` and
+`nak` — also carry a `mid`, as does `rekey`, which uses one to correlate the four
+phases of an exchange. The link-local kinds do not: `disco`, `probe` and `echo`
+are between neighbours, are never relayed and are never acknowledged, so there is
+nothing for an id to correlate, and none of the seven implementations emits one on
+them (§4.2 gives each shape). `bye` carries none for the same reason.
 
 | Inner `type` | Meaning |
 |---|---|
