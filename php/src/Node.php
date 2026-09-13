@@ -633,24 +633,64 @@ final class Node
             return;
         }
         $this->conns[$id]['buf'] .= $data;
+        // A peer that never terminates its frame must not be able to grow this
+        // buffer without limit (D21 — §0's caps were enforced per line, which only
+        // happens once a newline arrives).
+        $bufCap = $this->conns[$id]['phase'] === 'established'
+            ? Frame::TRANSPORT_CAP
+            : Frame::HANDSHAKE_CAP;
+        // >= matches Go's readLine and Java's FrameCodec: a buffer that has reached
+        // the cap with no newline in it cannot go on to yield a line within the cap.
+        if (strpos($this->conns[$id]['buf'], "\n") === false
+            && strlen($this->conns[$id]['buf']) >= $bufCap) {
+            if ($this->conns[$id]['phase'] === 'established') {
+                $this->protocolError($id);
+            }
+            $this->closeConn($id);
+            return;
+        }
         while (isset($this->conns[$id]) && ($nl = strpos($this->conns[$id]['buf'], "\n")) !== false) {
             $line = substr($this->conns[$id]['buf'], 0, $nl + 1);
             $this->conns[$id]['buf'] = substr($this->conns[$id]['buf'], $nl + 1);
             $cap = $this->conns[$id]['phase'] === 'established' ? Frame::TRANSPORT_CAP : Frame::HANDSHAKE_CAP;
             $res = Frame::classify($line, $cap);
             if (isset($res['reason'])) {
-                if ($this->conns[$id]['phase'] !== 'established') {
-                    $this->closeConn($id);
-                    return;
+                // A framing fault closes the connection with no partial recovery
+                // (protocol.md §2). This used to `continue` in the established
+                // phase, silently skipping a frame that is not one JSON object
+                // where every other port closed.
+                if ($this->conns[$id]['phase'] === 'established') {
+                    $this->protocolError($id);
                 }
-                continue; // ignore an unparseable transport frame
+                $this->closeConn($id);
+                return;
             }
             try {
                 $this->process($sock, $id, $res['obj']);
             } catch (\Throwable $e) {
+                // An AEAD or ordering fault tears the session down (protocol.md
+                // §4): receiveSeq advances only on a successful open, so keeping
+                // this link would leave it expecting a seq the peer will never
+                // send again (D20).
+                if (($this->conns[$id]['phase'] ?? null) === 'established') {
+                    $this->protocolError($id);
+                }
                 $this->closeConn($id);
                 return;
             }
+        }
+    }
+
+    // Tells the peer why this session is closing (protocol.md section 8, reason
+    // "protocol-error"). Send keys and counters are per-direction, so a
+    // receive-side fault leaves this end able to seal one last frame. Best
+    // effort: the socket may already be gone, and the close happens either way.
+    private function protocolError(int $id): void
+    {
+        try {
+            $this->sendRaw($id, Message::bye('protocol-error'));
+        } catch (\Throwable $e) {
+            // going away regardless
         }
     }
 

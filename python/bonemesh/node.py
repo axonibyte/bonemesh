@@ -494,15 +494,21 @@ class Node:
                 obj, reason = classify(line, TRANSPORT_CAP)
                 if reason is not None:
                     # A framing fault closes the connection with no partial
-                    # recovery (protocol.md §2).
+                    # recovery (protocol.md §2), announced so the peer learns why
+                    # (protocol.md §8, reason "protocol-error").
+                    self._protocol_error(link)
                     return
                 try:
                     inner = link.transport.open(obj)
                 except TransportError:
-                    # An AEAD or ordering fault drops the frame but keeps the
-                    # link, matching the other implementations -- this is the
-                    # path tier 7's corrupted-carrier strategy exercises.
-                    continue
+                    # An AEAD or ordering fault tears the session down
+                    # (protocol.md §4): receive_seq advances only on a successful
+                    # open, so continuing here would leave this end expecting a
+                    # seq the peer will never send again -- a link that is up and
+                    # can never deliver (D20). Announce it and let the node
+                    # re-dial into a fresh session.
+                    self._protocol_error(link)
+                    return
                 link.last_inbound = _now_ms()
                 if inner.get("type") == "data":
                     link.last_data = _now_ms()
@@ -514,6 +520,21 @@ class Node:
         finally:
             self._deregister(peer, link)
             self._close(link)
+
+    def _protocol_error(self, link: _Link) -> None:
+        """Tell the peer why this session is closing (protocol.md §8).
+
+        Send keys and counters are per-direction, so a receive-side fault leaves
+        this end perfectly able to seal one last frame. It writes to the faulting
+        link directly rather than looking the peer up: a reconnect may already
+        have made a different link current, and announcing this link's fault on
+        that one would be a lie sealed with the wrong keys. Best effort — the
+        socket may already be gone, and the close happens either way.
+        """
+        try:
+            link.writer.write(encode(link.transport.seal(message.bye("protocol-error"))))
+        except Exception:
+            pass
 
     def _deregister(self, peer: str, link: _Link) -> None:
         """Withdraw a dropped link's routes, but only if it is still current.

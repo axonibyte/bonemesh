@@ -8,6 +8,7 @@
 package node
 
 import (
+	"errors"
 	"bufio"
 	"encoding/base64"
 	"encoding/hex"
@@ -446,6 +447,11 @@ func (n *Node) readLoop(peer string, r *bufio.Reader, lk *link) {
 	for {
 		carrier, err := frame.ReadFrame(r, frame.TransportCap)
 		if err != nil {
+			// A framing violation is the peer's error and is named as such; a
+			// stream that merely ended is not (protocol.md §8).
+			if errors.Is(err, frame.ErrViolation) {
+				n.protocolError(lk)
+			}
 			n.deregister(peer, lk)
 			return
 		}
@@ -454,7 +460,13 @@ func (n *Node) readLoop(peer string, r *bufio.Reader, lk *link) {
 		inner, err := lk.transport.Open(carrier)
 		lk.mu.Unlock()
 		if err != nil {
-			continue
+			// An AEAD or ordering fault tears the session down (protocol.md §4):
+			// receiveSeq advances only on a successful open, so continuing here
+			// would leave this end expecting a seq the peer will never send
+			// again — a link that is up and can never deliver (D20).
+			n.protocolError(lk)
+			n.deregister(peer, lk)
+			return
 		}
 		lk.lastInbound.Store(nowMillis())
 		if inner["type"] == "data" {
@@ -467,6 +479,22 @@ func (n *Node) readLoop(peer string, r *bufio.Reader, lk *link) {
 		}
 		n.handleInner(peer, lk, inner)
 	}
+}
+
+// protocolError tells the peer why this session is closing (protocol.md §8).
+//
+// Send keys and counters are per-direction, so a receive-side fault leaves this
+// end able to seal one last frame. It writes to the faulting link directly rather
+// than looking the peer up: a reconnect may already have made a different link
+// current, and announcing this link's fault on that one would be a lie sealed
+// with the wrong keys. Best effort — the socket may already be gone, and the
+// close happens either way.
+func (n *Node) protocolError(lk *link) {
+	lk.mu.Lock()
+	defer lk.mu.Unlock()
+	carrier := lk.transport.Seal(message.Bye("protocol-error"))
+	n.capture(lk.initiator, true, carrier)
+	_, _ = lk.conn.Write(frame.Encode(carrier))
 }
 
 // deregister removes a dropped link and withdraws routes through it — but only

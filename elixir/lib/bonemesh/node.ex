@@ -728,6 +728,13 @@ defmodule Bonemesh.Node do
             # seq desync) closes the connection loudly rather than being
             # swallowed — a swallowed error would wedge the link forever
             # (protocol.md §2). The node re-dials on demand.
+            #
+            # Say why first (protocol.md §8, reason "protocol-error"): send keys
+            # and counters are per-direction, so a receive-side fault leaves this
+            # end able to seal one last frame. Best effort; the close follows
+            # either way.
+            {carrier, _session} = Transport.seal(ls.session, Message.bye("protocol-error"))
+            :gen_tcp.send(socket, Frame.encode(carrier))
             :gen_tcp.close(socket)
             GenServer.cast(ls.node, {:link_down, ls.peer, self()})
         end
@@ -880,6 +887,18 @@ defmodule Bonemesh.Node do
   # Opens a transport frame, converting a malformed line or a transport error
   # into a single :error the caller acts on.
   defp safe_open(session, line) do
+    # §0's transport cap, enforced here because nothing else on this path did: the
+    # socket's {:packet, :line} option bounds a line at `packet_size` (200000),
+    # which is an accident of a socket option rather than the spec's 65536, so this
+    # port accepted frames every other port refuses (D21).
+    if byte_size(line) > Frame.transport_cap() do
+      :error
+    else
+      decode_and_open(session, line)
+    end
+  end
+
+  defp decode_and_open(session, line) do
     case JSON.decode(String.trim(line)) do
       {:ok, carrier} ->
         case Transport.open(session, carrier) do

@@ -174,7 +174,7 @@ public final class Messages {
   /**
    * Builds a graceful session-close message carrying a reason.
    *
-   * @param reason a short reason (e.g. {@code idle}, {@code rekey-failed}); when
+   * @param reason a short reason (e.g. {@code idle}, {@code protocol-error}); when
    *     {@code null} or empty the reason field is omitted
    * @return the bye message
    */

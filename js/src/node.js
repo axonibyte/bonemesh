@@ -31,6 +31,7 @@ class FrameChannel {
     this.queue = [];
     this.waiters = [];
     this.onFrameCb = null;
+    this.onErrorCb = null;
     this.closed = null;
     socket.on('data', (d) => this.#onData(d));
     socket.on('error', (e) => this.#fail(e));
@@ -48,11 +49,20 @@ class FrameChannel {
       const { obj, reason } = classify(line, this.cap);
       this.#emit(reason ? { error: new Error(reason) } : { obj });
     }
-    if (this.buf.length > this.cap) this.#fail(new Error('oversize'));
+    if (this.buf.length > this.cap) {
+      // An oversize frame is a protocol violation, not merely a dead socket, so
+      // it is emitted before the channel is failed (protocol.md §8).
+      this.#emit({ error: new Error('oversize') });
+      this.#fail(new Error('oversize'));
+    }
   }
 
   #emit(item) {
-    if (this.onFrameCb && !item.error) { this.onFrameCb(item.obj); return; }
+    if (this.onFrameCb) {
+      if (item.error) { if (this.onErrorCb) this.onErrorCb(item.error); }
+      else this.onFrameCb(item.obj);
+      return;
+    }
     const w = this.waiters.shift();
     if (w) { item.error ? w.reject(item.error) : w.resolve(item.obj); }
     else this.queue.push(item);
@@ -71,9 +81,16 @@ class FrameChannel {
     return new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
   }
 
-  onFrame(cb) {
+  // onErr receives framing violations (a frame that is not one JSON object, or
+  // one over the cap). It is separate from the socket simply closing, which is
+  // not the peer's protocol error.
+  onFrame(cb, onErr) {
     this.onFrameCb = cb;
-    for (const item of this.queue.splice(0)) if (!item.error) cb(item.obj);
+    this.onErrorCb = onErr;
+    for (const item of this.queue.splice(0)) {
+      if (item.error) { if (onErr) onErr(item.error); }
+      else cb(item.obj);
+    }
   }
 }
 
@@ -374,11 +391,33 @@ export class Node {
     }
     this.table.observeNeighbor(peer, 1); // optimistic seed so it is routable
     socket.on('close', () => this.#deregister(peer, link));
+    const protocolError = () => {
+      // Tell the peer why this session is closing (protocol.md §8). Send keys and
+      // counters are per-direction, so a receive-side fault leaves this end able
+      // to seal one last frame. It writes to THIS link rather than looking the
+      // peer up: a reconnect may already have made a different link current, and
+      // announcing this link's fault on that one would be a lie sealed with the
+      // wrong keys. Best effort, and the close happens either way.
+      // end() rather than write()-then-destroy(): destroy() discards whatever is
+      // still buffered (measured — 200 KB written then destroyed delivers ~49 KB),
+      // and a bye only survives that pattern because it is small enough to fit the
+      // socket buffer. end() flushes, then closes; the socket's own 'close' handler
+      // deregisters, and the explicit call below makes it immediate.
+      try {
+        link.socket.end(encode(transport.seal(message.bye('protocol-error'))));
+      } catch { /* gone */ }
+      this.#deregister(peer, link);
+    };
     ch.onFrame((carrier) => {
       let inner;
       try {
         inner = transport.open(carrier);
       } catch {
+        // An AEAD or ordering fault tears the session down (protocol.md §4):
+        // receiveSeq advances only on a successful open, so returning here would
+        // leave this end expecting a seq the peer will never send again -- a link
+        // that is up and can never deliver (D20).
+        protocolError();
         return;
       }
       link.lastInbound = nowMs();
@@ -390,7 +429,7 @@ export class Node {
         return;
       }
       this.#handleInner(peer, link, inner);
-    });
+    }, protocolError);
     return true;
   }
 
