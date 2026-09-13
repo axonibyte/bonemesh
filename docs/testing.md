@@ -83,10 +83,27 @@ first use):
 
 ```sh
 sh interop/run-corpus-checks.sh   # every corpus family x implementation, twice
-sh interop/check-spec.sh          # tier 3: the spec read as data
+sh interop/check-spec.sh          # tier 3: the spec read as data, both directions
+sh interop/check-spec.sh --self-test   # prove that checker can fail (11 cases)
+sh interop/run-matrix.sh --self-test   # prove the matrix oracle separates its 3 verdicts
 sh interop/run-matrix.sh          # the N×N live handshake/transport/delivery matrix
 sh interop/tier5.sh               # ... through tier10.sh
 ```
+
+Two things worth knowing about what these prove, both new in 3.3.0.
+
+`check-spec.sh` now runs **both directions** on message types: an implementation that
+emits an inner type the spec never listed fails, and a type the spec lists with no
+corpus schema behind it fails. Before this, every axis except `BONEMESH_*` tunable
+names ran spec -> code only, which is why a `broadcast()` that only one port had
+survived the whole battery and needed a human to find it (decision #24).
+
+`run-matrix.sh` sends a 96 KB payload in all 49 cells, with a marker at each end of
+it. Two markers rather than one is what lets a single send separate three outcomes --
+reassembled, a fragment delivered to the application, nothing delivered -- and the
+middle one is the failure mode defect D11 actually produced. Both that oracle and
+the spec checker have `--self-test` modes, because a gate never observed failing is
+a gate of unmeasured value.
 
 The first two are the deterministic wire contract and run ahead of the live tiers
 in the root tenant's chain, so a corpus disagreement stops the battery before the
