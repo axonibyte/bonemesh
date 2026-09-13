@@ -127,10 +127,14 @@ via the key-log inspector, `security.md` §8):
 
 **Frames are accepted strictly in order.** A receiver keeps the next expected
 `seq` per direction and rejects anything else — including a `seq` ahead of it —
-rather than buffering or reordering; the session is then torn down, because a gap
-means the stream is no longer the one the nonce sequence describes. The window is
-exactly one, not a range. This relies on the ordering TCP already provides, and it
-is why §9's "ordered delivery is not guaranteed" is a statement about the *mesh*,
+rather than buffering or reordering; the session is then torn down with a
+`bye{reason:"protocol-error"}` (§8), because a gap means the stream is no longer
+the one the nonce sequence describes. Dropping the frame and keeping the link is
+not an option: the expected `seq` only advances on a frame that opens, so a
+receiver that continues is left waiting for a `seq` the peer has already moved
+past, and the link can never deliver again. The window is exactly one, not a
+range. This relies on the ordering TCP already provides, and it is why §9's
+"ordered delivery is not guaranteed" is a statement about the *mesh*,
 where a message may take different paths between relays, and not about a link.
 
 The inner plaintext object always has a `type` and a `mid`:
@@ -271,7 +275,9 @@ current keys; liveness (§7) tears it down if it has truly broken.
 { "type": "bye", "reason": "idle" }
 ```
 
-`reason` is optional and drawn from the enum in §8.
+`reason` is optional. §8 defines the reasons a conforming sender uses when one
+applies; it is not an exhaustive enum, and a receiver accepts any string and acts
+on none of them.
 
 ## 5. Discovery and latency (defect D3)
 
@@ -460,11 +466,27 @@ safely. The origin observes them through an ack listener; the boolean return of
   handshake with a `v` it does not implement rejects it, closing the connection,
   rather than failing opaquely.
 - The **defined** close reasons on the `bye` control (§4.2) are `shutdown` (the
-  node is stopping), `idle` (the idle timeout fired, §7), `rekey-failed` (a rekey
-  exchange did not complete, `security.md` §6) and `protocol-error` (a malformed
-  inner message), plus `unsupported-version` for the version-mismatch case above
-  — which is reported in logs rather than sent, because a pre-session rejection
-  has no session in which to send a `bye`.
+  node is stopping), `idle` (the idle timeout fired, §7) and `protocol-error`,
+  plus `unsupported-version` for the version-mismatch case above — which is
+  reported in logs rather than sent, because a pre-session rejection has no
+  session in which to send a `bye`.
+
+  `protocol-error` names a frame this session cannot carry on from: an oversize
+  frame, bytes that are not one JSON object (§2), an AEAD tag that does not
+  verify, or a `seq` out of order (§4). Each of those already closes the
+  connection; the reason is what turns a dropped socket into a diagnosis. It is
+  emitted **before** the close, which a receive-side fault does not prevent —
+  keys and counters are per-direction, so the sending half is unaffected.
+
+  It is deliberately **not** emitted for an inner `type` the receiver does not
+  recognize, nor for an unknown field: the forward-compatibility rule below
+  requires tolerating both, so treating them as errors would make every future
+  addition a session-killer.
+
+  There is no `rekey-failed` reason. A rekey that does not complete is specified
+  to degrade safely and keep the old keys (`security.md` §6) precisely so that a
+  peer which does not implement rekey keeps working; closing the session would
+  contradict that guarantee, so no close reason describes it.
 
   "Defined" is not "exhaustive", and this previously read "the pinned enum …
   (`corpus/messages.json`)", which that file does not pin and deliberately does
