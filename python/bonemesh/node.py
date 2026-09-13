@@ -195,11 +195,15 @@ class Node:
             await asyncio.sleep(HEARTBEAT_S)
             now = _now_ms()
             for label, link in list(self.links.items()):
-                if self.sweep_link(now, label, link):
-                    self.maybe_rekey(link, now)
-            self.drain_retries(now)
+                if self._sweep_link(now, label, link):
+                    self._maybe_rekey(link, now)
+            self._drain_retries(now)
 
-    def sweep_link(self, now: int, peer: str, link: _Link) -> bool:
+    # Internal, by the leading underscore: these are test seams for driving one
+    # heartbeat step deterministically, not API a caller should reach for. They were
+    # public, which under decision #23 is surface the protocol does not denote --
+    # the Java port has had the same methods package-private all along.
+    def _sweep_link(self, now: int, peer: str, link: _Link) -> bool:
         """Once-per-heartbeat maintenance for one link.
 
         Tears it down if it is probe-timeout dead (F3) or data-idle past the idle
@@ -219,7 +223,7 @@ class Node:
         self._send_to_link(peer, message.disco(self.table.advertise_to(peer)))
         return True
 
-    def maybe_rekey(self, link: _Link, now_millis: int) -> None:
+    def _maybe_rekey(self, link: _Link, now_millis: int) -> None:
         """F5: drive the initiator side of a periodic rekey.
 
         Abandons a stalled pre-swap handshake at the rekey timeout, keeping the
@@ -249,7 +253,7 @@ class Node:
         link.rekey_mid = mid
         link.rekey_started_at = now_millis
 
-    def drain_retries(self, now: int) -> None:
+    def _drain_retries(self, now: int) -> None:
         """F2: re-attempt due pending sends once per heartbeat.
 
         A landed message is dropped, a still-stuck one backs off (the delay
@@ -383,9 +387,9 @@ class Node:
     def send_mid(self, to: str, payload) -> tuple[str, bool]:
         """Send, also returning the message id so a caller can correlate the
         ack/nak delivered to ``on_ack`` (protocol.md §7)."""
-        return self.send_with_ttl(to, payload, message.DEFAULT_TTL)
+        return self._send_with_ttl(to, payload, message.DEFAULT_TTL)
 
-    def send_with_ttl(self, to: str, payload, ttl: int) -> tuple[str, bool]:
+    def _send_with_ttl(self, to: str, payload, ttl: int) -> tuple[str, bool]:
         """send_mid with an explicit initial TTL, so a test can force a relay to
         exhaust the hop limit and emit a NAK."""
         mid = message.new_mid()

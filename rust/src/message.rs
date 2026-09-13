@@ -319,11 +319,6 @@ pub fn data_segment(mid: &str, from: &str, to: &str, ttl: i64, i: i64, n: i64, s
     })
 }
 
-/// An acknowledgement for a message id.
-pub fn ack(mid: &str) -> Value {
-    json!({"type":"ack","mid":mid})
-}
-
 /// An acknowledgement routed back toward the origin (protocol.md §7): `to` is
 /// the origin, `from` is this node.
 pub fn ack_to(mid: &str, from: &str, to: &str, ttl: i64) -> Value {

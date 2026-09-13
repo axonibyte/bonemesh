@@ -227,10 +227,6 @@ export function dataSegment(mid, from, to, ttl, i, n, seg) {
   return { type: 'data', mid, from, to, ttl, chunk: { i, n }, seg };
 }
 
-export function ack(mid) {
-  return { type: 'ack', mid };
-}
-
 // An acknowledgement routed back toward the origin (protocol.md §7): to is the
 // origin, from is this node, ttl the hop limit.
 export function ackTo(mid, from, to, ttl) {

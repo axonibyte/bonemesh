@@ -50,7 +50,12 @@ public class MessageTest {
     String mid = Messages.newMid(RNG);
     assertNull(MessageSchema.validate("data",
         Messages.data(mid, "alpha", "gamma", Messages.DEFAULT_TTL, new JSONObject().put("line", "hi"))));
-    assertNull(MessageSchema.validate("ack", Messages.ack(mid)));
+    // Built inline rather than with a builder: a bare {type, mid} ack is a shape
+    // the validator must accept (§8 tolerance, corpus case ack-ok) but that no node
+    // can route, since §7 sends acks back toward `from`. The builder that produced it
+    // was called only from tests, so it was production surface for nobody.
+    assertNull(MessageSchema.validate("ack",
+        new JSONObject().put("type", "ack").put("mid", mid)));
     assertNull(MessageSchema.validate("nak",
         Messages.nak(mid, "beta", "alpha", "charlie", "ttl", Messages.DEFAULT_TTL)));
     assertNull(MessageSchema.validate("bye", Messages.bye()));
@@ -99,7 +104,8 @@ public class MessageTest {
   }
 
   @Test void wrongTypeFailsSchema() {
-    assertEquals("type", MessageSchema.validate("data", Messages.ack(Messages.newMid(RNG))));
+    assertEquals("type", MessageSchema.validate("data",
+        new JSONObject().put("type", "ack").put("mid", Messages.newMid(RNG))));
   }
 
   @Test void dedupReportsRepeatsAndForgetsEldest() {

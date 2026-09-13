@@ -352,11 +352,6 @@ func Data(mid, from, to string, ttl int, payload any) map[string]any {
 	return map[string]any{"type": "data", "mid": mid, "from": from, "to": to, "ttl": ttl, "payload": payload}
 }
 
-// Ack builds an acknowledgement.
-func Ack(mid string) map[string]any {
-	return map[string]any{"type": "ack", "mid": mid}
-}
-
 // AckTo builds an acknowledgement routed back toward the origin (protocol.md
 // §7): to is the origin, from is this node, ttl the hop limit.
 func AckTo(mid, from, to string, ttl int) map[string]any {

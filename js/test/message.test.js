@@ -3,7 +3,7 @@
 // corpus is checked by bin/interop_checks.js.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validate, data, ack, nak, bye, newMid, DEFAULT_TTL } from '../src/message.js';
+import { validate, data, nak, bye, newMid, DEFAULT_TTL } from '../src/message.js';
 
 const MID = '0123456789abcdef0123456789abcdef';
 
@@ -54,7 +54,11 @@ test('schema verdicts', () => {
 
 test('builders produce valid messages', () => {
   assert.equal(validate('data', data(newMid(), 'a', 'b', DEFAULT_TTL, { k: 'v' })), null);
-  assert.equal(validate('ack', ack(newMid())), null);
+  // Built inline rather than with a builder: a bare {type, mid} ack is a shape the
+  // validator must accept (§8 tolerance, corpus case ack-ok) but that no node can
+  // route, since §7 sends acks back toward `from`. The builder that produced it was
+  // called only from tests, so it was production surface for nobody.
+  assert.equal(validate('ack', { type: 'ack', mid: newMid() }), null);
   assert.equal(validate('nak', nak(newMid(), 'a', 'b', 'beta', 'ttl', DEFAULT_TTL)), null);
   assert.equal(validate('bye', bye('idle')), null);
   assert.equal(validate('bye', bye()), null);

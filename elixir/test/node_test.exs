@@ -26,7 +26,24 @@ defmodule Bonemesh.NodeTest do
         port: 0
       )
 
-    on_exit(fn -> if Process.alive?(node), do: Node.stop(node) end)
+    # Stop the node, and treat "it already stopped" as success rather than as a test
+    # failure. A node started with start_link is linked to the test process, so when
+    # that process exits its signal reaches the node and the node dies with :shutdown
+    # -- which is correct OTP behaviour, not a defect. GenServer.stop then reports
+    # that reason and ExUnit records a failure for a teardown that got exactly what it
+    # asked for. Process.alive?/1 narrows the window but cannot close it.
+    #
+    # This catches only the reasons that mean "already gone" (:shutdown, :noproc,
+    # :normal); anything else still fails, so a node that dies for a real reason is
+    # not hidden.
+    on_exit(fn ->
+      try do
+        if Process.alive?(node), do: Node.stop(node)
+      catch
+        :exit, {reason, _} when reason in [:shutdown, :noproc, :normal] -> :ok
+        :exit, reason when reason in [:shutdown, :noproc, :normal] -> :ok
+      end
+    end)
     node
   end
 

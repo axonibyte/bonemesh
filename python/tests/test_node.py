@@ -116,7 +116,7 @@ def test_ttl_exhaustion_naks_naming_the_relay_not_the_destination(run_async, spa
         await charlie.connect("127.0.0.1", bravo.port())
         assert await until(lambda: alpha.table.next_hop("charlie") == "bravo")
 
-        alpha.send_with_ttl("charlie", {"doomed": True}, 1)
+        alpha._send_with_ttl("charlie", {"doomed": True}, 1)
         assert await until(lambda: any(a["type"] == "nak" for a in acks)), "no NAK arrived"
         nak = next(a for a in acks if a["type"] == "nak")
         assert nak["hop"] == "bravo", f"named {nak['hop']!r}, not the relay"

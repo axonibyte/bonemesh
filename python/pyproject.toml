@@ -1,6 +1,6 @@
 [project]
 name = "bonemesh"
-version = "3.2.0"
+version = "3.3.0"
 description = "BoneMesh v3 mesh node — Python implementation"
 requires-python = ">=3.12"
 # The only runtime dependency. `cryptography` is Apache-2.0 OR BSD-3-Clause and

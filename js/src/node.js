@@ -105,9 +105,9 @@ export class Node {
     node.hb = setInterval(() => {
       const now = nowMs();
       for (const [label, link] of [...node.links]) {
-        if (node.sweepLink(now, label, link)) node.maybeRekey(link, now);
+        if (node._sweepLink(now, label, link)) node._maybeRekey(link, now);
       }
-      node.drainRetries(now);
+      node._drainRetries(now);
     }, 1000);
     return node;
   }
@@ -115,7 +115,13 @@ export class Node {
   // Once-per-heartbeat maintenance for one link: tear it down if it is
   // probe-timeout dead (F3) or data-idle past the idle timeout (F4, disabled at
   // idleMs==0), otherwise send it a probe and a route advertisement.
-  sweepLink(now, peer, link) {
+  // Internal, by the leading underscore: these are test seams for driving one
+  // heartbeat step deterministically, not API a caller should reach for. They were
+  // plain public methods, which under decision #23 is surface the protocol does not
+  // denote -- the Java port has had the same methods package-private all along. A
+  // JS #private field cannot be reached from a test file, so the convention carries
+  // what the language cannot enforce.
+  _sweepLink(now, peer, link) {
     if (now - link.lastInbound > this.tun.probeTimeoutMs) {
       this.#deregister(peer, link);
       link.socket.destroy();
@@ -137,7 +143,7 @@ export class Node {
   // degrade against a peer that ignores rekey), else, on the session initiator
   // only, start a fresh BMX when the frame count or session age crosses the
   // threshold. JS is single-threaded, so sealing phase 1 here cannot race.
-  maybeRekey(link, nowMillis) {
+  _maybeRekey(link, nowMillis) {
     if (link.rekeyHs) {
       if (nowMillis - link.rekeyStartedAt > this.tun.rekeyTimeoutMs) link.rekeyHs = null;
       return;
@@ -160,7 +166,7 @@ export class Node {
   // dropped, a still-stuck one backs off (delay doubles to the cap), and one
   // past its lifetime is dropped and reported to the origin's ack listeners as
   // a synthesized nak{reason:"expired"} (never on the wire).
-  drainRetries(now) {
+  _drainRetries(now) {
     for (const [dest, q] of [...this.pending]) {
       const keep = [];
       for (const p of q) {
@@ -279,7 +285,7 @@ export class Node {
 
   // sendMid with an explicit initial TTL, used by tests to force a relay to
   // exhaust the hop limit and emit a NAK.
-  sendWithTtl(to, payload, ttl) {
+  _sendWithTtl(to, payload, ttl) {
     return this.#sendWithTtl(to, payload, ttl);
   }
 

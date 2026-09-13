@@ -7,7 +7,7 @@ defmodule Bonemesh.MixProject do
   def project do
     [
       app: :bonemesh,
-      version: "3.2.0",
+      version: "3.3.0",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: []

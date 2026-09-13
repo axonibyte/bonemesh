@@ -45,6 +45,11 @@ defmodule Bonemesh.Node do
   def send_mid(node, to, payload), do: GenServer.call(node, {:send_mid, to, payload})
 
   @doc "Sends with an explicit initial TTL (used by tests to force a relay NAK)."
+  # Not API: a test seam for forcing a relay to exhaust the hop limit and emit a NAK.
+  # @doc false is Elixir's marker for a function that is reachable but not part of the
+  # public surface -- the Java port has the same method package-private, which is the
+  # same intent in a language that can enforce it (decision #23).
+  @doc false
   def send_with_ttl(node, to, payload, ttl),
     do: GenServer.call(node, {:send_with_ttl, to, payload, ttl})
 
@@ -124,7 +129,14 @@ defmodule Bonemesh.Node do
       id_private: Keyword.fetch!(opts, :id_private),
       listen: listen,
       port: port,
-      # :keylog opt overrides BONEMESH_KEYLOG (lets two in-process nodes write
+      # The :keylog option overrides BONEMESH_KEYLOG, and it is kept under decision
+      # #23's carve-out rather than removed as 1-of-7 surface: the BEAM runs many
+      # nodes inside one OS process, so two nodes in one test cannot each have their
+      # own value of an environment variable. That is the language forcing a knob,
+      # which is exactly what the carve-out covers -- the same reason PHP keeps
+      # serve(). Python's suite gets the same effect with monkeypatch.setenv before
+      # each spawn, which works only because it starts nodes one at a time.
+      # (lets two in-process nodes write
       # to distinct files in tests).
       tun: %{load_tunables() | keylog_path: Keyword.get(opts, :keylog, load_tunables().keylog_path)},
       routing: Routing.new(label),

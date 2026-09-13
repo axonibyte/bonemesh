@@ -299,10 +299,6 @@ def data_segment(mid: str, frm: str, to: str, ttl: int, i: int, n: int, seg: str
     }
 
 
-def ack(mid: str) -> dict:
-    return {"type": "ack", "mid": mid}
-
-
 def ack_to(mid: str, frm: str, to: str, ttl: int) -> dict:
     """An acknowledgement routed back toward the origin (protocol.md §7)."""
     return {"type": "ack", "mid": mid, "from": frm, "to": to, "ttl": ttl}

@@ -251,6 +251,14 @@ impl Node {
 
     /// Send with an explicit initial TTL — used by tests to force a relay to
     /// exhaust the hop limit and emit a NAK.
+    /// Send with an explicit initial TTL.
+    ///
+    /// Not API: a test seam for forcing a relay to exhaust the hop limit and emit a
+    /// NAK. Hidden from the docs rather than made `pub(crate)`, because an integration
+    /// test is a separate crate and could not reach it otherwise -- the Java port has
+    /// the same method package-private, which is the same intent expressed in a
+    /// language that can enforce it (decision #23).
+    #[doc(hidden)]
     pub fn send_with_ttl(&self, to: &str, payload: Value, ttl: i64) -> Option<String> {
         let mid = message::new_mid();
         let segments = chunk::split(&mid, &self.inner.config.label, to, ttl, payload).ok()?;
@@ -336,6 +344,11 @@ impl Node {
 
     /// The number of completed rekeys on the link to `peer`, or -1 if there is
     /// no such link (F5 observability).
+    /// Not API: a test seam. The epoch is part of `session_info()`, which is how the
+    /// other six expose it and what the interop driver reads; this exists only so the
+    /// rekey test can wait on one peer's count directly. Hidden rather than made
+    /// `pub(crate)` because an integration test is a separate crate (decision #23).
+    #[doc(hidden)]
     pub fn rekey_epoch(&self, peer: &str) -> i64 {
         match self.inner.links.lock().unwrap().get(&peer.to_lowercase()) {
             Some(l) => l.lock().unwrap().rekey_epoch,

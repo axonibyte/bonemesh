@@ -91,16 +91,6 @@ public final class Messages {
   }
 
   /**
-   * Builds an acknowledgement for a message id.
-   *
-   * @param mid the id being acknowledged
-   * @return the ack message
-   */
-  public static JSONObject ack(String mid) {
-    return new JSONObject().put("type", "ack").put("mid", mid);
-  }
-
-  /**
    * Builds an acknowledgement routed back toward the origin (protocol.md
    * &sect;7): {@code to} is the origin, {@code from} is this node.
    *

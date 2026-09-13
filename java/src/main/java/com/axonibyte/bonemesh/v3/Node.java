@@ -142,11 +142,6 @@ public final class Node {
     return serverSocket.getLocalPort();
   }
 
-  /** @return this node's label */
-  public String label() {
-    return label;
-  }
-
   /**
    * A snapshot of the distance-vector routing table: each learned destination
    * mapped to the next-hop neighbor it is reached through. Used by the interop

@@ -37,9 +37,6 @@ defmodule Bonemesh.Message do
       "seg" => seg
     }
 
-  @doc "An acknowledgement for a message id."
-  def ack(mid), do: %{"type" => "ack", "mid" => mid}
-
   @doc """
   An acknowledgement routed back toward the origin (protocol.md §7): `to` is the
   origin, `from` this node, `ttl` the hop limit.

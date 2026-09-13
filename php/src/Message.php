@@ -351,11 +351,6 @@ final class Message
         ];
     }
 
-    public static function ack(string $mid): array
-    {
-        return ['type' => 'ack', 'mid' => $mid];
-    }
-
     // An acknowledgement routed back toward the origin (protocol.md §7): to is
     // the origin, from is this node, ttl the hop limit.
     public static function ackTo(string $mid, string $from, string $to, int $ttl): array
