@@ -45,21 +45,36 @@
 # the old one simply stays there. h_init is also ck_init -- the schedule says
 # so -- and is the one region that serves as both.
 #
-# IO  in:  mlen{1}  mesh{mlen}  ss_dh{32}  ss_kem{32}
-#          The later steps will read the two plaintexts, each length
-#          prefixed the same way.
-#     out: h_init{32}  h_after_mesh{32}  ck_after_dh{32}  ck_after_kem{32}
+# IO  in:  mlen{1}  mesh{mlen}
+#          ss_dh{32}  ss_kem{32}
+#          p1len{1}  pt1{p1len}  p2len{1}  pt2{p2len}
+#     out: the ten frozen values, in schedule order and raw:
+#          h_init{32}  h_after_mesh{32}  ck_after_dh{32}  ck_after_kem{32}
+#          ct1{p1len+16}  h_after_ct1{32}  ct2{p2len+16}  h_after_ct2{32}
+#          transport_key_i2r{32}  transport_key_r2i{32}
 #
 # The protocol name is a LITERAL, exactly as it is a const in the Go port: a
-# constant of the protocol rather than an input to it.
+# constant of the protocol rather than an input to it. Everything else comes
+# from the broker's stdin, and THE TWO SHARED SECRETS ARE INPUTS rather than
+# something derived here -- which is precisely what lets the symmetric half
+# be checked without X25519 or ML-KEM.
 #
-# WHAT IS IMPLEMENTED SO FAR: init, mixHash and both mixKey steps -- four of
-# the ten frozen values. The remaining six are two AEAD seals, two hashes of
-# a ciphertext, and the split. They land one at a time, each
-# checked against its own frozen value first, and the check script compares
-# however many this program emits. The vector exposing all ten intermediates
-# is what makes that possible; a corpus freezing only the transport keys
-# would have been far harder to write against.
+# ALL TEN FROZEN VALUES ARE REPRODUCED, in 88 seconds.
+#
+# A VARIABLE INPUT IS CAPPED AT 207 BYTES, which is a documented limit rather
+# than an oversight. The largest length this file derives is 32 for the hash
+# already on the tape plus a ciphertext of plen + 16, and that sum has to fit
+# one cell. One more byte and it carries into a second, and a 16 bit add with
+# a borrow is real arithmetic in a language that has none. The vector's mesh
+# is nine bytes and its plaintexts are fourteen.
+#
+# THE OUTPUT ORDER IS THE SCHEDULE ORDER, which is what let this file be
+# written one step at a time: the check script compares a PREFIX and names
+# the first value missing, so it reported "1 of 10", then "4 of 10", then
+# ten. That is a property of the vector -- it freezes every intermediate
+# rather than only the transport keys, and a corpus publishing just the two
+# keys would have forced an all-or-nothing implementation with no way to
+# localise a fault.
 #
 # TAPE MAP
 # cell 0 is the working cell: every EMIT and every READ uses it.
@@ -83,13 +98,22 @@
 # a flag before the walk will run. Both idioms therefore work on a region of
 # ANY length, which matters for the ciphertexts later.
 #
-# region  wall  base   holds
-#         15    17     h_init  -- and ck_init, which the schedule says is the same
-#         83    85     h after mixHash           
-#         151   153    ck after mixKey(ss_dh)    
-#         219   221    ck after mixKey(ss_kem)   
-#         287   289    the message key after mixKey(ss_kem)
+# region   wall  base   holds
+#          15    17     h_init  -- and ck_init, the schedule says they are one
+#          83    85     h after mixHash
+#          151   153    ck after mixKey(ss_dh)
+#          219   221    ck after mixKey(ss_kem)
+#          287   289    the message key, used by both seals
+#          355   357    ct1, the first sealed frame
+#          805   807    h after ct1
+#          873   875    ct2, the second sealed frame
+#          1323  1325   h after ct2
 #
+# A fixed region is 64 cells and the next wall sits two past its
+# terminator, so they step by 68. A CIPHERTEXT region is 446, because a
+# 207 byte plaintext seals to 223 bytes and a pair costs two cells. The
+# two transport keys get no region at all: nothing after the split needs
+# them, so they are relayed straight out as they arrive.
 # The key from the FIRST mixKey is read and dropped: the schedule replaces it
 # before anything encrypts with it, so it gets no region.
 #
@@ -734,6 +758,793 @@ END
 >
 END
 L 5
+#   ========= encryptAndHash: ct = AEAD(key, nonce 0, h, pt) =========
+EMIT 0e 02 00 00 00
+READ 11
+EMIT 0e 02 00 00 00
+READ 11
+#   spawn chacha20poly1305.bf.  len 0x30 = 48.  Proc 28.
+EMIT 0f 30 00 ff ff ff ff 00 00 02 02 00 00
+EMIT 00 18 00 00 00
+EMIT 01 1b 00 00 00
+EMIT 00 00
+EMIT 03 00 62 66 69
+EMIT 13 00 63 68 61 63 68 61 32 30 70 6f 6c 79 31 33 30 35 2e 62 66
+READ 7
+#   the message key both seals use, thirty two bytes off the tape
+EMIT 0b 26 00 19 00 00 00 00 00
+R 289
+[>.>]
+<<[<<]
+L 287
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   THE NONCE: four zero bytes then the counter, 64 bit little endian. mixKey
+#   reset it, so the first seal is under nought and the second under one --
+#   which the vector freezes only as two different ciphertexts, and which had
+#   to come from reading the Go reference rather than from the numbers.
+EMIT 0b 12 00 19 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   THE ADDITIONAL DATA IS THE TRANSCRIPT HASH, which is what binds the seal
+#   to everything that came before it: alen 32, then h off the tape.
+EMIT 0b 08 00 19 00 00 00 00 00 20 00
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+EMIT 0b 26 00 19 00 00 00 00 00
+R 85
+[>.>]
+<<[<<]
+L 83
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   read one length byte from the caller into cell 7, and keep two copies of
+#   it: cell 5 counts a forward down to nothing, and cell 8 survives that so
+#   the lengths derived from it afterwards can still be computed.
+EMIT 0a 08 00 01 00 00 00 01 00 00 00
+>[-]+,<,,
+>>>>+<<<
+[[-]>>>[-]<<<]
+>>>
+LOOP
+>>>[-],
+L 3
+[-]
+END
+L 4
+R 5
+[-]
+>>>
+[-]
+>>>
+[-]
+L 4
+[-<<+>>>+>>>+<<<<]
+R 4
+[-<<<<+>>>>]
+L 11
+#   the plaintext length, then the plaintext forwarded a byte at a time
+EMIT 0b 08 00 19 00 00 00 00 00
+R 7
+.
+L 7
+EMIT 00
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+R 5
+LOOP
+L 5
+EMIT 0a 08 00 01 00 00 00 01 00 00 00
+>[-]+,<,,
+>>>>+<<<
+[[-]>>>[-]>[-]<<<<]
+>>>
+LOOP
+<,<<<
+EMIT 0b 07 00 19 00 00 00 00 00
+>>>.<<<
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+>>>>>-
+<[-]
+END
+>
+END
+L 5
+#   THE SEALED FRAME is plen + 16 bytes: the ciphertext and then its tag. The
+#   count is derived from the length the caller sent rather than assumed.
+R 5
+[-]
+>>>
+[-<<<+>>>>>>+<<<]
+R 3
+[-<<<+>>>]
+L 6
+++++++++++++++++
+L 5
+R 5
+LOOP
+L 5
+EMIT 0a 08 00 1a 00 00 00 01 00 00 00
+>[-]+,<,,
+>>>>+<<<
+[[-]>>>[-]>[-]<<<<]
+>>>
+LOOP
+R 353
+[>>]
+>,
+<+
+[<<]
+L 350
+-
+<[-]
+END
+>
+END
+L 5
+#   and out, in one frame whose own length is plen + 22
+R 7
+[-]
+L 7
+R 8
+[-<+>>>>+<<<]
+R 3
+[-<<<+>>>]
+L 4
+++++++++++++++++++++++
+L 7
+EMIT 0b
+R 7
+.
+L 7
+EMIT 00 02 00 00 00 00 00
+R 357
+[>.>]
+<<[<<]
+L 355
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   ============== mixHash: h = SHA256(h || ct) ==============
+EMIT 0e 02 00 00 00
+READ 11
+EMIT 0e 02 00 00 00
+READ 11
+#   spawn sha256.bf.  len 0x26 = 38.  Proc 33.
+EMIT 0f 26 00 ff ff ff ff 00 00 02 02 00 00
+EMIT 00 1d 00 00 00
+EMIT 01 20 00 00 00
+EMIT 00 00
+EMIT 03 00 62 66 69
+EMIT 09 00 73 68 61 32 35 36 2e 62 66
+READ 7
+#   the message length: 32 for the hash on the tape, plus the ciphertext's
+#   plen + 16.  That sum is why a variable input here is capped at 207 bytes.
+R 7
+[-]
+L 7
+R 8
+[-<+>>>>+<<<]
+R 3
+[-<<<+>>>]
+L 4
+++++++++++++++++++++++++++++++++++++++++++++++++
+L 7
+EMIT 0b 08 00 1e 00 00 00 00 00
+R 7
+.
+L 7
+EMIT 00
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   the hash so far
+EMIT 0b 26 00 1e 00 00 00 00 00
+R 85
+[>.>]
+<<[<<]
+L 83
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   then the ciphertext, in a frame of plen + 22
+R 7
+[-]
+L 7
+R 8
+[-<+>>>>+<<<]
+R 3
+[-<<<+>>>]
+L 4
+++++++++++++++++++++++
+L 7
+EMIT 0b
+R 7
+.
+L 7
+EMIT 00 1e 00 00 00 00 00
+R 357
+[>.>]
+<<[<<]
+L 355
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   the new hash, into its own region, and out
+R 5
+[-]++++++++++++++++++++++++++++++++
+L 5
+R 5
+LOOP
+L 5
+EMIT 0a 08 00 1f 00 00 00 01 00 00 00
+>[-]+,<,,
+>>>>+<<<
+[[-]>>>[-]>[-]<<<<]
+>>>
+LOOP
+R 803
+[>>]
+>,
+<+
+[<<]
+L 800
+-
+<[-]
+END
+>
+END
+L 5
+EMIT 0b 26 00 02 00 00 00 00 00
+R 807
+[>.>]
+<<[<<]
+L 805
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   ========= encryptAndHash: ct = AEAD(key, nonce 1, h, pt) =========
+EMIT 0e 02 00 00 00
+READ 11
+EMIT 0e 02 00 00 00
+READ 11
+#   spawn chacha20poly1305.bf.  len 0x30 = 48.  Proc 38.
+EMIT 0f 30 00 ff ff ff ff 00 00 02 02 00 00
+EMIT 00 22 00 00 00
+EMIT 01 25 00 00 00
+EMIT 00 00
+EMIT 03 00 62 66 69
+EMIT 13 00 63 68 61 63 68 61 32 30 70 6f 6c 79 31 33 30 35 2e 62 66
+READ 7
+#   the message key both seals use, thirty two bytes off the tape
+EMIT 0b 26 00 23 00 00 00 00 00
+R 289
+[>.>]
+<<[<<]
+L 287
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   THE NONCE: four zero bytes then the counter, 64 bit little endian. mixKey
+#   reset it, so the first seal is under nought and the second under one --
+#   which the vector freezes only as two different ciphertexts, and which had
+#   to come from reading the Go reference rather than from the numbers.
+EMIT 0b 12 00 23 00 00 00 00 00
+EMIT 00 00 00 00 01 00 00 00 00 00 00 00
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   THE ADDITIONAL DATA IS THE TRANSCRIPT HASH, which is what binds the seal
+#   to everything that came before it: alen 32, then h off the tape.
+EMIT 0b 08 00 23 00 00 00 00 00 20 00
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+EMIT 0b 26 00 23 00 00 00 00 00
+R 807
+[>.>]
+<<[<<]
+L 805
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   read one length byte from the caller into cell 7, and keep two copies of
+#   it: cell 5 counts a forward down to nothing, and cell 8 survives that so
+#   the lengths derived from it afterwards can still be computed.
+EMIT 0a 08 00 01 00 00 00 01 00 00 00
+>[-]+,<,,
+>>>>+<<<
+[[-]>>>[-]<<<]
+>>>
+LOOP
+>>>[-],
+L 3
+[-]
+END
+L 4
+R 5
+[-]
+>>>
+[-]
+>>>
+[-]
+L 4
+[-<<+>>>+>>>+<<<<]
+R 4
+[-<<<<+>>>>]
+L 11
+#   the plaintext length, then the plaintext forwarded a byte at a time
+EMIT 0b 08 00 23 00 00 00 00 00
+R 7
+.
+L 7
+EMIT 00
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+R 5
+LOOP
+L 5
+EMIT 0a 08 00 01 00 00 00 01 00 00 00
+>[-]+,<,,
+>>>>+<<<
+[[-]>>>[-]>[-]<<<<]
+>>>
+LOOP
+<,<<<
+EMIT 0b 07 00 23 00 00 00 00 00
+>>>.<<<
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+>>>>>-
+<[-]
+END
+>
+END
+L 5
+#   THE SEALED FRAME is plen + 16 bytes: the ciphertext and then its tag. The
+#   count is derived from the length the caller sent rather than assumed.
+R 5
+[-]
+>>>
+[-<<<+>>>>>>+<<<]
+R 3
+[-<<<+>>>]
+L 6
+++++++++++++++++
+L 5
+R 5
+LOOP
+L 5
+EMIT 0a 08 00 24 00 00 00 01 00 00 00
+>[-]+,<,,
+>>>>+<<<
+[[-]>>>[-]>[-]<<<<]
+>>>
+LOOP
+R 871
+[>>]
+>,
+<+
+[<<]
+L 868
+-
+<[-]
+END
+>
+END
+L 5
+#   and out, in one frame whose own length is plen + 22
+R 7
+[-]
+L 7
+R 8
+[-<+>>>>+<<<]
+R 3
+[-<<<+>>>]
+L 4
+++++++++++++++++++++++
+L 7
+EMIT 0b
+R 7
+.
+L 7
+EMIT 00 02 00 00 00 00 00
+R 875
+[>.>]
+<<[<<]
+L 873
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   ============== mixHash: h = SHA256(h || ct) ==============
+EMIT 0e 02 00 00 00
+READ 11
+EMIT 0e 02 00 00 00
+READ 11
+#   spawn sha256.bf.  len 0x26 = 38.  Proc 43.
+EMIT 0f 26 00 ff ff ff ff 00 00 02 02 00 00
+EMIT 00 27 00 00 00
+EMIT 01 2a 00 00 00
+EMIT 00 00
+EMIT 03 00 62 66 69
+EMIT 09 00 73 68 61 32 35 36 2e 62 66
+READ 7
+#   the message length: 32 for the hash on the tape, plus the ciphertext's
+#   plen + 16.  That sum is why a variable input here is capped at 207 bytes.
+R 7
+[-]
+L 7
+R 8
+[-<+>>>>+<<<]
+R 3
+[-<<<+>>>]
+L 4
+++++++++++++++++++++++++++++++++++++++++++++++++
+L 7
+EMIT 0b 08 00 28 00 00 00 00 00
+R 7
+.
+L 7
+EMIT 00
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   the hash so far
+EMIT 0b 26 00 28 00 00 00 00 00
+R 807
+[>.>]
+<<[<<]
+L 805
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   then the ciphertext, in a frame of plen + 22
+R 7
+[-]
+L 7
+R 8
+[-<+>>>>+<<<]
+R 3
+[-<<<+>>>]
+L 4
+++++++++++++++++++++++
+L 7
+EMIT 0b
+R 7
+.
+L 7
+EMIT 00 28 00 00 00 00 00
+R 875
+[>.>]
+<<[<<]
+L 873
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   the new hash, into its own region, and out
+R 5
+[-]++++++++++++++++++++++++++++++++
+L 5
+R 5
+LOOP
+L 5
+EMIT 0a 08 00 29 00 00 00 01 00 00 00
+>[-]+,<,,
+>>>>+<<<
+[[-]>>>[-]>[-]<<<<]
+>>>
+LOOP
+R 1321
+[>>]
+>,
+<+
+[<<]
+L 1318
+-
+<[-]
+END
+>
+END
+L 5
+EMIT 0b 26 00 02 00 00 00 00 00
+R 1325
+[>.>]
+<<[<<]
+L 1323
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   ============ split: i2r, r2i = HKDF(ck, empty, 64) ============
+EMIT 0e 02 00 00 00
+READ 11
+EMIT 0e 02 00 00 00
+READ 11
+#   spawn hkdf.bf.  len 0x24 = 36.  Proc 48.
+EMIT 0f 24 00 ff ff ff ff 00 00 02 02 00 00
+EMIT 00 2c 00 00 00
+EMIT 01 2f 00 00 00
+EMIT 00 00
+EMIT 03 00 62 66 69
+EMIT 07 00 68 6b 64 66 2e 62 66
+READ 7
+#   saltlen 32, ikmlen ZERO, infolen 0, okmlen 64. The split takes no input
+#   key material at all -- it derives the two directional transport keys from
+#   the chaining key alone, which is what makes them a function of the whole
+#   transcript and nothing else.
+EMIT 0b 0e 00 2d 00 00 00 00 00 20 00 00 00 00 00 40 00
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   the salt is the chaining key after both mixKey steps
+EMIT 0b 26 00 2d 00 00 00 00 00
+R 221
+[>.>]
+<<[<<]
+L 219
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+EMIT 0b e6 00 2d 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   the input key material buffer, entirely padding: ikmlen was zero
+EMIT 0b 06 01 2d 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   and the info buffer, also empty
+EMIT 0b 06 01 2d 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+EMIT 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+#   THE TWO TRANSPORT KEYS, relayed straight out rather than stored: nothing
+#   after this needs them, so they never touch a region.
+R 5
+[-]++++++++++++++++++++++++++++++++
+LOOP
+L 5
+EMIT 0a 08 00 2e 00 00 00 01 00 00 00
+>[-]+,<,,
+>>>>+<<<
+[[-]>>>[-]>[-]<<<<]
+>>>
+LOOP
+<,<<<
+EMIT 0b 07 00 02 00 00 00 00 00
+>>>.<<<
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+>>>>>-
+<[-]
+END
+>
+END
+L 5
+R 5
+[-]++++++++++++++++++++++++++++++++
+LOOP
+L 5
+EMIT 0a 08 00 2e 00 00 00 01 00 00 00
+>[-]+,<,,
+>>>>+<<<
+[[-]>>>[-]>[-]<<<<]
+>>>
+LOOP
+<,<<<
+EMIT 0b 07 00 02 00 00 00 00 00
+>>>.<<<
+>[-]+,
+R 8
+[-],
+L 9
+,
+R 9
+[-<<<<<<<<<,>>>>>>>>>]
+L 9
+>>>>>-
+<[-]
+END
+>
+END
+L 5
 #   wait  op 10 on the LAST process handle, blocking, and exit with its code.
 #
 #   ONE WAIT AT THE END RATHER THAN ONE PER STEP. Nothing is closed in this
@@ -743,7 +1554,7 @@ L 5
 #   exec it, the child exits 127, and this program exits non-zero rather than
 #   reporting success having computed nothing. An earlier step failing that
 #   way shows up as a wrong digest, which the vector catches.
-EMIT 10 06 00 17 00 00 00 00 00
+EMIT 10 06 00 30 00 00 00 00 00
 READ 4
 >>>,<<<
 READ 2

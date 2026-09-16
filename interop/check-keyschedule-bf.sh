@@ -53,6 +53,16 @@ ks_in() {
     printf "%02x%s" $(( ${#m} / 2 )) "$m"
     field ss_dh_hex
     field ss_kem_hex
+    # The two plaintexts encryptAndHash seals, each length prefixed the
+    # same way. These were absent while only the first four steps
+    # existed, and their absence read as a hang rather than as missing
+    # input: the program asked for a length byte, got END, treated the
+    # plaintext as empty -- correctly, since that is what the stream
+    # said -- and sealed nothing.
+    p=$(field plaintext1_hex)
+    printf "%02x%s" $(( ${#p} / 2 )) "$p"
+    p=$(field plaintext2_hex)
+    printf "%02x%s" $(( ${#p} / 2 )) "$p"
 }
 
 rc=0

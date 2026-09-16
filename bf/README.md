@@ -6,8 +6,8 @@ against the same frozen corpus every other port is checked against, and stops
 where brainfuck honestly stops.
 
 ```
-spec/corpus/transcripts/transport-frame.json   reproduced
-spec/corpus/transcripts/keyschedule.json       reproduced
+spec/corpus/transcripts/transport-frame.json   reproduced,  6 s
+spec/corpus/transcripts/keyschedule.json       reproduced, 91 s
 ```
 
 ## What this is, exactly
@@ -75,10 +75,21 @@ that can disagree, and the pin is what makes a run reproducible.
 ## The cost, because it is the honest headline
 
 Brainfuck has no arithmetic. SHA-256 of one 64-byte block is about **1.15
-billion interpreter instructions, roughly two seconds**. The key schedule is
-three hashes, three HKDF calls and two AEAD seals, so it runs in minutes rather
-than milliseconds — and the numbers are in `bf/COST.md` once measured rather
-than guessed at here.
+billion interpreter instructions, roughly two seconds**.
+
+**All ten of the key schedule's frozen intermediates** are reproduced, not just
+the two transport keys: `h_init`, `h_after_mesh`, `ck_after_dh`, `ck_after_kem`,
+both ciphertexts, both hashes of them, and both directional keys. **Ninety one
+seconds** for nine sequenced routine calls — four hashes, three HKDF calls and
+two AEAD seals.
+
+That number is worth stating plainly because the estimate was badly wrong. HKDF
+is bfsodium's largest routine at 294912 lines and three calls to it were
+expected to dominate at tens of minutes; the whole schedule runs in a minute
+and a half. Line count is not instruction count — most of `hkdf.bf` is a pasted
+`hashcore` reached once per HMAC block, and the schedule hashes very little
+data. **The only honest cost is a measured one**, which is why the figure at the
+top of this file is a stopwatch reading rather than an extrapolation.
 
 This is not a performance story and never was. It is a *legibility* story: the
 claim is that a cryptographic protocol's symmetric core can be implemented in
