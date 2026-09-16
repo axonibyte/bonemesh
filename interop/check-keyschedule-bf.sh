@@ -45,8 +45,18 @@ echo "checking the brainfuck key schedule against $vector"
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
 
+# The program reads mesh, ss_dh and ss_kem from stdin, each variable one
+# preceded by a single length byte. The shell builds that stream out of the
+# vector; the brainfuck does every cryptographic step.
+ks_in() {
+    m=$(field mesh_hex)
+    printf "%02x%s" $(( ${#m} / 2 )) "$m"
+    field ss_dh_hex
+    field ss_kem_hex
+}
+
 rc=0
-: | sh "$repo/bf/run.sh" "$repo/bf/keyschedule.bf" > "$out" || rc=$?
+ks_in | "$hx" -r | sh "$repo/bf/run.sh" "$repo/bf/keyschedule.bf" > "$out" || rc=$?
 [ "$rc" -eq 0 ] || { echo "the program exited $rc" >&2; exit 1; }
 
 got=$("$hx" < "$out")
