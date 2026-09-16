@@ -1,0 +1,13 @@
+# Scoped deliberately to bf/ and nothing else.
+#
+# The brainfuck port's committed .bf files are compared BYTE FOR BYTE against
+# a fresh expansion of their .poke skeletons -- that is what bf/build.sh
+# --check does, and it is the only thing standing between a committed program
+# and a program nobody generated. A checkout that rewrote the line endings
+# would fail that check on a fresh clone while the file was perfectly correct,
+# which is the worst shape a provenance check can take: loud, and about the
+# wrong thing.
+#
+# The rest of this repository had no .gitattributes and keeps none. Six other
+# language ports have their own conventions and this file does not reach them.
+/bf/** -text
