@@ -29,7 +29,7 @@
 set -eu
 
 # bfsodium at the revision this port was checked against.
-BFSODIUM_COMMIT=19a9b8d084ff3a79e80e5b3a6e797da7a726a6e0
+BFSODIUM_COMMIT=436a11aec43a53649de3d7b04e672954c24aac66
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=${BF_TOOLCHAIN:-$here/toolchain}
