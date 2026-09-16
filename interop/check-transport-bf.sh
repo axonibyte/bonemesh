@@ -78,4 +78,5 @@ if [ "$got" != "$want" ]; then
     exit 1
 fi
 echo "OK  ct = $got"
-echo "    sealed by brainfuck, agreeing with the Java reference and the Go runner"
+echo "    sealed by brainfuck, matching the frozen corpus that the Java reference"
+echo "    and the Go runner each reproduce independently"

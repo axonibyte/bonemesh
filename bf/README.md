@@ -27,15 +27,73 @@ proved inert.** They run under any conforming interpreter. They reach pipes and
 processes by *speaking a byte protocol over their own stdin and stdout* to
 brainstem — no language extension, no ninth instruction.
 
-## What it is not
+## The goal is full interoperability, and this is the road to it
 
-- **No handshake.** X25519 and ML-KEM-768 are not implemented and are not
-  planned; `bfsodium` has no public-key primitive and adding one is a different
-  project with a different cost model. The key-schedule vector supplies
-  `ss_dh_hex` and `ss_kem_hex` as *inputs*, which is exactly why the symmetric
-  half can be checked on its own.
-- **No node, no transport, no certificates.** Nothing here opens a socket or
-  speaks to a peer.
+**A port that cannot talk to the other ports is not a port.** What exists today
+is the symmetric core checked against the frozen corpus — the same footing
+Elixir and Rust are on for the key schedule — and that is a waypoint rather
+than the destination. The destination is a bf node that completes a real BMX
+handshake with a Java or Go node over a socket.
+
+Two kinds of interoperability exist in this repository and they are not the
+same claim:
+
+| | what it proves | bf today |
+|---|---|---|
+| **corpus agreement** | everyone computes the same frozen bytes | **done**, both vectors |
+| **live pairing** (`interop/run-matrix.sh`) | two nodes complete a real hybrid handshake | not yet |
+
+### The road, in the order it is worth building
+
+**1. A socket.** Nothing new is needed from the crypto: brainstem already
+ships `socket` `connect` `bind` `listen` `accept` as ops `0x05`–`0x09`, built
+and gated on both its guests, and its own `bf/net/loopback6` fixture proves a
+brainfuck program can bind an ephemeral port, listen, connect to it, accept and
+exchange bytes. **This is the step that turns "bf computes the same bytes" into
+"bf sent bytes to something".**
+
+**2. A cheaper `mulmod136`.** Already an open item in bfsodium's `HANDOFF.md`
+and worth doing before step 4 rather than after: a Montgomery ladder performs
+about 2550 field multiplications, so every instruction saved in the multiply is
+saved 2550 times.
+
+**3. Keccak-f[1600]**, and SHAKE128/256 on top of it. A hard prerequisite for
+ML-KEM, whose sampling is SHAKE, and it unlocks the whole SHA-3 family as a
+side effect. Mechanical given a 64-bit idiom set.
+
+**4. ML-KEM-768 and X25519** — the hybrid handshake needs both, so neither
+alone finishes the job.
+
+### The cost, and a result that inverts the usual intuition
+
+**ML-KEM is the cheap half and X25519 is the expensive one.** That is backwards
+from most platforms and it follows directly from this one having no arithmetic:
+
+- ML-KEM's arithmetic is all mod **q = 3329**, a 13-bit modulus, so a modular
+  multiply is a **two-limb** multiply. The work is thousands of cheap
+  butterflies. Plausibly minutes per operation.
+- X25519's field is **2²⁵⁵−19**, thirty-two limbs. `mulmod136` is a measured
+  **987,082,567 instructions** at seventeen limbs, and partial products go as
+  the square of the limb count — so about **3.5 billion** per multiply, times
+  ~2550 for a ladder, is on the order of **four hours per scalar
+  multiplication**.
+
+X25519 is in scope *because of the shape of its prime*: 2²⁵⁵−19 is
+pseudo-Mersenne, reduced by multiplying the high half by a small constant and
+adding — exactly what `poly1305/mulmod136` already does for 2¹³⁰−5. bfsodium's
+`CONVENTIONS.md` §9.1 said elliptic curve was out of scope on the grounds that
+that trick does not transfer; it does not transfer to RSA or to the NIST
+P-curves, and it transfers exactly to Curve25519. That section has been
+corrected.
+
+**RSA and the NIST P-curves remain out of scope**, and BMX needs neither.
+
+## What it is not, today
+
+- **No handshake yet.** X25519 and ML-KEM-768 are steps 3 and 4 above. The
+  key-schedule vector supplies `ss_dh_hex` and `ss_kem_hex` as *inputs*, which
+  is exactly why the symmetric half could be checked first and on its own.
+- **No node and no certificates.** Nothing here speaks to a peer yet.
 - **No JSON.** The check scripts extract hex fields from the corpus with `sed`
   and convert them to bytes, then feed raw bytes to a brainfuck program. That
   is the same division every other port makes — Go reads the vector with Go's
