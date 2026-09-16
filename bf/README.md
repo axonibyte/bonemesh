@@ -8,6 +8,7 @@ where brainfuck honestly stops.
 ```
 spec/corpus/transcripts/transport-frame.json   reproduced,  6 s
 spec/corpus/transcripts/keyschedule.json       reproduced, 91 s
+same frame, sealed and sent through a TCP socket    reproduced
 ```
 
 ## What this is, exactly
@@ -41,15 +42,20 @@ same claim:
 | | what it proves | bf today |
 |---|---|---|
 | **corpus agreement** | everyone computes the same frozen bytes | **done**, both vectors |
+| **a socket** | brainfuck puts bytes on a wire under brainstem | **done**, `check-transport-socket-bf.sh` |
 | **live pairing** (`interop/run-matrix.sh`) | two nodes complete a real hybrid handshake | not yet |
 
 ### The road, in the order it is worth building
 
-**1. A socket.** Nothing new is needed from the crypto: brainstem already
+**1. A socket. DONE.** `bf/transport-socket.poke` binds an ephemeral port,
+listens, connects to it, accepts, seals the transport frame and sends the
+ciphertext through the socket, then reads it back off the accepted end -- and
+it lands on the same forty six bytes the frozen vector holds. Nothing new was
+needed from the crypto: brainstem already
 ships `socket` `connect` `bind` `listen` `accept` as ops `0x05`–`0x09`, built
 and gated on both its guests, and its own `bf/net/loopback6` fixture proves a
 brainfuck program can bind an ephemeral port, listen, connect to it, accept and
-exchange bytes. **This is the step that turns "bf computes the same bytes" into
+exchange bytes. **That step turned "bf computes the same bytes" into
 "bf sent bytes to something".**
 
 **2. A cheaper `mulmod136`.** Already an open item in bfsodium's `HANDOFF.md`
@@ -93,7 +99,8 @@ corrected.
 - **No handshake yet.** X25519 and ML-KEM-768 are steps 3 and 4 above. The
   key-schedule vector supplies `ss_dh_hex` and `ss_kem_hex` as *inputs*, which
   is exactly why the symmetric half could be checked first and on its own.
-- **No node and no certificates.** Nothing here speaks to a peer yet.
+- **No node and no certificates.** The socket path works, but nothing here
+  speaks to a peer in another language yet -- that is the handshake.
 - **No JSON.** The check scripts extract hex fields from the corpus with `sed`
   and convert them to bytes, then feed raw bytes to a brainfuck program. That
   is the same division every other port makes — Go reads the vector with Go's
@@ -122,7 +129,8 @@ works, and neither proves the join.
 
 ```sh
 sh bf/setup.sh                         # clone and build the pinned toolchain
-sh interop/check-transport-bf.sh
+sh interop/check-transport-bf.sh          # the sealed frame
+sh interop/check-transport-socket-bf.sh   # the same frame, over a socket
 sh interop/check-keyschedule-bf.sh
 ```
 
