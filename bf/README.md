@@ -58,10 +58,28 @@ brainfuck program can bind an ephemeral port, listen, connect to it, accept and
 exchange bytes. **That step turned "bf computes the same bytes" into
 "bf sent bytes to something".**
 
-**2. A cheaper `mulmod136`.** Already an open item in bfsodium's `HANDOFF.md`
-and worth doing before step 4 rather than after: a Montgomery ladder performs
-about 2550 field multiplications, so every instruction saved in the multiply is
-saved 2550 times.
+**2. A cheaper `mulmod136`. DONE**, and it moved step 4's headline more than
+its own. A Montgomery ladder performs about 2550 field multiplications, so
+every instruction saved in the multiply is saved 2550 times -- which is why
+this came before step 4 rather than after. Two changes in bfsodium, both tape
+layout rather than algorithm and both measured before they were built:
+`poly1305/fold136` now places five times the part above bit 130 as ONE two
+byte addend instead of entering the adder five times, and `poly1305/mulmod136`
+was relaid so that every pasted kernel runs AT the variable it operates on and
+nothing is carried to a work frame. `b` is walked a byte at a time rather than
+shifted right one bit per turn.
+
+| | before | after | |
+| ---|--- | --- | 0 |
+| `mulmod136`, large vector | 987,082,567 | 145,361,714 | **6.79x** |
+| AEAD, RFC 8439 2.8.2 | 11,584,909,050 | 3,581,010,128 | **3.24x** |
+
+More than half of the original went on carrying seventeen byte operands to and
+from a work frame, which nobody had counted, and only 7% on every kernel put
+together. See bfsodium's `HANDOFF.md` under *Cost* for the profile and for the
+remaining item: the fold that follows the doubling is 37% of what is left and
+is doing general work on a value that can only ever have 0, 1 or 2 above bit
+130. That one is worth taking before step 4 as well, for the same 2550 times.
 
 **3. Keccak-f[1600]**, and SHAKE128/256 on top of it. A hard prerequisite for
 ML-KEM, whose sampling is SHAKE, and it unlocks the whole SHA-3 family as a
@@ -79,10 +97,12 @@ from most platforms and it follows directly from this one having no arithmetic:
   multiply is a **two-limb** multiply. The work is thousands of cheap
   butterflies. Plausibly minutes per operation.
 - X25519's field is **2²⁵⁵−19**, thirty-two limbs. `mulmod136` is a measured
-  **987,082,567 instructions** at seventeen limbs, and partial products go as
-  the square of the limb count — so about **3.5 billion** per multiply, times
-  ~2550 for a ladder, is on the order of **four hours per scalar
-  multiplication**.
+  **145,361,714 instructions** at seventeen limbs, and partial products go as
+  the square of the limb count — so about **515 million** per multiply, times
+  ~2550 for a ladder, is on the order of **35 minutes per scalar
+  multiplication**. That number was **four hours** until step 2 was done, on a
+  `mulmod136` of 987 million; the estimate scales with the multiply and so
+  does the next improvement to it.
 
 X25519 is in scope *because of the shape of its prime*: 2²⁵⁵−19 is
 pseudo-Mersenne, reduced by multiplying the high half by a small constant and
