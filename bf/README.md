@@ -71,19 +71,32 @@ shifted right one bit per turn.
 
 | | before | after | |
 | ---|--- | --- | 0 |
-| `mulmod136`, large vector | 987,082,567 | 145,361,714 | **6.79x** |
-| AEAD, RFC 8439 2.8.2 | 11,584,909,050 | 3,581,010,128 | **3.24x** |
+| `mulmod136`, large vector | 987,082,567 | 89,473,525 | **11.0x** |
+| AEAD, RFC 8439 2.8.2 | 11,584,909,050 | 1,937,080,043 | **5.98x** |
 
 More than half of the original went on carrying seventeen byte operands to and
 from a work frame, which nobody had counted, and only 7% on every kernel put
-together. See bfsodium's `HANDOFF.md` under *Cost* for the profile and for the
-remaining item: the fold that follows the doubling is 37% of what is left and
-is doing general work on a value that can only ever have 0, 1 or 2 above bit
-130. That one is worth taking before step 4 as well, for the same 2550 times.
+together.
 
-**3. Keccak-f[1600]**, and SHAKE128/256 on top of it. A hard prerequisite for
-ML-KEM, whose sampling is SHAKE, and it unlocks the whole SHA-3 family as a
-side effect. Mechanical given a 64-bit idiom set.
+**And the remaining item named here has since been taken, and was not what it
+said it was.** This paragraph used to ask for a second fold specialised to the
+value a doubling leaves behind. The measurement said otherwise: `fold136` was
+entering `add136`, which is seventeen entries of `add8`, to add a number that
+is at most two bytes — and `add8` costs the same whatever its addend is,
+because nearly all of it is finding bit 7 of the *accumulator*. Fifteen of
+those seventeen entries were adding nothing. `fold136` now adds its two bytes
+with two entries of `add8` and lets the carry ripple, which took `mulmod136`
+from 145,361,714 to 89,473,525 with no new file at all. The AEAD's other
+1.57x in the table above is ChaCha's rotation, rebuilt so that it never
+shifts left. See bfsodium's `HANDOFF.md` under *Cost* for both profiles.
+
+**3. Keccak-f[1600]. DONE**, and the whole of FIPS 202 with it: the
+permutation, the sponge at three rates, SHA3-224/256/384/512 and SHAKE128 and
+SHAKE256. **SHAKE128 is the one ML-KEM actually calls** — its matrix sampling
+is a SHAKE128 squeeze of a few hundred bytes per entry — so step 4's
+prerequisite is in hand. The permutation is 2,483,822,414 instructions, about
+four seconds, after the round's tape was re-laid for a 1.59x that cost no
+change to the arithmetic at all.
 
 **4. ML-KEM-768 and X25519** — the hybrid handshake needs both, so neither
 alone finishes the job.
@@ -97,12 +110,13 @@ from most platforms and it follows directly from this one having no arithmetic:
   multiply is a **two-limb** multiply. The work is thousands of cheap
   butterflies. Plausibly minutes per operation.
 - X25519's field is **2²⁵⁵−19**, thirty-two limbs. `mulmod136` is a measured
-  **145,361,714 instructions** at seventeen limbs, and partial products go as
-  the square of the limb count — so about **515 million** per multiply, times
-  ~2550 for a ladder, is on the order of **35 minutes per scalar
-  multiplication**. That number was **four hours** until step 2 was done, on a
-  `mulmod136` of 987 million; the estimate scales with the multiply and so
-  does the next improvement to it.
+  **89,473,525 instructions** at seventeen limbs, and partial products go as
+  the square of the limb count — so about **317 million** per multiply, times
+  ~2550 for a ladder, is on the order of **twenty-two minutes per scalar
+  multiplication**. That number was **four hours** before step 2, on a
+  `mulmod136` of 987 million, and **35 minutes** at the 145 million step 2
+  first reached; the estimate scales with the multiply and so does the next
+  improvement to it.
 
 X25519 is in scope *because of the shape of its prime*: 2²⁵⁵−19 is
 pseudo-Mersenne, reduced by multiplying the high half by a small constant and
