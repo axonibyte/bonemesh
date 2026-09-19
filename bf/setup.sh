@@ -29,7 +29,7 @@
 set -eu
 
 # bfsodium at the revision this port was checked against.
-BFSODIUM_COMMIT=436a11aec43a53649de3d7b04e672954c24aac66
+BFSODIUM_COMMIT=b2143ccf6286a2931886949736c1ff46c121d11a
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=${BF_TOOLCHAIN:-$here/toolchain}
@@ -40,9 +40,27 @@ command -v git >/dev/null 2>&1 || { echo "setup: no git" >&2; exit 1; }
 # Already at the pin? Recorded in a file rather than asked of git, so that
 # "already built" and "built something else" are different answers -- the same
 # reason bfsodium records brainstem's.
+#
+# AND THE CHECKOUT MUST BE UNMODIFIED, which is new and is the thing that
+# replaced a copy. bf/run.sh used to copy every routine into a scratch
+# directory before running; it now runs the broker IN this checkout, so a
+# program that wrote a file would leave it here and the next run would use
+# it -- with PINNED still matching and nothing re-fetched. The old copy made
+# that harmless by accident. This makes it VISIBLE on purpose, which is the
+# better trade: it also catches a human editing the toolchain by hand, which
+# the copy never did. tools/ is excluded because setup.sh builds bfi and hx
+# into it itself.
 if [ -x "$root/bfsodium/tools/bfi" ] && [ -x "$root/brainstem/build/brainstem" ] \
    && [ "$(cat "$root/PINNED" 2>/dev/null)" = "$BFSODIUM_COMMIT" ]; then
-    echo "setup: already built at bfsodium $BFSODIUM_COMMIT"
+    dirty=$(git -C "$root/bfsodium" status --porcelain 2>/dev/null \
+              | grep -v '^?? tools/' || true)
+    if [ -n "$dirty" ]; then
+        echo "setup: the pinned bfsodium checkout has been MODIFIED:" >&2
+        printf '%s\n' "$dirty" >&2
+        echo "setup: delete $root and run this again" >&2
+        exit 1
+    fi
+    echo "setup: already built at bfsodium $BFSODIUM_COMMIT, checkout clean"
     exit 0
 fi
 

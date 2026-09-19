@@ -53,10 +53,10 @@ READ 11
 #   frame into 7 and this program reads it from 6.
 EMIT 0e 02 00 00 00
 READ 11
-#   spawn  op 0f, len 0x30 = 48.
+#   spawn  op 0f, len 0x35 = 53.
 #     dir ffffffff meaning the broker's working directory, flags 0,
 #     nfdmap 2, nargv 2, nenv 0, reserved 0
-EMIT 0f 30 00 ff ff ff ff 00 00 02 02 00 00
+EMIT 0f 35 00 ff ff ff ff 00 00 02 02 00 00
 #     child fd 0 gets handle 4, child fd 1 gets handle 7.  Any descriptor not
 #     named here is closed, so the routine gets these two and nothing else.
 EMIT 00 04 00 00 00
@@ -68,7 +68,7 @@ EMIT 00 00
 #     argv[0] is the label "bfi", which nothing resolves
 EMIT 03 00 62 66 69
 #     argv[1] is the routine: "chacha20poly1305.bf"
-EMIT 13 00 63 68 61 63 68 61 32 30 70 6f 6c 79 31 33 30 35 2e 62 66
+EMIT 18 00 61 65 61 64 2f 63 68 61 63 68 61 32 30 70 6f 6c 79 31 33 30 35 2e 62 66
 #     the reply is a process handle: 8
 READ 7
 #   close the outer copies of the child's two ends.  Without this the routine

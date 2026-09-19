@@ -9,12 +9,35 @@
 # because what it does is SEQUENCE routines by spawning them, and the eight
 # instructions cannot spawn anything on their own.
 #
-# WHAT THE SCRATCH DIRECTORY IS FOR. The program spawns an interpreter on a
-# bfsodium routine BY NAME, resolved against the broker's working directory,
-# so that directory has to contain the interpreter and every routine a program
-# might name. They are copied rather than symlinked, because the broker
-# resolves the name against its own working directory and a symlink would
-# reach back into the toolchain this is deliberately isolated from.
+# THE BROKER RUNS IN THE PINNED CHECKOUT, and nothing is copied anywhere. A
+# program spawns a routine BY NAME, resolved against the broker's working
+# directory, so that directory is bfsodium's own tree and a routine is named
+# exactly as bfsodium names it: sha256/hkdf.bf, not hkdf.bf.
+#
+# IT USED TO FLATTEN EVERY ROUTINE INTO A SCRATCH DIRECTORY UNDER ITS BASENAME
+# and that was wrong in two ways, one slow and one dangerous.
+#
+# The dangerous one first. bfsodium has a sha256 family and a sha512 family
+# and five of their basenames are the same -- expand, hashcore, hkdf, hmac,
+# round. Flattened, the later one wins, so a program asking for hkdf.bf
+# silently got HKDF-SHA-512 while its own transcript said SHA256. That is not
+# a name clash, it is THE HARNESS CHOOSING THE CIPHER SUITE, and it is exactly
+# the binding that must not be implicit in a protocol whose suite string is
+# hashed into h_init. A qualified name puts the choice back in the program,
+# where the corpus can check it. It was found by bumping the pin and watching
+# ck_after_dh disagree with the frozen vector; nothing else could see it.
+#
+# The slow one: it copied every routine bfsodium has, 58 files and 155 MB, to
+# make three of them reachable -- once per program run, and growing with
+# everything bfsodium would ever add.
+#
+# AND THE ISOLATION IT CLAIMED WAS NEVER REAL. The old comment said a symlink
+# "would reach back into the toolchain this is deliberately isolated from",
+# but brainstem's path check refuses exactly two things, an empty path and an
+# embedded NUL, and its own comment says why: "brainstem is not a sandbox" has
+# been in its CONVENTIONS since the first commit. A program could always have
+# named an absolute path. What the copy did buy is a checkout that stays
+# pristine, and bf/setup.sh now asserts that directly instead.
 #
 # THE WALL CLOCK BOUND IS GENEROUS ON PURPOSE. Brainfuck has no arithmetic:
 # SHA-256 of one 64 byte block is about 1.15 billion interpreter instructions,
@@ -41,19 +64,13 @@ bs=$root/brainstem
 [ -x "$bs/build/brainstem" ] || { echo "run: no broker -- run bf/setup.sh" >&2; exit 2; }
 [ -x "$bfs/tools/bfi" ]      || { echo "run: no interpreter -- run bf/setup.sh" >&2; exit 2; }
 
-d=$(mktemp -d)
-trap 'rm -rf "$d"' EXIT
-
-cp "$bfs/tools/bfi" "$d/bfi"
-cp "$prog" "$d/prog.bf"
-# Every routine a program might spawn, flattened in under its basename, which
-# is how the broker will resolve it.
-for r in "$bfs"/*/*.bf; do
-    case "$r" in */programs/*) continue ;; esac
-    cp "$r" "$d/$(basename "$r")"
-done
-
 # stdin and stdout are inherited untouched: the shell already connected them
 # to whatever the caller meant, and the broker hands them to the program.
-( cd "$d" && timeout "${BF_TIMEOUT:-3600}" "$bs/build/brainstem" \
-    --op-timeout "${BF_OP_TIMEOUT:-1800000}" -- ./bfi ./prog.bf )
+#
+# The program is named by the absolute path made above, because the cd moves
+# the ground under a relative one. The interpreter is named relative to the
+# checkout and the broker RECORDS it, so a spawn frame with a zero length
+# path still means "the interpreter I am running under" and no program has
+# to carry its name.
+( cd "$bfs" && timeout "${BF_TIMEOUT:-3600}" "$bs/build/brainstem" \
+    --op-timeout "${BF_OP_TIMEOUT:-1800000}" -- ./tools/bfi "$prog" )
