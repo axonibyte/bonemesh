@@ -1,0 +1,189 @@
+# CI for bonemesh -- eight implementations of one wire protocol.
+#
+# Ported from rumor's workflow: no actions/checkout, a timeout(1) on every
+# external call plus a timeout-minutes backstop, rc 124 reported separately from
+# a failure, set -o pipefail, a non-fatal probe first, and every step emitting a
+# value only execution could have produced.
+#
+# TWO JOBS, AND THE SPLIT IS FORCED BY THE RUNNERS, not by taste. ci/test-impl.sh
+# is still the single source of truth for how each implementation is tested --
+# this file only decides where each invocation can run:
+#
+#   impls (freebsd-15-jail)  go, rust, js, php, elixir, python, spec
+#   java  (freebsd-15-host)  java, and the shadowJar the deploy publishes
+#
+# Java has to leave the jail because gradle's client and daemon talk over TCP and
+# the daemon accepts only a 127/8 peer, which the non-VNET jail cannot offer; the
+# same reason reaper's e2e suite moved. Everything else runs in the jail
+# alongside rumor.
+#
+# WHAT THE BITBUCKET PIPELINE DID AND THIS DOES NOT: eight containers, one per
+# language. The toolchains are installed on the runners instead, and three gaps
+# were real and are now closed rather than skipped -- php needed php82-sodium
+# (25 of 93 php assertions were failing on an undefined
+# sodium_crypto_aead_chacha20poly1305_ietf_encrypt), python needed
+# FreeBSD-openssl-dev before cryptography 50.0.1 could build its rust extension
+# (openssl/opensslv.h was absent), and java needed openjdk25 on the host because
+# java/build.gradle asks for languageVersion 25 by toolchain. All eight were
+# driven green on 2026-10-20 before this shipped.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  impls:
+    runs-on: freebsd-15-jail
+    timeout-minutes: 60
+    steps:
+      - name: probe the runner (non-fatal; names what is absent)
+        run: |
+          set -o pipefail
+          echo "runner: $(uname -srm)"
+          for t in git go node npm php uv python3.12 cargo elixir mix; do
+            p=$(command -v "$t" 2>/dev/null) || p=""
+            if [ -n "$p" ]; then echo "$t: $p"; else echo "$t: ABSENT"; fi
+          done
+          timeout 30 php -r 'echo "php sodium: ", extension_loaded("sodium") ? "loaded" : "MISSING", "\n";'
+
+      - name: fetch the tree with git, not a JS action
+        run: |
+          set -o pipefail
+          rc=0
+          timeout 180 git clone --quiet --depth 1 \
+            --branch "${GITHUB_REF_NAME:-main}" \
+            "${GITHUB_SERVER_URL:-https://forge.axonibyte.com}/${GITHUB_REPOSITORY}.git" \
+            src > clone.log 2>&1 || rc=$?
+          if [ "$rc" = 124 ]; then echo "clone did not answer in 180s"; exit 1; fi
+          if [ "$rc" != 0 ]; then echo "clone failed rc=$rc"; tail -5 clone.log; exit 1; fi
+          echo "HEAD: $(git -C src rev-parse --short HEAD)"
+          echo "version: $(sed -n 's/^prjVersion=//p' src/java/gradle.properties | head -1)"
+          echo "corpus families: $(ls src/interop/check-*.sh | wc -l | tr -d ' ') check scripts"
+
+      - name: the seven implementations this runner can host
+        run: |
+          set -o pipefail
+          cd src
+          failed=""
+          for impl in go rust js php elixir python spec; do
+            rc=0
+            timeout 1800 sh ci/test-impl.sh "$impl" > "../$impl.log" 2>&1 || rc=$?
+            if [ "$rc" = 124 ]; then echo "$impl: did not answer in 1800s"; failed="$failed $impl"; continue; fi
+            if [ "$rc" != 0 ]; then
+              echo "$impl: rc=$rc"
+              grep -E "^FAIL|FAIL |error|Error" "../$impl.log" | head -8
+              failed="$failed $impl"
+              continue
+            fi
+            echo "$impl: $(grep -cE '^(PASS|ok|test-impl)' "../$impl.log") reported lines, rc 0"
+          done
+          [ -z "$failed" ] || { echo "failed:$failed"; exit 1; }
+          echo "seven implementations green: go rust js php elixir python spec"
+
+  java:
+    runs-on: freebsd-15-host
+    timeout-minutes: 45
+    steps:
+      - name: probe the runner (non-fatal; names what is absent)
+        run: |
+          set -o pipefail
+          echo "runner: $(uname -srm)"
+          for v in 17 21 25; do
+            d=/usr/local/openjdk$v
+            if [ -d "$d" ]; then echo "openjdk$v: $d"; else echo "openjdk$v: ABSENT"; fi
+          done
+          timeout 30 java -version 2>&1 | head -1
+
+      - name: fetch the tree with git, not a JS action
+        run: |
+          set -o pipefail
+          rc=0
+          timeout 180 git clone --quiet --depth 1 \
+            --branch "${GITHUB_REF_NAME:-main}" \
+            "${GITHUB_SERVER_URL:-https://forge.axonibyte.com}/${GITHUB_REPOSITORY}.git" \
+            src > clone.log 2>&1 || rc=$?
+          if [ "$rc" = 124 ]; then echo "clone did not answer in 180s"; exit 1; fi
+          if [ "$rc" != 0 ]; then echo "clone failed rc=$rc"; tail -5 clone.log; exit 1; fi
+          echo "HEAD: $(git -C src rev-parse --short HEAD)"
+
+      - name: the java implementation and its corpus checks
+        run: |
+          set -o pipefail
+          cd src
+          rc=0
+          timeout 1800 sh ci/test-impl.sh java > ../java.log 2>&1 || rc=$?
+          if [ "$rc" = 124 ]; then echo "java did not answer in 1800s"; exit 1; fi
+          [ "$rc" = 0 ] || { echo "java rc=$rc"; grep -E "^FAIL|error:|FAILURE" ../java.log | head -12; exit 1; }
+          echo "java: $(grep -cE '^(PASS|test-impl|BUILD SUCCESSFUL)' ../java.log) reported lines, rc 0"
+
+      - name: the shadow jar, which is what gets published
+        run: |
+          set -o pipefail
+          cd src/java
+          rc=0
+          timeout 1200 bash ./gradlew --no-daemon --console=plain clean test shadowJar \
+            > ../../jar.log 2>&1 || rc=$?
+          if [ "$rc" = 124 ]; then echo "gradle did not answer in 1200s"; exit 1; fi
+          [ "$rc" = 0 ] || { echo "gradle rc=$rc"; grep -E "^(error|FAILURE)" ../../jar.log | head -10; exit 1; }
+          n=0
+          for j in build/libs/*.jar; do
+            [ -f "$j" ] || continue
+            echo "$(basename "$j") $(wc -c < "$j" | tr -d ' ') bytes sha256=$(sha256 -q "$j")"
+            n=$((n + 1))
+          done
+          [ "$n" -ge 1 ] || { echo "shadowJar produced no jar"; exit 1; }
+
+      - name: on a tag, the tag and gradle.properties must agree
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -o pipefail
+          cd src
+          tag="${GITHUB_REF_NAME}"
+          ver=$(sed -n 's/^prjVersion=//p' java/gradle.properties | head -1)
+          [ -n "$ver" ] || { echo "java/gradle.properties declares no prjVersion"; exit 1; }
+          echo "tag=$tag prjVersion=$ver"
+          case "$tag" in
+            "v$ver"|"$ver") echo "they agree" ;;
+            *) echo "REFUSED: tag $tag does not name version $ver"; exit 1 ;;
+          esac
+
+      - name: on a tag, publish the jar to the forge
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          PACKAGE_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+        run: |
+          set -o pipefail
+          cd src
+          [ -n "$PACKAGE_TOKEN" ] || { echo "no PACKAGE_TOKEN secret: refusing to report a publish that cannot happen"; exit 1; }
+          ver=$(sed -n 's/^prjVersion=//p' java/gradle.properties | head -1)
+          cfg=$(mktemp); chmod 600 "$cfg"
+          printf 'header = "Authorization: token %s"\n' "$PACKAGE_TOKEN" > "$cfg"
+          base="${GITHUB_SERVER_URL:-https://forge.axonibyte.com}/api/packages/${GITHUB_REPOSITORY_OWNER}/generic/bonemesh/$ver"
+          n=0
+          for j in java/build/libs/*.jar; do
+            [ -f "$j" ] || continue
+            sha256 -q "$j" > "$j.sha256"
+            for f in "$j" "$j.sha256"; do
+              b=$(basename "$f")
+              code=$(timeout 300 curl --config "$cfg" -s -o ../put.log -w '%{http_code}' \
+                     -X PUT --upload-file "$f" "$base/$b")
+              echo "PUT $b -> ${code:-no response}"
+              case "$code" in
+                201) ;;
+                409) rm -f "$cfg"; echo "REFUSED: $ver already carries $b; a published version is immutable"; exit 1 ;;
+                *) rm -f "$cfg"; echo "upload failed"; head -c 300 ../put.log; exit 1 ;;
+              esac
+              n=$((n + 1))
+            done
+            got=$(timeout 180 curl -sS -o "../got-$(basename "$j")" -w '%{http_code}' "$base/$(basename "$j")")
+            cmp -s "$j" "../got-$(basename "$j")" || { rm -f "$cfg"; echo "the served jar is not the jar we built"; exit 1; }
+            echo "  read back anonymously -> $got, byte-identical"
+          done
+          rm -f "$cfg"
+          echo "published $n file(s) under $base"
+          [ "$n" -ge 2 ] || { echo "nothing was published"; exit 1; }
