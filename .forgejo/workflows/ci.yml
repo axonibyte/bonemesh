@@ -55,12 +55,31 @@ jobs:
         run: |
           set -o pipefail
           rc=0
-          timeout 180 git clone --quiet --depth 1 \
-            --branch "${GITHUB_REF_NAME:-main}" \
-            "${GITHUB_SERVER_URL:-https://forge.axonibyte.com}/${GITHUB_REPOSITORY}.git" \
-            src > clone.log 2>&1 || rc=$?
-          if [ "$rc" = 124 ]; then echo "clone did not answer in 180s"; exit 1; fi
-          if [ "$rc" != 0 ]; then echo "clone failed rc=$rc"; tail -5 clone.log; exit 1; fi
+          repo="${GITHUB_SERVER_URL:-https://forge.axonibyte.com}/${GITHUB_REPOSITORY}.git"
+          # A pull request's ref is refs/pull/<n>/head: not a branch, so
+          # `--branch` cannot name it, and for a request from a fork it names
+          # a commit that lives in the fork and not here. The base repository
+          # serves that ref itself, fork or not, so a pull request is fetched
+          # by it -- the request's own head, which is what the HEAD line
+          # below then names. A push or a tag is the branch or tag it says.
+          case "${GITHUB_REF:-}" in
+            refs/pull/*)
+              pr=${GITHUB_REF#refs/pull/}; pr=${pr%%/*}
+              what="pull request #${pr}"
+              timeout 180 git clone --quiet --depth 1 --no-checkout "$repo" src > clone.log 2>&1 || rc=$?
+              if [ "$rc" = 0 ]; then
+                timeout 180 git -C src fetch --quiet --depth 1 origin "refs/pull/${pr}/head" >> clone.log 2>&1 || rc=$?
+              fi
+              if [ "$rc" = 0 ]; then
+                git -C src checkout --quiet --detach FETCH_HEAD >> clone.log 2>&1 || rc=$?
+              fi ;;
+            *)
+              what="${GITHUB_REF_NAME:-main}"
+              timeout 180 git clone --quiet --depth 1 --branch "$what" "$repo" src > clone.log 2>&1 || rc=$? ;;
+          esac
+          if [ "$rc" = 124 ]; then echo "fetching $what did not answer in 180s"; exit 1; fi
+          if [ "$rc" != 0 ]; then echo "fetching $what failed rc=$rc"; tail -5 clone.log; exit 1; fi
+          echo "fetched: $what"
           echo "HEAD: $(git -C src rev-parse --short HEAD)"
           echo "version: $(sed -n 's/^prjVersion=//p' src/java/gradle.properties | head -1)"
           echo "corpus families: $(ls src/interop/check-*.sh | wc -l | tr -d ' ') check scripts"
@@ -86,6 +105,21 @@ jobs:
           echo "seven implementations green: go rust js php elixir python spec"
 
   java:
+    # NO `permissions:` BLOCK, DELIBERATELY. This forge IGNORES the key, so
+    # declaring it states a contract nothing enforces. MEASURED on Forgejo
+    # 15.0.9, 2026-10-27: a job declaring `permissions: contents: read` was
+    # allowed to CREATE A RELEASE -- a contents write -- and the forge
+    # answered 201. An earlier version of this file carried `contents: write`
+    # with a comment calling it "a stated contract" so "a step that needs
+    # more fails by name instead of succeeding on borrowed reach". That was
+    # false in every clause, and a comment asserting a guarantee that does
+    # not exist is worse than no comment: it tells the next reader the job is
+    # bounded when it is not.
+    #
+    # Forgejo's position is that the automatic token carries repository
+    # access and is not configurable per job (forgejo#6904, closed by
+    # design). Authorized Integrations in 16.0 are the supported way to ask
+    # for more; this forge runs 15.0.9 and does not have them.
     runs-on: freebsd-15-host
     timeout-minutes: 45
     steps:
@@ -103,12 +137,31 @@ jobs:
         run: |
           set -o pipefail
           rc=0
-          timeout 180 git clone --quiet --depth 1 \
-            --branch "${GITHUB_REF_NAME:-main}" \
-            "${GITHUB_SERVER_URL:-https://forge.axonibyte.com}/${GITHUB_REPOSITORY}.git" \
-            src > clone.log 2>&1 || rc=$?
-          if [ "$rc" = 124 ]; then echo "clone did not answer in 180s"; exit 1; fi
-          if [ "$rc" != 0 ]; then echo "clone failed rc=$rc"; tail -5 clone.log; exit 1; fi
+          repo="${GITHUB_SERVER_URL:-https://forge.axonibyte.com}/${GITHUB_REPOSITORY}.git"
+          # A pull request's ref is refs/pull/<n>/head: not a branch, so
+          # `--branch` cannot name it, and for a request from a fork it names
+          # a commit that lives in the fork and not here. The base repository
+          # serves that ref itself, fork or not, so a pull request is fetched
+          # by it -- the request's own head, which is what the HEAD line
+          # below then names. A push or a tag is the branch or tag it says.
+          case "${GITHUB_REF:-}" in
+            refs/pull/*)
+              pr=${GITHUB_REF#refs/pull/}; pr=${pr%%/*}
+              what="pull request #${pr}"
+              timeout 180 git clone --quiet --depth 1 --no-checkout "$repo" src > clone.log 2>&1 || rc=$?
+              if [ "$rc" = 0 ]; then
+                timeout 180 git -C src fetch --quiet --depth 1 origin "refs/pull/${pr}/head" >> clone.log 2>&1 || rc=$?
+              fi
+              if [ "$rc" = 0 ]; then
+                git -C src checkout --quiet --detach FETCH_HEAD >> clone.log 2>&1 || rc=$?
+              fi ;;
+            *)
+              what="${GITHUB_REF_NAME:-main}"
+              timeout 180 git clone --quiet --depth 1 --branch "$what" "$repo" src > clone.log 2>&1 || rc=$? ;;
+          esac
+          if [ "$rc" = 124 ]; then echo "fetching $what did not answer in 180s"; exit 1; fi
+          if [ "$rc" != 0 ]; then echo "fetching $what failed rc=$rc"; tail -5 clone.log; exit 1; fi
+          echo "fetched: $what"
           echo "HEAD: $(git -C src rev-parse --short HEAD)"
 
       - name: the java implementation and its corpus checks
@@ -152,38 +205,189 @@ jobs:
             *) echo "REFUSED: tag $tag does not name version $ver"; exit 1 ;;
           esac
 
-      - name: on a tag, publish the jar to the forge
-        if: startsWith(github.ref, 'refs/tags/')
+      # THE RELEASE PATH, DRIVEN WITHOUT A TAG. Everything in the step below
+      # runs only on refs/tags, so nothing exercises the token's reach or the
+      # attach until a release is already under way -- which is exactly how
+      # six binaries reached the package registry unlinked and nobody saw it,
+      # and how the old publish step survived to 2026-10-27 holding a
+      # credential that could not have worked. The same three calls here run
+      # against a DRAFT release on a throwaway tag and delete it afterwards,
+      # so the mechanism is provable on any manual run.
+      #
+      # A DRAFT ON A TAG THAT DOES NOT EXIST publishes nothing: Forgejo
+      # creates the tag only when the release leaves draft, so this cannot
+      # leave a tag or a visible release behind even if the delete fails.
+      - name: prove the release path (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
         env:
-          PACKAGE_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
-          cd src
-          [ -n "$PACKAGE_TOKEN" ] || { echo "no PACKAGE_TOKEN secret: refusing to report a publish that cannot happen"; exit 1; }
-          ver=$(sed -n 's/^prjVersion=//p' java/gradle.properties | head -1)
+          [ -n "$RELEASE_TOKEN" ] || { echo "the job was minted no token"; exit 1; }
+          command -v jq > /dev/null 2>&1 || { echo "jq is ABSENT and this step reads the forge's JSON with it. PROVISIONING finding."; exit 1; }
+          api="${GITHUB_SERVER_URL:-https://forge.axonibyte.com}/api/v1/repos/${GITHUB_REPOSITORY}"
+          tag="ci-selftest-${GITHUB_RUN_ID:-manual}"
           cfg=$(mktemp); chmod 600 "$cfg"
-          printf 'header = "Authorization: token %s"\n' "$PACKAGE_TOKEN" > "$cfg"
-          base="${GITHUB_SERVER_URL:-https://forge.axonibyte.com}/api/packages/${GITHUB_REPOSITORY_OWNER}/generic/bonemesh/$ver"
+          printf 'header = "Authorization: token %s"\n' "$RELEASE_TOKEN" > "$cfg"
+          trap 'rm -f "$cfg"' EXIT
+          printf 'selftest\n' > selftest.txt
+
+          payload=$(jq -nc --arg t "$tag" '{tag_name: $t, name: $t, draft: true, prerelease: true}')
+          code=$(printf '%s' "$payload" | timeout 60 curl --config "$cfg" -s -o rel.json -w '%{http_code}' \
+                 -X POST -H 'Content-Type: application/json' --data-binary @- "$api/releases")
+          echo "CREATE -> $code"
+          case "$code" in
+            200 | 201) : ;;
+            *) echo "the minted token CANNOT create a release"; head -c 400 rel.json; exit 1 ;;
+          esac
+          id=$(jq -r '.id' < rel.json)
+          if [ -z "$id" ] || [ "$id" = null ]; then echo "no release id"; head -c 400 rel.json; exit 1; fi
+
+          code=$(timeout 60 curl --config "$cfg" -s -o asset.json -w '%{http_code}' \
+                 -X POST -F "attachment=@selftest.txt" "$api/releases/$id/assets?name=selftest.txt")
+          echo "ATTACH -> $code"
+          case "$code" in
+            200 | 201) : ;;
+            *) echo "the minted token CANNOT attach a release asset"; head -c 400 asset.json
+               timeout 60 curl --config "$cfg" -s -o /dev/null -X DELETE "$api/releases/$id"; exit 1 ;;
+          esac
+
+          seen=$(timeout 60 curl --config "$cfg" -s "$api/releases/$id" | jq -r '[.assets[].name] | join(" ")')
+          if [ "$seen" = "selftest.txt" ]; then
+            echo "ASSERTED: release $tag reads back carrying exactly [$seen]"
+          else
+            echo "the attach reported success and the release carries [$seen]"
+            timeout 60 curl --config "$cfg" -s -o /dev/null -X DELETE "$api/releases/$id"; exit 1
+          fi
+
+          # CLEANED UP, so a proof does not leave a release behind. The delete
+          # is CHECKED: a self-test that quietly accumulates draft releases is
+          # the kind of mess nobody notices until there are forty of them.
+          gone=$(timeout 60 curl --config "$cfg" -s -o /dev/null -w '%{http_code}' -X DELETE "$api/releases/$id")
+          echo "DELETE -> $gone"
+          case "$gone" in
+            204) : ;;
+            *) echo "the draft release $tag (id $id) could NOT be deleted and is still there"; exit 1 ;;
+          esac
+
+      # THE ARTIFACTS GO TO THE RELEASE, NOT TO THE PACKAGE REGISTRY. Until
+      # 2026-10-27 a tag here PUT every file into the org's GENERIC package
+      # registry, so the tag a person was pointed at carried nothing they
+      # could download, and the uploads sat in a registry whose repository
+      # field was null -- a generic upload is owner-scoped and nothing linked
+      # it back. cal's correction, 2026-10-27: "Packages are more for
+      # containers or dependency stores. Releases are for human downloads."
+      #
+      # THE SAME CHANGE SETTLES THE CREDENTIAL. The old step authenticated as
+      # a person, through an ORG-level PACKAGE_TOKEN holding agent-ibis's own
+      # credential: readable by every repository in the org, broken for all of
+      # them the day that account rotates, and a human's name stamped on an
+      # automated upload (plumb, coop main/370). This uses the token Forgejo
+      # mints per run. That token is REFUSED by the package registry -- reaper
+      # task 681 drove the old path with it and got `PUT -> 401`,
+      # reqPackageAccess -- and it is the same token rumor's tag-pipeline has
+      # created every one of its releases with. The destination that is
+      # correct is also the one that works without a person's credential.
+      - name: on a tag, create the release and attach the jar
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          cd src || exit 1
+          [ -n "$RELEASE_TOKEN" ] || { echo "the job was minted no token: refusing to report a publish that cannot happen"; exit 1; }
+          command -v jq > /dev/null 2>&1 || { echo "jq is ABSENT and this step reads the forge's JSON with it. PROVISIONING finding, publishing nothing."; exit 1; }
+          tag="${GITHUB_REF_NAME}"
+          api="${GITHUB_SERVER_URL:-https://forge.axonibyte.com}/api/v1/repos/${GITHUB_REPOSITORY}"
+          # The credential reaches curl through a 0600 config file and never
+          # through argv: `ps` is world readable on this runner.
+          cfg=$(mktemp); chmod 600 "$cfg"
+          printf 'header = "Authorization: token %s"\n' "$RELEASE_TOKEN" > "$cfg"
+          trap 'rm -f "$cfg"' EXIT
+          ver=$(sed -n 's/^prjVersion=//p' java/gradle.properties | head -1)
+          [ -n "$ver" ] || { echo "java/gradle.properties declares no prjVersion"; exit 1; }
+
+          # THE PER-JAR .sha256 FILES ARE GONE, replaced by one SHA256SUMS
+          # beside the artifacts -- the shape rumor's releases already use.
+          # Two checksum conventions over the same files is one more than a
+          # reader needs, and the old one produced a .sha256 whose own name
+          # was the only thing saying what it covered.
+          rm -rf ../dist && mkdir -p ../dist
           n=0
           for j in java/build/libs/*.jar; do
             [ -f "$j" ] || continue
-            sha256 -q "$j" > "$j.sha256"
-            for f in "$j" "$j.sha256"; do
-              b=$(basename "$f")
-              code=$(timeout 300 curl --config "$cfg" -s -o ../put.log -w '%{http_code}' \
-                     -X PUT --upload-file "$f" "$base/$b")
-              echo "PUT $b -> ${code:-no response}"
-              case "$code" in
-                201) ;;
-                409) rm -f "$cfg"; echo "REFUSED: $ver already carries $b; a published version is immutable"; exit 1 ;;
-                *) rm -f "$cfg"; echo "upload failed"; head -c 300 ../put.log; exit 1 ;;
-              esac
-              n=$((n + 1))
-            done
-            got=$(timeout 180 curl -sS -o "../got-$(basename "$j")" -w '%{http_code}' "$base/$(basename "$j")")
-            cmp -s "$j" "../got-$(basename "$j")" || { rm -f "$cfg"; echo "the served jar is not the jar we built"; exit 1; }
-            echo "  read back anonymously -> $got, byte-identical"
+            cp "$j" "../dist/$(basename "$j")" || exit 1
+            n=$((n + 1))
           done
-          rm -f "$cfg"
-          echo "published $n file(s) under $base"
-          [ "$n" -ge 2 ] || { echo "nothing was published"; exit 1; }
+          [ "$n" -ge 1 ] || { echo "the gradle build produced no jar to attach"; exit 1; }
+          # SHA256SUMS IS WRITTEN OUTSIDE dist AND MOVED IN. The redirection
+          # is opened before the subshell changes directory, so writing it
+          # straight into dist/ would create the file first and the glob would
+          # then checksum the checksum file.
+          (cd ../dist && sha256 -r -- *) > ../SHA256SUMS || { echo "could not checksum the staged files"; exit 1; }
+          mv ../SHA256SUMS ../dist/SHA256SUMS
+          echo "staged $n file(s) and SHA256SUMS:"
+          cat ../dist/SHA256SUMS
+
+          # 0.x IS A PRERELEASE, the same rule rumor's tag pipeline applies, so
+          # the forge's "latest" does not advertise a version the project has
+          # not promised to keep stable.
+          case "$ver" in 0.*) pre=true ;; *) pre=false ;; esac
+          payload=$(jq -nc --arg t "$tag" --argjson p "$pre" \
+                    '{tag_name: $t, name: $t, draft: false, prerelease: $p}')
+          code=$(printf '%s' "$payload" | timeout 60 curl --config "$cfg" -s -o ../rel.json -w '%{http_code}' \
+                 -X POST -H 'Content-Type: application/json' --data-binary @- "$api/releases")
+          case "$code" in
+            200 | 201)
+              id=$(jq -r '.id' < ../rel.json)
+              echo "created release $tag -> id $id" ;;
+            # A RE-RUN OF THE SAME TAG REACHES 409 LEGITIMATELY -- a cancelled
+            # run, a retried job -- so the existing release is read back and
+            # attached to rather than called a failure. It is still not an
+            # overwrite: an asset that is already there makes the attach below
+            # refuse, so a published file cannot be quietly replaced.
+            409)
+              code=$(timeout 60 curl --config "$cfg" -s -o ../rel.json -w '%{http_code}' "$api/releases/tags/$tag")
+              [ "$code" = 200 ] || { echo "release $tag exists and cannot be read back: $code"; head -c 300 ../rel.json; exit 1; }
+              id=$(jq -r '.id' < ../rel.json)
+              echo "release $tag already exists -> id $id; attaching to it" ;;
+            *)
+              echo "creating the release for $tag answered $code"; head -c 300 ../rel.json; exit 1 ;;
+          esac
+          if [ -z "$id" ] || [ "$id" = null ]; then
+            echo "the forge answered without a release id"; head -c 300 ../rel.json; exit 1
+          fi
+
+          for f in ../dist/*; do
+            b=$(basename "$f")
+            code=$(timeout 300 curl --config "$cfg" -s -o ../asset.log -w '%{http_code}' \
+                   -X POST -F "attachment=@$f" "$api/releases/$id/assets?name=$b")
+            echo "attach $b -> $code"
+            case "$code" in
+              200 | 201) : ;;
+              *) echo "attaching $b failed"; head -c 300 ../asset.log; exit 1 ;;
+            esac
+          done
+
+          # READ THE RELEASE BACK AND COMPARE THE WHOLE SET. "the POST answered
+          # 201" and "the release carries these files" are different claims,
+          # and only the second is what a person clicking the tag receives.
+          # Binaries reached the package registry unlinked for months precisely
+          # because nothing ever asserted the second one.
+          code=$(timeout 60 curl --config "$cfg" -s -o ../rel2.json -w '%{http_code}' "$api/releases/$id")
+          [ "$code" = 200 ] || { echo "reading release $id back answered $code"; exit 1; }
+          got=$(jq -r '[.assets[].name] | sort | join(" ")' < ../rel2.json)
+          want=$(cd ../dist && for g in *; do echo "$g"; done | sort | tr '\n' ' ' | sed 's/ $//')
+          [ "$got" = "$want" ] || { echo "REFUSED: release $tag carries [$got] and this run attached [$want]"; exit 1; }
+          echo "asserted: release $tag carries exactly $((n + 1)) asset(s): $got"
+
+          # ANONYMOUS READ-BACK OF ONE BYTE STREAM, because the assert above is
+          # the forge agreeing with itself about names. This is the download a
+          # person actually performs, and it is checked against the file that
+          # was built.
+          first=$(jq -r '[.assets[] | select(.name != "SHA256SUMS")] | sort_by(.name) | .[0].browser_download_url' < ../rel2.json)
+          fname=$(basename "$first")
+          got=$(timeout 300 curl -sS -L -o "../fetched-$fname" -w '%{http_code}' "$first")
+          [ "$got" = 200 ] || { echo "downloading $fname anonymously answered $got"; exit 1; }
+          cmp -s "../dist/$fname" "../fetched-$fname" || { echo "the served asset is not the file this run built"; exit 1; }
+          echo "read back anonymously -> $got, $fname byte-identical to the build"
