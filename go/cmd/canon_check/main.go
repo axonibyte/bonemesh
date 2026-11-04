@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/axonibyte/bonemesh/gonode/canon"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/canon"
 )
 
 func main() {

@@ -7,7 +7,7 @@ package keyschedule
 import (
 	"encoding/binary"
 
-	"github.com/axonibyte/bonemesh/gonode/crypto"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/crypto"
 )
 
 // ProtocolName seeds the state.

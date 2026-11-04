@@ -11,12 +11,12 @@ import (
 	"encoding/base64"
 	"testing"
 
-	"github.com/axonibyte/bonemesh/gonode/canon"
-	"github.com/axonibyte/bonemesh/gonode/cert"
-	"github.com/axonibyte/bonemesh/gonode/crypto"
-	"github.com/axonibyte/bonemesh/gonode/frame"
-	"github.com/axonibyte/bonemesh/gonode/handshake"
-	"github.com/axonibyte/bonemesh/gonode/transport"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/canon"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/cert"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/crypto"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/frame"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/handshake"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/transport"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
 )
 

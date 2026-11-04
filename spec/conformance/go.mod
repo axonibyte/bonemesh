@@ -1,4 +1,4 @@
-module github.com/axonibyte/bonemesh/conformance
+module bonemesh-conformance
 
 go 1.26.0
 

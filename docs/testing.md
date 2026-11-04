@@ -57,6 +57,12 @@ digest-pinned container (or, for the root tenant, directly on a networked guest)
 | `bonemesh-spec` | `spec/.reaper.toml` | the corpus conformance runner (`go test ./...` in `conformance/`) |
 | `bonemesh-interop` | `.reaper.toml` (root) | the interop battery: matrix + tiers 5–10 |
 
+Beside the tiers, the root tenant also runs `ci/check-go-module.sh` (and its
+`--self-test`) before anything else: the Go module path `go get` resolves is a
+claim no compiler and no suite can make, and the root tenant is the only one that
+sees the whole tree. CI runs it too, in `ci/test-impl.sh go`. See `docs/defects.md`
+D25 for the fault it exists to catch.
+
 Run any tenant from its directory (the root tenant from the repo root):
 
 ```sh

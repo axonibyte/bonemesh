@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/crypto/chacha20poly1305"
 
-	"github.com/axonibyte/bonemesh/conformance/corpus"
+	"bonemesh-conformance/corpus"
 )
 
 type transportVector struct {

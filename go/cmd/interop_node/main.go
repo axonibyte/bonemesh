@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/axonibyte/bonemesh/gonode/crypto"
-	"github.com/axonibyte/bonemesh/gonode/node"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/crypto"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/node"
 )
 
 func main() {

@@ -10,8 +10,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/axonibyte/bonemesh/gonode/canon"
-	"github.com/axonibyte/bonemesh/gonode/crypto"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/canon"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/crypto"
 )
 
 // Build makes an unsigned certificate. identityKey is the raw ML-DSA-65 public key.

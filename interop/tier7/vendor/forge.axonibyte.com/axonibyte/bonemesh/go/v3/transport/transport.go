@@ -12,8 +12,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/axonibyte/bonemesh/gonode/crypto"
-	"github.com/axonibyte/bonemesh/gonode/handshake"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/crypto"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/handshake"
 )
 
 // Transport is a transport session.

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/axonibyte/bonemesh/conformance/corpus"
+	"bonemesh-conformance/corpus"
 )
 
 type framingDoc struct {

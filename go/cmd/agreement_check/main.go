@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/axonibyte/bonemesh/gonode/keyschedule"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/keyschedule"
 )
 
 func main() {

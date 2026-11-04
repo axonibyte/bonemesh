@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/axonibyte/bonemesh/conformance/corpus"
+	"bonemesh-conformance/corpus"
 )
 
 type canonVectors struct {

@@ -13,9 +13,9 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/axonibyte/bonemesh/gonode/cert"
-	"github.com/axonibyte/bonemesh/gonode/crypto"
-	"github.com/axonibyte/bonemesh/gonode/keyschedule"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/cert"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/crypto"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/keyschedule"
 )
 
 // Session is the completed result: directional transport keys and the peer cert.

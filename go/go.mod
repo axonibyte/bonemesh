@@ -1,4 +1,4 @@
-module github.com/axonibyte/bonemesh/gonode
+module forge.axonibyte.com/axonibyte/bonemesh/go/v3
 
 go 1.26.0
 

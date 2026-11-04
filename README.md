@@ -43,5 +43,9 @@ Released under the [Apache License, Version 2.0](https://www.apache.org/licenses
 
 Authored and maintained primarily by [Caleb L. Power](https://calebpower.com).
 
-This repository lives on [Bitbucket](https://bitbucket.org/axonibyte/bonemesh).
-Other remote repository hosting providers (e.g. GitHub) serve as mirrors.
+This repository's home is the Axonibyte forge:
+[forge.axonibyte.com/axonibyte/bonemesh](https://forge.axonibyte.com/axonibyte/bonemesh)
+over HTTPS, and `forge-01.corp.axonibyte.com` from inside the corp network.
+GitHub and Bitbucket are push mirrors, configured on the forge itself. The HTTPS
+name is the one the Go module path uses, because it is the only one Go can fetch
+from — see [go/README.md](go/README.md).

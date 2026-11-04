@@ -22,7 +22,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/axonibyte/bonemesh/gonode/transport"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/transport"
 )
 
 var label = regexp.MustCompile(`^BMX3_(I2R|R2I)_TRAFFIC_(\d+)$`)

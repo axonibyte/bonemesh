@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/axonibyte/bonemesh/gonode/canon"
-	"github.com/axonibyte/bonemesh/gonode/cert"
-	"github.com/axonibyte/bonemesh/gonode/crypto"
-	"github.com/axonibyte/bonemesh/gonode/handshake"
-	"github.com/axonibyte/bonemesh/gonode/message"
-	"github.com/axonibyte/bonemesh/gonode/routing"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/canon"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/cert"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/crypto"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/handshake"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/message"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/routing"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
 )
 

@@ -32,7 +32,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/axonibyte/bonemesh/gonode/transport"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/transport"
 )
 
 // A key-log entry: one derived transport key for a direction and rekey epoch.

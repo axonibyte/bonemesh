@@ -17,8 +17,8 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/axonibyte/bonemesh/conformance/corpus"
-	"github.com/axonibyte/bonemesh/conformance/keyschedule"
+	"bonemesh-conformance/corpus"
+	"bonemesh-conformance/keyschedule"
 )
 
 type agreementVector struct {

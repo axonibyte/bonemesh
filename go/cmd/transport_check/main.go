@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/axonibyte/bonemesh/gonode/transport"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/transport"
 )
 
 type vector struct {

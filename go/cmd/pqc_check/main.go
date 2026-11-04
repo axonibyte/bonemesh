@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/axonibyte/bonemesh/gonode/crypto"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/crypto"
 )
 
 type vector struct {

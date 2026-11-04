@@ -28,10 +28,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/axonibyte/bonemesh/gonode/frame"
-	"github.com/axonibyte/bonemesh/gonode/handshake"
-	"github.com/axonibyte/bonemesh/gonode/message"
-	"github.com/axonibyte/bonemesh/gonode/transport"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/frame"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/handshake"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/message"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/transport"
 )
 
 func main() {

@@ -14,8 +14,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/axonibyte/bonemesh/gonode/frame"
-	"github.com/axonibyte/bonemesh/gonode/message"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/frame"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/message"
 )
 
 func main() {

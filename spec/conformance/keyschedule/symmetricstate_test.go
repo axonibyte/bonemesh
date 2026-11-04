@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/axonibyte/bonemesh/conformance/corpus"
+	"bonemesh-conformance/corpus"
 )
 
 type ksVector struct {

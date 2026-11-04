@@ -23,9 +23,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/axonibyte/bonemesh/gonode/canon"
-	"github.com/axonibyte/bonemesh/gonode/cert"
-	"github.com/axonibyte/bonemesh/gonode/crypto"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/canon"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/cert"
+	"forge.axonibyte.com/axonibyte/bonemesh/go/v3/crypto"
 )
 
 func main() {

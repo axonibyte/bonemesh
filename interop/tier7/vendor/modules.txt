@@ -1,13 +1,13 @@
-# github.com/axonibyte/bonemesh/gonode v0.0.0 => ../../go
+# forge.axonibyte.com/axonibyte/bonemesh/go/v3 v3.0.0 => ../../go
 ## explicit; go 1.26.0
-github.com/axonibyte/bonemesh/gonode/canon
-github.com/axonibyte/bonemesh/gonode/cert
-github.com/axonibyte/bonemesh/gonode/crypto
-github.com/axonibyte/bonemesh/gonode/frame
-github.com/axonibyte/bonemesh/gonode/handshake
-github.com/axonibyte/bonemesh/gonode/keyschedule
-github.com/axonibyte/bonemesh/gonode/message
-github.com/axonibyte/bonemesh/gonode/transport
+forge.axonibyte.com/axonibyte/bonemesh/go/v3/canon
+forge.axonibyte.com/axonibyte/bonemesh/go/v3/cert
+forge.axonibyte.com/axonibyte/bonemesh/go/v3/crypto
+forge.axonibyte.com/axonibyte/bonemesh/go/v3/frame
+forge.axonibyte.com/axonibyte/bonemesh/go/v3/handshake
+forge.axonibyte.com/axonibyte/bonemesh/go/v3/keyschedule
+forge.axonibyte.com/axonibyte/bonemesh/go/v3/message
+forge.axonibyte.com/axonibyte/bonemesh/go/v3/transport
 # github.com/cloudflare/circl v1.6.5
 ## explicit; go 1.25.0
 github.com/cloudflare/circl/internal/sha3
@@ -28,4 +28,4 @@ golang.org/x/crypto/internal/poly1305
 # golang.org/x/sys v0.47.0
 ## explicit; go 1.25.0
 golang.org/x/sys/cpu
-# github.com/axonibyte/bonemesh/gonode => ../../go
+# forge.axonibyte.com/axonibyte/bonemesh/go/v3 => ../../go

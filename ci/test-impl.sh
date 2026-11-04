@@ -77,6 +77,13 @@ case "$impl" in
     corpus_checks java
     ;;
   go)
+    # Before the suite, because this is the one claim the suite cannot make: the
+    # module path `go get` resolves. Its own self-test runs first for the same
+    # reason -- an oracle nobody has watched fail is indistinguishable from a
+    # green tree. Both are static and cost no compiler time.
+    log "the module path go get will use"
+    sh ci/check-go-module.sh --self-test
+    sh ci/check-go-module.sh
     log "go test ./... (vendored, hermetic)"
     (cd go && GOTOOLCHAIN=local GOFLAGS=-mod=vendor "$go" test ./...)
     corpus_checks go

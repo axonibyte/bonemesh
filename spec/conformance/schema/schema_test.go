@@ -3,7 +3,7 @@ package schema
 import (
 	"testing"
 
-	"github.com/axonibyte/bonemesh/conformance/corpus"
+	"bonemesh-conformance/corpus"
 )
 
 type messagesDoc struct {
