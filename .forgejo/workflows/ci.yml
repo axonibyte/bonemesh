@@ -31,19 +31,26 @@ name: ci
 on:
   push:
     branches: [main]
-    # '*' and not 'v*': EVERY tag this repository has ever made is bare --
-    # 0.1.0 through 3.3.1, not one with a `v`. The release path below fires on
-    # refs/tags/*, so under 'v*' it could never fire at all, though the commit
-    # that added it (7fc6752) describes it as running "on every tag". No tag has
-    # been pushed since, so nothing had the chance to notice.
+    # ONLY THE BARE RELEASE TAGS, and stated as a positive pattern so that
+    # correctness does not rest on a glob subtlety. These two match `3.3.2` and
+    # `v3.3.2` -- which is exactly what the "tag and gradle.properties must
+    # agree" step below accepts -- and cannot match `go/v3.3.2`, both because it
+    # begins with `g` and because `*` does not cross `/`. Relying on that second
+    # reason alone, as `['*']` did, makes the file's behaviour unreadable from
+    # the file.
     #
-    # '*' is also the pattern that wants to be here rather than a reluctant
-    # widening, because these filters glob with '/' as the separator: '*' matches
-    # `3.3.2` and deliberately does NOT match `go/v3.3.2`. That is the split the
-    # repository needs -- the bare tag is the release of all eight
-    # implementations and publishes the jar, while the Go module's tag is read
-    # only by Go's resolver (go/README.md) and must not publish a Java artifact.
-    tags: ['*']
+    # Why a Go tag should trigger nothing at all: it names the SAME COMMIT as
+    # the bare tag, so every suite has already run on that tree, and the release
+    # step would have nothing to publish for it. See go/README.md for why the Go
+    # module needs a second tag that Go's resolver can read.
+    #
+    # The history here is a filter that matched nothing: this was `['v*']` while
+    # every tag in the repository is bare, so the release job added in 7fc6752
+    # could never fire, though that commit describes it as running "on every
+    # tag". The agreement step 200 lines below has always accepted both `3.3.2`
+    # and `v3.3.2`; the trigger contradicted it. KEEP THE TWO IN STEP -- if that
+    # step's accepted forms change, these patterns change with it.
+    tags: ['[0-9]*', 'v[0-9]*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -203,6 +210,15 @@ jobs:
           done
           [ "$n" -ge 1 ] || { echo "shadowJar produced no jar"; exit 1; }
 
+      # THE AUTHORITY ON WHAT A RELEASE TAG LOOKS LIKE, and the backstop if the
+      # trigger ever lets something else through: the `case` below accepts only
+      # `$ver` or `v$ver`, so a subdirectory-prefixed tag like `go/v3.3.2` is
+      # REFUSED here and the job stops before the release step runs. The push
+      # trigger's tag patterns mirror these two forms; change both together.
+      #
+      # Note the protection is positional -- it works because this step precedes
+      # the release step in the same job. Reordering them, or moving the release
+      # into a job of its own, removes it.
       - name: on a tag, the tag and gradle.properties must agree
         if: startsWith(github.ref, 'refs/tags/')
         run: |
