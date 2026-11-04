@@ -85,6 +85,29 @@ Everything underneath — identity, encryption, framing, routing metrics — is 
   Within a single version there is no such caveat: the 49-cell interop matrix sends
   96 KB in every pair.
 
+## Notes for 3.3.2
+
+- **Nothing on the wire changed, and no implementation's behaviour changed.** `v`
+  stays 3, no pinned vector moves, and a mixed 3.3.1/3.3.2 mesh is
+  indistinguishable from a uniform one. The release exists to make the Go
+  implementation installable at all: its module path was wrong three ways over
+  and `go get` could not fetch it (D25). Every implementation's version string
+  moves to 3.3.2 regardless, which is this repository's convention -- 3.3.1
+  shipped a JS-only fix the same way -- and is what lets a Go version and a Java
+  version be compared for interoperability at a glance.
+
+- **Go consumers must rewrite their imports.** The path is now
+  `forge.axonibyte.com/axonibyte/bonemesh/go/v3/...`, replacing
+  `github.com/axonibyte/bonemesh/gonode/...`, which named a directory that does
+  not exist on a host this repository is only mirrored to. Nothing about the
+  packages themselves changes -- same names, same API, same wire behaviour. See
+  [go/README.md](../go/README.md).
+
+- **A release is now tagged twice on the same commit**: `3.3.2` for the
+  repository, which is what the other seven implementations are versioned by, and
+  `go/v3.3.2`, which is the only tag Go's resolver will read for a module in a
+  subdirectory. Neither replaces the other.
+
 ## Notes for 3.3.1
 
 - **A transport-level fault now closes the session in every port, and says why.**

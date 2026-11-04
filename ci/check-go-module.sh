@@ -177,6 +177,12 @@ self_test() {
   passes=0
   failures=0
 
+  # The fixture version is pinned at 3.3.1 ON PURPOSE and does not track the
+  # repository's. These trees exist to make the check's arms deterministic, and
+  # the d7 arm needs a version it can bump to v4 to simulate a release line
+  # outrunning the module path. Syncing it to the real version would make the
+  # self-test's meaning move every release, which is the opposite of what a
+  # fixture is for.
   plant() { # plant <root> <module-path-for-go/>
     r=$1
     mkdir -p "$r/go" "$r/interop/tier5" "$r/java" "$r/js" "$r/elixir" "$r/python" "$r/rust"
