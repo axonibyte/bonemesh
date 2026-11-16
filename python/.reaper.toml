@@ -6,7 +6,8 @@
 # stdlib has no ML-KEM or ML-DSA, so the post-quantum primitives come from
 # `cryptography` over OpenSSL 3.5. That is the only one, it is
 # Apache-2.0 OR BSD-3-Clause, and tools/check_licenses.py gates its whole
-# transitive set against BoneMesh's Apache-2.0 -- so a future `uv lock` that pulls
+# transitive set against BoneMesh's own permissive license -- so a future
+# `uv lock` that pulls
 # in something copyleft fails here rather than shipping.
 
 schema = 1

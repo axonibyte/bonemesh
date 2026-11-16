@@ -29,7 +29,7 @@ This is what the `bonemesh-python` reaper tenant (`python/.reaper.toml`) runs.
 
 ## Licensing
 
-BoneMesh is Apache-2.0, which is one-way incompatible with GPL-2.0, so a copyleft
+BoneMesh is permissively licensed (Blue Oak Model License 1.0.0), so a copyleft
 dependency anywhere in the transitive set would be disqualifying.
 `tools/check_licenses.py` gates every installed distribution against an explicit
 permissive allowlist and runs in CI and in the reaper tenant, so a future

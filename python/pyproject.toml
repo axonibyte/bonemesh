@@ -7,8 +7,8 @@ requires-python = ">=3.12"
 # brings ML-KEM-768, ML-DSA-65/87, X25519, HKDF-SHA-256 and ChaCha20-Poly1305
 # over OpenSSL 3.5 -- the same primitive set Node, OTP 28 and the openssl CLI
 # give the other ports. Its licence chain is gated by tools/check_licenses.py,
-# because BoneMesh is Apache-2.0 and a copyleft transitive dependency would be
-# disqualifying.
+# because BoneMesh is permissively licensed and a copyleft transitive
+# dependency would be disqualifying.
 dependencies = ["cryptography>=46"]
 
 [dependency-groups]

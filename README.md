@@ -39,7 +39,7 @@ This repository is organized as a super-repo:
   registries.
 
 Copyright (c) 2019-2026 [Axonibyte Innovations, LLC](https://axonibyte.com).
-Released under the [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+Licensed under the Blue Oak Model License 1.0.0. See LICENSE.
 
 Authored and maintained primarily by [Caleb L. Power](https://calebpower.com).
 

@@ -261,7 +261,7 @@ this is the order that actually worked:
    Mutation-check every assertion.
 4. Add a `<lang>/.reaper.toml` tenant (digest-pinned image, offline/vendored build
    where possible). If the port needs third-party dependencies, gate their
-   licences too — BoneMesh is Apache-2.0, so a copyleft transitive dependency is
+   licences too — BoneMesh is permissively licensed, so a copyleft transitive dependency is
    disqualifying (see `python/tools/check_licenses.py`).
 5. Add the seven `interop/check-<family>-<name>.sh` wrappers and the entry points
    they drive. `interop/run-corpus-checks.sh` discovers them and **fails** on a
